@@ -37,8 +37,8 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - [ ] Render a basic frame with status/error line.
 
 ### 5. Dashboard UI
-- [ ] Implement `src/ui/dashboard.rs`: responsive card grid showing name, state, image, CPU%, memory, net I/O, ports, uptime.
-- [ ] Bind keys: `↑↓` select, `Enter` inspect, `c` create, `e` exec, `l` logs, `p` ports, `r` restart, `x` stop, `Del` remove (confirm), `q` quit.
+- [x] Implement `src/ui/dashboard.rs`: responsive card grid showing name, state, image, CPU%, memory, net I/O, ports, uptime.
+- [x] Bind keys: `↑↓` select, `Enter` inspect, `c` create, `e` exec, `l` logs, `p` ports, `r` restart, `x` stop, `Del` remove (confirm), `q` quit.
 
 ### 6. Create-sandbox form
 - [ ] Implement `src/ui/create.rs` with fields for image, name, CPUs, memory, workdir, ports, volumes, env vars, network profile.
@@ -54,7 +54,7 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - [ ] Bind `+` / `-` only if backend supports recreation; otherwise show message "Publish/unpublish requires recreate in msb 0.7.2".
 
 ### 9. Help overlay
-- [ ] Implement `src/ui/help.rs`: context-aware keybinding overlay shown with `?`.
+- [x] Implement `src/ui/help.rs`: context-aware keybinding overlay shown with `?`.
 
 ### 10. Main wiring
 - [ ] Wire everything in `src/main.rs`: parse CLI, verify `msb` on PATH, init terminal, run event loop, restore terminal on exit.
