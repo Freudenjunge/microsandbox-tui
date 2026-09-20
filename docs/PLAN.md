@@ -69,3 +69,64 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - msb 0.7.2 has no `create --replace`; recreate = stop → rm → create → start (updated in AGENTS.md/DESIGN.md).
 - Exec in Phase 1 runs a demo command via the confirm dialog; free-form exec input is Phase 2.
 - Log tail task is spawned when the Logs view opens and aborted on leave (one sandbox at a time).
+
+---
+
+# Phase 2 — Full migration from msb CLI backend to the microsandbox Rust SDK
+
+Goal: replace the `msb` CLI/JSON layer with the typed `microsandbox` 0.7.2 SDK
+(`MsbBackend` seam stays; `SdkBackend` maps SDK types → `models.rs` DTOs). Add
+runtime install/version management. Keep `FakeBackend` for unit tests.
+
+Verified SDK facts (from crates.io 0.7.2 sources, 2026-09-20):
+- SDK sandboxes default to ATTACHED mode: a plain `.create()`/`start()` ties the
+  VM to the TUI process. All create/start/restart paths must use
+  `detached(true)` / `start_detached()` / `RestartOptions { detached: true, .. }`.
+- `SandboxModificationBuilder` (0.7.2) has NO port methods — publish/unpublish
+  keeps the recreate flow. `modify()` covers cpus/memory/env/labels/workdir/secrets.
+- Logs: `handle.follow_logs(&LogOptions)` gives a replay+follow stream with
+  opaque resume cursors — no poll-and-diff loop needed.
+- Fleet metrics: `all_sandbox_metrics_reports_local(&local, include_exited)`
+  (running-only default: `all_sandbox_metrics()`); needs the `LocalBackend` handle.
+- Runtime version: `setup::resolve_runtime_version(path)` reads the version
+  embedded in an `msb` binary without executing it; SDK version is
+  `microsandbox_utils::PREBUILT_VERSION`. Install/update via
+  `setup::install_runtime(&GlobalConfig, InstallOptions{..})`.
+- Network profiles: `NetworkPolicy::from_profiles([NetworkProfile::Public])`
+  et al. (crates.io 0.7.2 has no `prebuilt` feature; use `download-binaries`).
+
+## Task List
+
+### 1. Plan + probe removal
+- [x] Add this Phase 2 section to `docs/PLAN.md`.
+- [x] Delete `src/api_probe.rs` (throwaway SDK probe) and its `mod` in `main.rs`.
+
+### 2. SdkBackend behind the MsbBackend trait
+- [ ] Add `src/backend/sdk.rs`: implement every `MsbBackend` method with the SDK.
+- [ ] Create/start/restart use detached mode (persistence independent of TUI).
+- [ ] Map SDK types → `models.rs` DTOs (anti-corruption layer stays).
+- [ ] Unit-test the testable parts: CreateSpec → SDK builder mapping, DTO
+      conversions (config→summary/inspect, metrics report→Metrics, ports).
+- [ ] Live behavior verified by manual smoke test (not in CI).
+
+### 3. Runtime management (install / update / version banner)
+- [ ] Detect installed `msb` version (PATH + `~/.microsandbox/bin`) and compare
+      against the SDK version (`PREBUILT_VERSION`).
+- [ ] Dashboard banner: installed < SDK → offer update; installed > SDK → hint.
+- [ ] "Install/Update microsandbox" action via `setup::install_runtime`,
+      non-blocking with spinner/status (tokio task).
+
+### 4. Switch main.rs to SdkBackend; retire CliBackend
+- [ ] `main.rs` constructs `SdkBackend` (with `LocalBackend`) as the default.
+- [ ] Remove `CliBackend`, its fixtures-based CLI tests, and the `which` dep if
+      unused (full-switch decision; FakeBackend keeps action-layer tests green).
+- [ ] Logs view: switch the tail task to `follow_logs` streams.
+- [ ] Keep recreate flow for publish/unpublish (no port modify in 0.7.2).
+
+### 5. Docs + final polish
+- [ ] Rewrite the "Backend" section of `docs/DESIGN.md` (CLI → SDK rationale:
+      typed API, version management, richer exec/logs/fs APIs; install policy;
+      detached-mode note; honest removal of the CLI-JSON rationale).
+- [ ] Update file-structure section; mark plan tasks `[x]`.
+- [ ] All gates green: `cargo fmt --check && cargo clippy -- -D warnings &&
+      cargo test && cargo check`; CI green after push.
