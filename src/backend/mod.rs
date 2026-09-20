@@ -7,6 +7,7 @@
 
 pub mod cli;
 pub mod fake;
+pub mod sdk;
 #[cfg(test)]
 mod tests;
 
