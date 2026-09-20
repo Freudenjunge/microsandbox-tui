@@ -34,30 +34,30 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 ### 4. App state + event loop
 - [x] Add `src/app.rs` with `App` struct holding current view, selected sandbox index, poller handles, last error, and pending action state.
 - [x] Set up `tokio::select!` event loop in `src/event.rs` (or `app.rs`) combining crossterm events, metric poll ticks, and list poll ticks.
-- [ ] Render a basic frame with status/error line.
+- [x] Render a basic frame with status/error line.
 
 ### 5. Dashboard UI
 - [x] Implement `src/ui/dashboard.rs`: responsive card grid showing name, state, image, CPU%, memory, net I/O, ports, uptime.
 - [x] Bind keys: `↑↓` select, `Enter` inspect, `c` create, `e` exec, `l` logs, `p` ports, `r` restart, `x` stop, `Del` remove (confirm), `q` quit.
 
 ### 6. Create-sandbox form
-- [ ] Implement `src/ui/create.rs` with fields for image, name, CPUs, memory, workdir, ports, volumes, env vars, network profile.
-- [ ] Image autocomplete from `list_images`.
+- [x] Implement `src/ui/create.rs` with fields for image, name, CPUs, memory, workdir, ports, volumes, env vars, network profile.
+- [x] Image autocomplete from `list_images`.
 - [ ] On submit, call `actions::create_sandbox` and return to dashboard with spinner/status.
 
 ### 7. Logs panel
-- [ ] Implement `src/ui/logs.rs`: stream `msb logs -f --json` in a long-lived task, render with timestamps.
-- [ ] Bind `f` follow toggle, `Esc` back.
+- [x] Implement `src/ui/logs.rs`: stream `msb logs -f --json` in a long-lived task, render with timestamps.
+- [x] Bind `f` follow toggle, `Esc` back.
 
 ### 8. Ports view (read-only Phase 1)
-- [ ] Implement `src/ui/ports.rs`: show published ports from `inspect.network.ports`.
-- [ ] Bind `+` / `-` only if backend supports recreation; otherwise show message "Publish/unpublish requires recreate in msb 0.7.2".
+- [x] Implement `src/ui/ports.rs`: show published ports from `inspect.network.ports`.
+- [x] Bind `+` / `-` only if backend supports recreation; otherwise show message "Publish/unpublish requires recreate in msb 0.7.2".
 
 ### 9. Help overlay
 - [x] Implement `src/ui/help.rs`: context-aware keybinding overlay shown with `?`.
 
 ### 10. Main wiring
-- [ ] Wire everything in `src/main.rs`: parse CLI, verify `msb` on PATH, init terminal, run event loop, restore terminal on exit.
+- [x] Wire everything in `src/main.rs`: parse CLI, verify `msb` on PATH, init terminal, run event loop, restore terminal on exit.
 - [ ] Add `cargo test` and `cargo run -- --help` smoke tests in CI or commit hook.
 
 ### 11. Final Phase 1 polish

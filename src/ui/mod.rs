@@ -10,6 +10,8 @@
 
 pub mod dashboard;
 pub mod help;
+pub mod logs;
+pub mod ports;
 
 use std::collections::HashMap;
 
@@ -37,6 +39,16 @@ pub fn render_dashboard(
 /// Render the help overlay (centered keybinding table).
 pub fn render_help(frame: &mut Frame, area: Rect) {
     help::render(frame, area);
+}
+
+/// Render the port-forwards view for a sandbox.
+pub fn render_ports(frame: &mut Frame, state: &ports::PortsState, area: Rect) {
+    ports::render_ports(frame, state, area);
+}
+
+/// Render the logs panel for a sandbox.
+pub fn render_logs_panel(frame: &mut Frame, state: &logs::LogsState, area: Rect) {
+    logs::render_logs(frame, state, area);
 }
 
 /// Render a "Not implemented" placeholder for views not yet built.
