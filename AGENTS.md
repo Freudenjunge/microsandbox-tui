@@ -53,9 +53,10 @@ Fix all warnings and test failures. Treat `clippy` lints as errors in this proje
 - Ports and network rules cannot be changed on a running sandbox in v0.7.2. Any publish/unpublish/network-rule edit must:
   1. Read current config via `msb inspect <name> --format json`.
   2. Stop the sandbox with `msb stop <name>`.
-  3. Recreate it with `msb create --replace --name <name> ... <image>` including the change.
-  4. Start it with `msb start <name>`.
-  5. Warn the user that the rootfs resets unless they snapshot first.
+  3. Remove it with `msb rm <name>` (0.7.2 has NO `create --replace` flag; a name collision errors).
+  4. Recreate it with `msb create --name <name> ... <image>` including the change.
+  5. Start it with `msb start <name>`.
+  6. Warn the user that the rootfs resets unless they snapshot first.
 - Default new-sandbox network profile is `public` (`--net public`).
 - New sandboxes default to named/persistent (ephemeral is an advanced toggle).
 

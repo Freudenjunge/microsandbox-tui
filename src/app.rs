@@ -20,6 +20,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::event::Action;
 use crate::event::AppEvent;
 use crate::models::{Metrics, SandboxSummary};
+use crate::ui::create::CreateForm;
+use crate::ui::logs::LogsState;
+use crate::ui::ports::PortsState;
 
 /// Which screen is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +48,50 @@ impl View {
     }
 }
 
+/// A lifecycle/exec operation awaiting confirmation or execution.
+///
+/// Destructive ops (`x` stop, `Del` remove, `r` restart) require the user to
+/// confirm; the main loop resolves queued ops by running the corresponding
+/// action on the backend.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Op {
+    /// Start the named sandbox.
+    Start(String),
+    /// Gracefully stop the named sandbox.
+    Stop(String),
+    /// Restart the named sandbox.
+    Restart(String),
+    /// Stop + remove the named sandbox.
+    Remove(String),
+    /// Run a command in the named sandbox.
+    Exec { name: String, cmd: Vec<String> },
+}
+
+impl Op {
+    /// Human-readable description shown in the confirmation dialog.
+    pub fn describe(&self) -> String {
+        match self {
+            Op::Start(n) => format!("Start sandbox '{n}'?"),
+            Op::Stop(n) => format!("Stop sandbox '{n}'?"),
+            Op::Restart(n) => format!("Restart sandbox '{n}'?"),
+            Op::Remove(n) => format!("REMOVE sandbox '{n}'? (rootfs is deleted)"),
+            Op::Exec { name, cmd } => format!("Run in '{name}': {}", cmd.join(" ")),
+        }
+    }
+
+    /// Whether this op must be confirmed before running.
+    pub fn requires_confirmation(&self) -> bool {
+        !matches!(self, Op::Exec { .. })
+    }
+}
+
+/// A queued, confirmed operation waiting for the main loop to run.
+#[derive(Debug)]
+pub struct PendingOp {
+    /// The operation to perform.
+    pub op: Op,
+}
+
 /// The central application state.
 #[derive(Debug)]
 pub struct App {
@@ -62,6 +109,26 @@ pub struct App {
     pub quit: bool,
     /// Transient status message (spinner text, last action result).
     pub status: Option<String>,
+    /// Operation awaiting confirmation (`y`/`n`), if any.
+    pub confirm: Option<Op>,
+    /// Confirmed op queued for the main loop; consumed via [`App::take_op`].
+    pub queued_op: Option<Op>,
+    /// Validated create spec queued by the form, consumed via
+    /// [`App::take_create_spec`].
+    pub queued_create: Option<crate::backend::CreateSpec>,
+    /// Create-form state (lives across renders while the form is open).
+    pub create_form: Option<CreateForm>,
+    /// Logs-view state; `Some` while the logs view is open.
+    pub logs_state: Option<LogsState>,
+    /// Ports-view state; `Some` while the ports view is open.
+    pub ports_state: Option<PortsState>,
+    /// Cached image references for the create form autocomplete.
+    pub images: Vec<String>,
+    /// Published ports per sandbox (dashboard cards + ports view), refreshed
+    /// lazily when the ports view is opened.
+    pub ports: std::collections::HashMap<String, Vec<crate::models::PublishedPort>>,
+    /// True while a long-running `msb` operation is in flight.
+    pub busy: bool,
 }
 
 impl App {
@@ -75,6 +142,15 @@ impl App {
             error: None,
             quit: false,
             status: None,
+            confirm: None,
+            queued_op: None,
+            queued_create: None,
+            create_form: None,
+            logs_state: None,
+            ports_state: None,
+            images: Vec::new(),
+            ports: std::collections::HashMap::new(),
+            busy: false,
         }
     }
 
@@ -82,7 +158,13 @@ impl App {
     pub fn handle_event(&mut self, event: AppEvent) -> Action {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
-            AppEvent::Tick => Action::Continue,
+            AppEvent::Tick => {
+                if self.busy {
+                    Action::Render // spinner animation cadence
+                } else {
+                    Action::Continue
+                }
+            }
             AppEvent::SandboxesUpdated(list) => {
                 self.update_sandboxes(list);
                 Action::Render
@@ -93,61 +175,285 @@ impl App {
             }
             AppEvent::Error(msg) => {
                 self.error = Some(msg);
+                self.busy = false;
+                Action::Render
+            }
+            AppEvent::OpDone(msg) => {
+                self.status = Some(msg);
+                self.busy = false;
+                Action::Render
+            }
+            AppEvent::LogLines(lines) => {
+                if let Some(state) = &mut self.logs_state {
+                    for line in lines {
+                        state.push_line(line);
+                    }
+                    Action::Render
+                } else {
+                    Action::Continue
+                }
+            }
+            AppEvent::LogsEnded => {
+                if let Some(state) = &mut self.logs_state {
+                    state.follow = false;
+                    Action::Render
+                } else {
+                    Action::Continue
+                }
+            }
+            AppEvent::ImagesUpdated(images) => {
+                self.images = images.clone();
+                if let Some(form) = &mut self.create_form {
+                    form.images = images;
+                }
+                Action::Render
+            }
+            AppEvent::PortsUpdated { name, ports } => {
+                self.ports.insert(name.clone(), ports.clone());
+                match &mut self.ports_state {
+                    Some(state) if state.sandbox_name == name => {
+                        state.update_ports(ports);
+                        Action::Render
+                    }
+                    _ => Action::Continue,
+                }
+            }
+            AppEvent::ExecDone { name, output } => {
+                self.busy = false;
+                let summary = if output.exit_code == 0 {
+                    format!("exec '{name}' ok: {}", output.stdout.trim())
+                } else {
+                    format!(
+                        "exec '{name}' exit {}: {}{}",
+                        output.exit_code,
+                        output.stderr.trim(),
+                        if output.stderr.trim().is_empty() {
+                            output.stdout.trim()
+                        } else {
+                            ""
+                        }
+                    )
+                };
+                self.status = Some(summary);
                 Action::Render
             }
         }
     }
 
+    /// The next confirmed operation, if any (consumes it).
+    pub fn take_op(&mut self) -> Option<Op> {
+        self.queued_op.take()
+    }
+
+    /// The queued create spec from the form, if any (consumes it).
+    pub fn take_create_spec(&mut self) -> Option<crate::backend::CreateSpec> {
+        self.queued_create.take()
+    }
+
     /// Key handling for the current view.
     fn handle_key(&mut self, key: KeyEvent) -> Action {
-        // `q` and Ctrl-C quit from the dashboard. Sub-views reserve their own
-        // key space (form text entry) and exit with `Esc`.
-        if self.view.is_dashboard() {
-            return match key.code {
-                KeyCode::Char('q') => {
-                    self.quit = true;
-                    Action::Quit
-                }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.quit = true;
-                    Action::Quit
-                }
-                KeyCode::Up => {
-                    self.select_prev();
-                    Action::Render
-                }
-                KeyCode::Down => {
-                    self.select_next();
-                    Action::Render
-                }
-                KeyCode::Char('c') => {
-                    self.view = View::Create;
-                    Action::Render
-                }
-                KeyCode::Enter => self.open_view(View::Inspect),
-                KeyCode::Char('l') => self.open_view(View::Logs),
-                KeyCode::Char('p') => self.open_view(View::Ports),
-                KeyCode::Char('?') => {
-                    self.view = View::Help;
-                    Action::Render
-                }
-                KeyCode::Esc => Action::Continue,
-                _ => Action::Continue,
-            };
+        // Confirmation dialog takes precedence over everything.
+        if self.confirm.is_some() {
+            return self.handle_confirm_key(key);
         }
 
-        // Sub-views: `Esc` returns to the dashboard, `q` quits globally.
+        match self.view {
+            View::Dashboard => self.handle_dashboard_key(key),
+            View::Create => self.handle_create_key(key),
+            View::Logs => self.handle_logs_key(key),
+            View::Ports => self.handle_ports_key(key),
+            View::Help => self.handle_help_key(key),
+            View::Inspect => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::Dashboard;
+                    Action::Render
+                }
+                _ => Action::Continue,
+            },
+        }
+    }
+
+    /// Keys while a confirmation dialog is open: `y`/`Enter` queues the op,
+    /// anything else cancels.
+    fn handle_confirm_key(&mut self, key: KeyEvent) -> Action {
+        let op = match self.confirm.take() {
+            Some(op) => op,
+            None => return Action::Continue,
+        };
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                self.queued_op = Some(op);
+                self.busy = true;
+                self.status = Some("Working…".into());
+                Action::Render
+            }
+            _ => {
+                self.status = Some("Cancelled".into());
+                Action::Render
+            }
+        }
+    }
+
+    /// Keys on the dashboard: selection, view switching, lifecycle ops.
+    fn handle_dashboard_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('q') => {
+                self.quit = true;
+                Action::Quit
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.quit = true;
+                Action::Quit
+            }
+            KeyCode::Up => {
+                self.select_prev();
+                Action::Render
+            }
+            KeyCode::Down => {
+                self.select_next();
+                Action::Render
+            }
+            KeyCode::Char('c') => {
+                self.open_create_form();
+                Action::Render
+            }
+            KeyCode::Enter => self.open_view(View::Inspect),
+            KeyCode::Char('l') => self.open_logs(),
+            KeyCode::Char('p') => self.open_ports(),
+            KeyCode::Char('r') => self.confirm_named(Op::Restart),
+            KeyCode::Char('x') => self.confirm_named(Op::Stop),
+            KeyCode::Char('s') => self.confirm_named(Op::Start),
+            KeyCode::Delete => self.confirm_named(Op::Remove),
+            KeyCode::Char('e') => {
+                // Phase 1: exec opens the confirm dialog with a trivial demo
+                // command; free-form command input lands in Phase 2.
+                let Some(sbx) = self.selected_sandbox() else {
+                    return Action::Continue;
+                };
+                let name = sbx.name.clone();
+                self.confirm = Some(Op::Exec {
+                    name,
+                    cmd: vec!["/bin/sh".into(), "-c".into(), "echo exec-ok".into()],
+                });
+                Action::Render
+            }
+            KeyCode::Char('?') => {
+                self.view = View::Help;
+                Action::Render
+            }
+            KeyCode::Esc => Action::Continue,
+            _ => Action::Continue,
+        }
+    }
+
+    /// Keys on the create form.
+    fn handle_create_key(&mut self, key: KeyEvent) -> Action {
+        let Some(form) = &mut self.create_form else {
+            self.view = View::Dashboard;
+            return Action::Render;
+        };
+        match form.handle_key(key) {
+            crate::ui::create::FormAction::Cancel => {
+                self.create_form = None;
                 self.view = View::Dashboard;
                 Action::Render
             }
+            crate::ui::create::FormAction::Submit => match form.to_create_spec() {
+                Ok(spec) => {
+                    let label = spec.name.clone().unwrap_or_else(|| "<auto-name>".into());
+                    self.create_form = None;
+                    self.view = View::Dashboard;
+                    self.busy = true;
+                    self.status = Some(format!("Creating {label}…"));
+                    self.queued_create = Some(spec);
+                    Action::Render
+                }
+                Err(e) => {
+                    form.error = Some(e.to_string());
+                    Action::Render
+                }
+            },
+            _ => Action::Render,
+        }
+    }
+
+    /// Keys on the logs panel.
+    fn handle_logs_key(&mut self, key: KeyEvent) -> Action {
+        let Some(state) = &mut self.logs_state else {
+            self.view = View::Dashboard;
+            return Action::Render;
+        };
+        match state.handle_key(key) {
+            crate::ui::logs::LogsAction::Back => {
+                self.logs_state = None;
+                self.view = View::Dashboard;
+                Action::Render
+            }
+            _ => Action::Render,
+        }
+    }
+
+    /// Keys on the ports view.
+    fn handle_ports_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.ports_state = None;
+                self.view = View::Dashboard;
+                Action::Render
+            }
+            _ => Action::Continue,
+        }
+    }
+
+    /// Keys on the help overlay.
+    fn handle_help_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') => {
+                self.view = View::Dashboard;
+                Action::Render
+            }
+            // `q` remains the global quit key, consistent with every view.
             KeyCode::Char('q') => {
                 self.quit = true;
                 Action::Quit
             }
             _ => Action::Continue,
         }
+    }
+
+    /// Open the create form, pre-seeding the image list from cache.
+    fn open_create_form(&mut self) {
+        self.create_form = Some(CreateForm::new(self.images.clone()));
+        self.view = View::Create;
+    }
+
+    /// Open the logs view for the selected sandbox.
+    pub fn open_logs(&mut self) -> Action {
+        let Some(sbx) = self.selected_sandbox() else {
+            return Action::Continue;
+        };
+        self.logs_state = Some(LogsState::new(&sbx.name));
+        self.view = View::Logs;
+        Action::Render
+    }
+
+    /// Open the ports view for the selected sandbox.
+    fn open_ports(&mut self) -> Action {
+        let Some(sbx) = self.selected_sandbox() else {
+            return Action::Continue;
+        };
+        self.ports_state = Some(PortsState::new(&sbx.name));
+        self.view = View::Ports;
+        Action::Render
+    }
+
+    /// Begin confirming `op` for the selected sandbox.
+    fn confirm_named(&mut self, make_op: impl FnOnce(String) -> Op) -> Action {
+        let Some(sbx) = self.selected_sandbox() else {
+            return Action::Continue;
+        };
+        self.confirm = Some(make_op(sbx.name.clone()));
+        Action::Render
     }
 
     /// Switch to `view` only when there is a selected sandbox to act on.
@@ -219,6 +525,7 @@ impl Default for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::LogLine;
     use crate::models::SandboxState;
     use chrono::{DateTime, Utc};
 
@@ -436,5 +743,124 @@ mod tests {
     fn tick_is_a_noop() {
         let mut app = App::new();
         assert_eq!(app.handle_event(AppEvent::Tick), Action::Continue);
+    }
+
+    // ---- confirm + op queue ----
+
+    #[test]
+    fn stop_key_confirms_then_queues_op() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("web")]);
+
+        // `x` opens the confirm dialog; the op is not queued yet.
+        assert_eq!(app.handle_event(key(KeyCode::Char('x'))), Action::Render);
+        assert_eq!(app.confirm, Some(Op::Stop("web".into())));
+        assert!(app.take_op().is_none());
+
+        // `y` confirms; the op is queued and busy is set.
+        assert_eq!(app.handle_event(key(KeyCode::Char('y'))), Action::Render);
+        assert!(app.confirm.is_none());
+        assert_eq!(app.take_op(), Some(Op::Stop("web".into())));
+        assert!(app.busy);
+        assert!(app.take_op().is_none()); // consumed
+    }
+
+    #[test]
+    fn confirm_cancel_dismisses_without_queueing() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("web")]);
+        app.handle_event(key(KeyCode::Delete)); // remove confirm
+
+        assert_eq!(app.handle_event(key(KeyCode::Char('n'))), Action::Render);
+        assert!(app.confirm.is_none());
+        assert!(app.take_op().is_none());
+        assert!(!app.busy);
+    }
+
+    #[test]
+    fn remove_op_describes_destruction() {
+        assert!(Op::Remove("db".into()).describe().contains("rootfs"));
+        assert_eq!(Op::Stop("db".into()).describe(), "Stop sandbox 'db'?");
+    }
+
+    #[test]
+    fn exec_key_queues_after_confirm_and_completes() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("api")]);
+        app.handle_event(key(KeyCode::Char('e')));
+
+        let queued = app.confirm.take().expect("exec opens confirm");
+        let Op::Exec { name, cmd } = queued else {
+            panic!("expected Exec op");
+        };
+        assert_eq!(name, "api");
+        assert!(cmd.contains(&"echo exec-ok".to_string()));
+
+        // ExecDone clears busy and reports the output.
+        app.busy = true;
+        let action = app.handle_event(AppEvent::ExecDone {
+            name: "api".into(),
+            output: crate::backend::ExecOutput {
+                stdout: "exec-ok\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
+        });
+        assert_eq!(action, Action::Render);
+        assert!(!app.busy);
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exec-ok")
+        );
+    }
+
+    #[test]
+    fn lifecycle_keys_require_a_selection() {
+        let mut app = App::new();
+        for k in ['r', 'x', 's', 'e'] {
+            app.view = View::Dashboard;
+            assert_eq!(app.handle_event(key(KeyCode::Char(k))), Action::Continue);
+            assert!(
+                app.confirm.is_none(),
+                "key {k} must not open confirm on empty list"
+            );
+        }
+        // Delete on an empty list is also a no-op.
+        assert_eq!(app.handle_event(key(KeyCode::Delete)), Action::Continue);
+    }
+
+    #[test]
+    fn opdone_and_error_clear_busy() {
+        let mut app = App::new();
+        app.busy = true;
+        app.handle_event(AppEvent::OpDone("done".into()));
+        assert!(!app.busy);
+        assert_eq!(app.status.as_deref(), Some("done"));
+
+        app.busy = true;
+        app.handle_event(AppEvent::Error("boom".into()));
+        assert!(!app.busy);
+        assert_eq!(app.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn log_lines_feed_logs_state() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("web")]);
+        app.open_logs();
+
+        let line = LogLine {
+            id: 1,
+            source: "stdout".into(),
+            data: "hello\n".into(),
+            timestamp: chrono::Utc::now(),
+        };
+        assert_eq!(
+            app.handle_event(AppEvent::LogLines(vec![line])),
+            Action::Render
+        );
+        assert_eq!(app.logs_state.as_ref().unwrap().lines.len(), 1);
     }
 }

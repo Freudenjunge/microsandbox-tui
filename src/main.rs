@@ -13,7 +13,6 @@
 //! event to [`App::handle_event`], and re-renders when the returned [`Action`]
 //! says so.
 
-use std::collections::HashMap;
 use std::io::{Stdout, stdout};
 use std::time::Duration;
 
@@ -26,6 +25,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt as _;
 
 mod actions;
 mod app;
@@ -34,11 +34,10 @@ mod event;
 mod models;
 mod ui;
 
-use app::{App, View};
+use app::{App, Op, View};
 use backend::MsbBackend;
 use backend::cli::CliBackend;
 use event::{Action, AppEvent, poll_events};
-use models::PublishedPort;
 
 /// Polling interval for the sandbox list (`msb ls`).
 const SANDBOX_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -138,7 +137,7 @@ async fn run(cli: Cli) -> Result<()> {
     );
 
     // Input poller: crossterm keys + ticks.
-    let input_tx = event_tx;
+    let input_tx = event_tx.clone();
     tokio::spawn(async move {
         if let Err(e) = poll_events(input_tx).await {
             // Best-effort: if the receiver is gone the main loop will exit
@@ -149,26 +148,176 @@ async fn run(cli: Cli) -> Result<()> {
 
     // ---- main event loop ----
 
-    // Ports data keyed by sandbox name (populated lazily when entering the
-    // Ports view). In Phase 1 this stays empty until an inspect call lands;
-    // for now the view renders "No published ports".
-    let ports_cache: HashMap<String, Vec<PublishedPort>> = HashMap::new();
+    // Abort handle + identity of the running log-tail task (one at a time).
+    let mut log_task: Option<(String, tokio::sync::oneshot::Sender<()>)> = None;
+    // Name of the sandbox whose ports we last fetched (avoids refetching).
+    let mut ports_fetched_for: Option<String> = None;
 
     while let Some(event) = event_rx.recv().await {
         let action = app.handle_event(event);
-        match action {
-            Action::Quit => break,
-            Action::Render | Action::Continue => {
-                render(&mut guard.terminal, &app, &ports_cache)?;
-                if app.quit {
-                    break;
-                }
-            }
+        if action == Action::Quit {
+            break;
         }
+
+        // Resolve queued ops / create specs by spawning backend tasks.
+        if let Some(op) = app.take_op() {
+            run_op(op, &backend, event_tx.clone());
+        }
+        if let Some(spec) = app.take_create_spec() {
+            run_create(spec, &backend, event_tx.clone());
+        }
+
+        // Entering the Logs view: start a live tail task for this sandbox.
+        let logs_name = app.logs_state.as_ref().map(|s| s.sandbox_name.clone());
+        match (&app.view, logs_name) {
+            (View::Logs, Some(name))
+                if log_task.as_ref().map(|(n, _)| n.as_str()) != Some(name.as_str()) =>
+            {
+                // Different sandbox than the running task: abort and respawn.
+                if let Some((_, abort)) = log_task.take() {
+                    let _ = abort.send(());
+                }
+                let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
+                let tx = event_tx.clone();
+                let backend = backend.clone();
+                let task_name = name.clone();
+                tokio::spawn(async move {
+                    let mut abort_rx = abort_rx;
+                    match backend.logs_follow(&name).await {
+                        Ok(mut stream) => {
+                            loop {
+                                tokio::select! {
+                                    _ = &mut abort_rx => break,
+                                    line = stream.next() => match line {
+                                        Some(line) => {
+                                            if tx.send(AppEvent::LogLines(vec![line])).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => break,
+                                    }
+                                }
+                            }
+                            let _ = tx.send(AppEvent::LogsEnded).await;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::Error(format!("logs: {e}"))).await;
+                        }
+                    }
+                });
+                log_task = Some((task_name, abort_tx));
+            }
+            _ => {}
+        }
+
+        // Leaving the Logs view: stop the tail task.
+        if app.view != View::Logs
+            && app.logs_state.is_none()
+            && let Some((_, abort)) = log_task.take()
+        {
+            let _ = abort.send(());
+        }
+
+        // Entering the Ports view: fetch ports once per sandbox.
+        if app.view == View::Ports
+            && let Some(sbx) = app.selected_sandbox()
+            && ports_fetched_for.as_deref() != Some(sbx.name.as_str())
+        {
+            ports_fetched_for = Some(sbx.name.clone());
+            let tx = event_tx.clone();
+            let backend = backend.clone();
+            let name = sbx.name.clone();
+            tokio::spawn(async move {
+                match backend.inspect(&name).await {
+                    Ok(insp) => {
+                        let _ = tx
+                            .send(AppEvent::PortsUpdated {
+                                name,
+                                ports: insp.active_config.network.ports,
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Error(format!("ports: {e}"))).await;
+                    }
+                }
+            });
+        }
+
+        render(&mut guard.terminal, &app)?;
+        if app.quit {
+            break;
+        }
+    }
+
+    // Stop the log task on exit.
+    if let Some((_, abort)) = log_task.take() {
+        let _ = abort.send(());
     }
 
     // TerminalGuard::drop restores the terminal.
     Ok(())
+}
+
+/// Execute a confirmed lifecycle/exec operation on a background task,
+/// reporting completion or failure through the event channel.
+fn run_op(op: Op, backend: &std::sync::Arc<CliBackend>, tx: mpsc::Sender<AppEvent>) {
+    let backend = backend.clone();
+    let describe = op.describe();
+    tokio::spawn(async move {
+        let res = match &op {
+            Op::Start(name) => actions::start_sandbox(backend.as_ref(), name)
+                .await
+                .map(|_| format!("started {name}")),
+            Op::Stop(name) => actions::stop_sandbox(backend.as_ref(), name)
+                .await
+                .map(|_| format!("stopped {name}")),
+            Op::Restart(name) => actions::restart_sandbox(backend.as_ref(), name)
+                .await
+                .map(|_| format!("restarted {name}")),
+            Op::Remove(name) => actions::remove_sandbox(backend.as_ref(), name)
+                .await
+                .map(|_| format!("removed {name}")),
+            Op::Exec { name, cmd } => match backend.exec(name, cmd).await {
+                Ok(output) => {
+                    let _ = tx
+                        .send(AppEvent::ExecDone {
+                            name: name.clone(),
+                            output,
+                        })
+                        .await;
+                    return;
+                }
+                Err(e) => Err(e),
+            },
+        };
+        let event = match res {
+            Ok(msg) => AppEvent::OpDone(msg),
+            Err(e) => AppEvent::Error(format!("{describe} — failed: {e}")),
+        };
+        let _ = tx.send(event).await;
+    });
+}
+
+/// Create a sandbox from a validated form spec, reporting the outcome.
+fn run_create(
+    spec: crate::backend::CreateSpec,
+    backend: &std::sync::Arc<CliBackend>,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    let backend = backend.clone();
+    tokio::spawn(async move {
+        match actions::create_sandbox(backend.as_ref(), &spec).await {
+            Ok(name) => {
+                let _ = tx.send(AppEvent::OpDone(format!("created {name}"))).await;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(AppEvent::Error(format!("create failed: {e}")))
+                    .await;
+            }
+        }
+    });
 }
 
 /// Future returned by a poller closure.
@@ -210,11 +359,7 @@ fn spawn_poller(
 }
 
 /// Render the current view based on `app.view`.
-fn render(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &App,
-    ports_cache: &HashMap<String, Vec<PublishedPort>>,
-) -> Result<()> {
+fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
         match app.view {
@@ -223,7 +368,7 @@ fn render(
                     frame,
                     &app.sandboxes,
                     &app.metrics,
-                    ports_cache,
+                    &app.ports,
                     app.selected,
                     app.error.as_deref(),
                     area,
@@ -232,27 +377,18 @@ fn render(
             View::Help => {
                 ui::render_help(frame, area);
             }
-            View::Create => {
-                ui::render_placeholder(frame, "Create form — Task 6", area);
-            }
-            View::Logs => {
-                if let Some(sbx) = app.selected_sandbox() {
-                    let state = ui::logs::LogsState::new(&sbx.name);
-                    ui::render_logs_panel(frame, &state, area);
-                } else {
-                    ui::render_placeholder(frame, "Logs", area);
-                }
-            }
-            View::Ports => {
-                if let Some(sbx) = app.selected_sandbox() {
-                    let ports = ports_cache.get(&sbx.name).cloned().unwrap_or_default();
-                    let mut state = ui::ports::PortsState::new(&sbx.name);
-                    state.update_ports(ports);
-                    ui::render_ports(frame, &state, area);
-                } else {
-                    ui::render_placeholder(frame, "Ports", area);
-                }
-            }
+            View::Create => match &app.create_form {
+                Some(form) => ui::create::render_create_form(frame, form, area),
+                None => ui::render_placeholder(frame, "Create", area),
+            },
+            View::Logs => match &app.logs_state {
+                Some(state) => ui::logs::render_logs(frame, state, area),
+                None => ui::render_placeholder(frame, "Logs", area),
+            },
+            View::Ports => match &app.ports_state {
+                Some(state) => ui::ports::render_ports(frame, state, area),
+                None => ui::render_placeholder(frame, "Ports", area),
+            },
             View::Inspect => {
                 let title = match app.selected_sandbox() {
                     Some(sbx) => format!("Inspect: {}", sbx.name),
@@ -260,6 +396,11 @@ fn render(
                 };
                 ui::render_placeholder(frame, &title, area);
             }
+        }
+
+        // Confirmation dialog overlays any view.
+        if let Some(op) = &app.confirm {
+            ui::render_confirm(frame, &op.describe(), area);
         }
     })?;
     Ok(())

@@ -14,7 +14,7 @@ use crate::models::{
     Image, Metrics, SandboxInspect, SandboxState, SandboxStatusRow, SandboxSummary, Volume,
 };
 
-use super::{CreateSpec, LogEntry, LogLine, LogStream, MsbBackend};
+use super::{CreateSpec, ExecOutput, LogEntry, LogLine, LogStream, MsbBackend};
 
 /// Backend that shells out to the user's installed `msb` CLI.
 #[derive(Debug, Clone)]
@@ -174,6 +174,28 @@ impl MsbBackend for CliBackend {
         });
         let stream: LogStream = Box::pin(stream);
         Ok(stream)
+    }
+
+    async fn exec(&self, name: &str, cmd: &[String]) -> Result<ExecOutput> {
+        // `msb exec <name> -- <cmd...>`: stdout and stderr are captured
+        // separately (verified on msb 0.7.2), stdin is closed.
+        let cmd_strs: Vec<&str> = std::iter::once(name)
+            .chain(std::iter::once("--"))
+            .chain(cmd.iter().map(String::as_str))
+            .collect();
+        let out = self
+            .cmd(&cmd_strs)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .with_context(|| format!("failed to spawn: msb exec {name}"))?;
+
+        Ok(ExecOutput {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            exit_code: out.status.code().unwrap_or(-1),
+        })
     }
 }
 

@@ -20,7 +20,7 @@ use crate::models::{
     SandboxState, SandboxStatusRow, SandboxSummary, Volume,
 };
 
-use super::{CreateSpec, LogStream, MsbBackend};
+use super::{CreateSpec, ExecOutput, LogStream, MsbBackend};
 
 /// One fake sandbox entry.
 #[derive(Debug, Clone)]
@@ -46,6 +46,7 @@ pub enum Call {
     Remove(String),
     Create(Box<CreateSpec>),
     LogsFollow(String),
+    Exec { name: String, cmd: Vec<String> },
 }
 
 /// In-memory backend for unit tests.
@@ -542,6 +543,24 @@ impl MsbBackend for FakeBackend {
         let stream = tokio_stream::empty();
         Ok(Box::pin(stream))
     }
+
+    async fn exec(&self, name: &str, cmd: &[String]) -> Result<ExecOutput> {
+        let mut g = self.inner.lock().await;
+        g.calls.push(Call::Exec {
+            name: name.to_string(),
+            cmd: cmd.to_vec(),
+        });
+        let sbx = g
+            .sandboxes
+            .get(name)
+            .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
+        let _ = sbx;
+        Ok(ExecOutput {
+            stdout: format!("[fake exec] {cmd:?} in {name}\n"),
+            stderr: String::new(),
+            exit_code: 0,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -597,5 +616,26 @@ mod tests {
         assert_eq!(spec.image, "alpine");
         assert_eq!(spec.ports.len(), 2);
         assert_eq!(spec.ports[0].host_port, 8080);
+    }
+
+    #[tokio::test]
+    async fn exec_records_call_and_returns_output() {
+        let b = FakeBackend::with_fixture_sandbox();
+        let out = b
+            .exec("tui-fixture", &["echo".to_string(), "hi".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(calls_contains_exec(&b, "tui-fixture", &["echo", "hi"]).await);
+
+        // Unknown sandbox errors.
+        assert!(b.exec("ghost", &["true".to_string()]).await.is_err());
+    }
+
+    async fn calls_contains_exec(b: &FakeBackend, name: &str, cmd: &[&str]) -> bool {
+        b.calls().await.iter().any(|c| {
+            matches!(c, Call::Exec { name: n, cmd: v }
+                if n == name && v.iter().map(String::as_str).collect::<Vec<_>>() == cmd)
+        })
     }
 }

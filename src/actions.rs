@@ -12,7 +12,7 @@
 use anyhow::{Context, Result};
 
 use crate::backend::fake::spec_from_config;
-use crate::backend::{CreateSpec, LogStream, MsbBackend};
+use crate::backend::{CreateSpec, ExecOutput, LogStream, MsbBackend};
 use crate::models::PublishedPort;
 
 /// Outcome of [`publish_port`] / [`unpublish_port`]: whether the sandbox was
@@ -141,9 +141,23 @@ pub async fn stream_logs(backend: &dyn MsbBackend, name: &str) -> Result<LogStre
     backend.logs_follow(name).await
 }
 
+/// Run a command inside a sandbox and capture its output.
+pub async fn exec_sandbox(
+    backend: &dyn MsbBackend,
+    name: &str,
+    cmd: &[String],
+) -> Result<ExecOutput> {
+    backend.exec(name, cmd).await
+}
+
 // ---- internal helpers ----
 
-/// Shared recreate logic: stop → create(replace) → start.
+/// Shared recreate logic for msb 0.7.2, which has no `create --replace` flag
+/// (verified: name collisions always error). The flow is therefore:
+/// stop → remove → create (same name) → start.
+///
+/// The rootfs resets on recreate (volume data persists); callers must warn
+/// the user before invoking this.
 async fn recreate_with_ports(
     backend: &dyn MsbBackend,
     name: &str,
@@ -154,6 +168,11 @@ async fn recreate_with_ports(
         .stop(name)
         .await
         .with_context(|| format!("stop {name} for recreate"))?;
+
+    backend
+        .remove(name)
+        .await
+        .with_context(|| format!("remove {name} for recreate"))?;
 
     let spec = spec_from_config(cfg, ports);
     backend
@@ -250,21 +269,27 @@ mod tests {
         assert_eq!(result, PublishResult::Recreated);
 
         let calls = b.calls().await;
-        // Expected: inspect, stop, create, start
+        // Expected: inspect, stop, remove, create, start (0.7.2 has no
+        // `create --replace`; recreate = rm then create with the same name).
         let seq: Vec<&Call> = calls
             .iter()
             .filter(|c| {
                 matches!(
                     c,
-                    Call::Inspect(_) | Call::Stop(_) | Call::Create(_) | Call::Start(_)
+                    Call::Inspect(_)
+                        | Call::Stop(_)
+                        | Call::Remove(_)
+                        | Call::Create(_)
+                        | Call::Start(_)
                 )
             })
             .collect();
-        assert!(seq.len() >= 4, "expected at least 4 calls, got {seq:?}");
+        assert!(seq.len() >= 5, "expected at least 5 calls, got {seq:?}");
         assert!(matches!(seq[0], Call::Inspect(n) if n == "tui-fixture"));
         assert!(matches!(seq[1], Call::Stop(n) if n == "tui-fixture"));
-        assert!(matches!(seq[2], Call::Create(_)));
-        assert!(matches!(seq[3], Call::Start(n) if n == "tui-fixture"));
+        assert!(matches!(seq[2], Call::Remove(n) if n == "tui-fixture"));
+        assert!(matches!(seq[3], Call::Create(_)));
+        assert!(matches!(seq[4], Call::Start(n) if n == "tui-fixture"));
     }
 
     #[tokio::test]
@@ -374,6 +399,20 @@ mod tests {
     }
 
     // ---- start/stop/restart ----
+
+    #[tokio::test]
+    async fn exec_sandbox_delegates_and_formats_errors() {
+        let b = FakeBackend::with_fixture_sandbox();
+        let out = exec_sandbox(&b, "tui-fixture", &["echo".into(), "hi".into()]).await;
+        assert!(out.is_ok());
+
+        let calls = b.calls().await;
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, Call::Exec { name, .. } if name == "tui-fixture"))
+        );
+    }
 
     #[tokio::test]
     async fn stop_sandbox_calls_backend_stop() {

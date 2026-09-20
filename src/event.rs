@@ -19,7 +19,8 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time;
 
-use crate::models::{Metrics, SandboxSummary};
+use crate::backend::{ExecOutput, LogLine};
+use crate::models::{Metrics, PublishedPort, SandboxSummary};
 
 /// Events the app cares about (abstracted over crossterm + background pollers).
 #[derive(Debug)]
@@ -34,6 +35,21 @@ pub enum AppEvent {
     MetricsUpdated(Vec<Metrics>),
     /// An async error occurred (shown on the status line).
     Error(String),
+    /// A long-running msb operation finished successfully.
+    OpDone(String),
+    /// New log lines arrived for the logs view.
+    LogLines(Vec<LogLine>),
+    /// The log stream ended (child exited).
+    LogsEnded,
+    /// Images list was refreshed (used by the create form autocomplete).
+    ImagesUpdated(Vec<String>),
+    /// Ports for a sandbox were refreshed (used by the ports view).
+    PortsUpdated {
+        name: String,
+        ports: Vec<PublishedPort>,
+    },
+    /// Output of a completed exec command.
+    ExecDone { name: String, output: ExecOutput },
 }
 
 /// What the main loop should do after handling an event.

@@ -119,10 +119,13 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 - **Publish**: prompts for `HOST:GUEST` (or `BIND:HOST:GUEST`), then:
   1. Read current config via `msb inspect --format json`
   2. Stop the sandbox: `msb stop <name>`
-  3. Recreate with old config + new port: `msb create --replace --name <name> -p <new> ... <image>`
-  4. Start: `msb start <name>`
+  3. Remove it: `msb rm <name>`
+  4. Recreate with old config + new port: `msb create --name <name> -p <new> ... <image>`
+  5. Start: `msb start <name>`
   - ⚠️ Warns that recreation is required (microsandbox 0.7.2 can't modify ports live).
     Volume data survives; rootfs state resets unless snapshotted.
+  - NOTE: 0.7.2 has no `create --replace` flag (name collisions always error), so
+    recreate = remove + create with the same name.
 - **Unpublish**: same recreate flow, minus the port
 - Future: if `msb modify` gains `--port` support, switch to live modify
 
@@ -344,10 +347,10 @@ only CPUs, memory, env, labels, secrets, and workdir.
 1. `msb inspect <name> --format json` → read full `active_config`
 2. Compute new config (add/remove port, add/remove rule)
 3. `msb stop <name>`
-4. Build `msb create --replace --name <name>` command with all original flags
-   plus the change
-5. `msb start <name>`
-6. Warn user: rootfs state resets on recreate. Volume data persists. To preserve
+4. `msb rm <name>` (0.7.2 has no `create --replace`; a name collision errors out)
+5. Build `msb create --name <name>` command with all original flags plus the change
+6. `msb start <name>`
+7. Warn user: rootfs state resets on recreate. Volume data persists. To preserve
    rootfs state, snapshot first (`msb snapshot create --from-sandbox <name>`)
 
 This is a known limitation. If `msb modify` gains `--port` / `--net-rule` in a

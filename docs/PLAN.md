@@ -27,8 +27,8 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 ### 3. High-level actions
 - [x] Add `src/actions.rs` with user-facing operations:
   - `create_sandbox`, `stop_sandbox`, `start_sandbox`, `restart_sandbox`, `remove_sandbox`
-  - `exec_in_sandbox`, `stream_logs`
-  - `publish_port`, `unpublish_port` (stop → recreate → start with warning)
+  - `exec_sandbox`, `stream_logs`
+  - `publish_port`, `unpublish_port` (stop → remove → recreate → start with warning)
 - [x] Unit-test the recreate flow against `FakeBackend`.
 
 ### 4. App state + event loop
@@ -43,7 +43,7 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 ### 6. Create-sandbox form
 - [x] Implement `src/ui/create.rs` with fields for image, name, CPUs, memory, workdir, ports, volumes, env vars, network profile.
 - [x] Image autocomplete from `list_images`.
-- [ ] On submit, call `actions::create_sandbox` and return to dashboard with spinner/status.
+- [x] On submit, call `actions::create_sandbox` and return to dashboard with spinner/status.
 
 ### 7. Logs panel
 - [x] Implement `src/ui/logs.rs`: stream `msb logs -f --json` in a long-lived task, render with timestamps.
@@ -61,6 +61,11 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - [x] Add `cargo test` and `cargo run -- --help` smoke tests in CI (`.github/workflows/ci.yml`).
 
 ### 11. Final Phase 1 polish
-- [ ] Ensure all Phase 1 code compiles with `cargo clippy -- -D warnings` and `cargo test`.
-- [ ] Update `docs/DESIGN.md` with any deviations discovered during implementation.
-- [ ] Update this plan: mark all tasks `[x]` and write a brief Phase 1 completion note.
+- [x] Ensure all Phase 1 code compiles with `cargo clippy -- -D warnings` and `cargo test`.
+- [x] Update `docs/DESIGN.md` with any deviations discovered during implementation.
+- [x] Update this plan: mark all tasks `[x]` and write a brief Phase 1 completion note.
+
+**Phase 1 complete.** 136 unit tests, all gates green. Deviations recorded:
+- msb 0.7.2 has no `create --replace`; recreate = stop → rm → create → start (updated in AGENTS.md/DESIGN.md).
+- Exec in Phase 1 runs a demo command via the confirm dialog; free-form exec input is Phase 2.
+- Log tail task is spawned when the Logs view opens and aborted on leave (one sandbox at a time).

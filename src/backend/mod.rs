@@ -128,6 +128,23 @@ pub trait MsbBackend: Send + Sync {
     /// Spawn `msb logs <name> -f --json`, returning a stream of decoded lines.
     /// Dropping the returned stream kills the child process.
     async fn logs_follow(&self, name: &str) -> Result<LogStream>;
+
+    /// Run a command inside a sandbox via `msb exec` and capture its output.
+    ///
+    /// Non-interactive: stdin is not connected, stdout and stderr are
+    /// captured separately, and the command's exit code is returned.
+    async fn exec(&self, name: &str, cmd: &[String]) -> Result<ExecOutput>;
+}
+
+/// The result of running a command inside a sandbox via `msb exec`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecOutput {
+    /// Captured stdout of the command.
+    pub stdout: String,
+    /// Captured stderr of the command (`msb exec` separates the streams).
+    pub stderr: String,
+    /// Process exit code of the executed command.
+    pub exit_code: i32,
 }
 
 /// Creation parameters for [`MsbBackend::create`].

@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -431,14 +431,17 @@ impl CreateForm {
 
     /// Remove the selected item from the active list, adjusting selection.
     fn remove_selected_item(&mut self) {
+        let selected = self.list_selected;
         let items = self.active_list_mut();
-        if !items.is_empty() && self.list_selected < items.len() {
-            items.remove(self.list_selected);
-            if items.is_empty() {
-                self.list_selected = 0;
-            } else if self.list_selected >= items.len() {
-                self.list_selected = items.len() - 1;
-            }
+        if !items.is_empty() && selected < items.len() {
+            items.remove(selected);
+            self.list_selected = if items.is_empty() {
+                0
+            } else if selected >= items.len() {
+                items.len() - 1
+            } else {
+                selected
+            };
         }
     }
 
@@ -538,8 +541,7 @@ fn is_valid_memory(s: &str) -> bool {
     let last = bytes[bytes.len() - 1];
     if last.is_ascii_alphabetic() {
         let num = &s[..s.len() - 1];
-        num.parse::<u64>().is_ok()
-            && matches!(last.to_ascii_uppercase(), b'K' | b'M' | b'G' | b'T')
+        num.parse::<u64>().is_ok() && matches!(last.to_ascii_uppercase(), b'K' | b'M' | b'G' | b'T')
     } else {
         s.parse::<u64>().is_ok()
     }
@@ -791,11 +793,7 @@ fn list_field_lines(
     } else {
         Style::default().fg(Color::Gray)
     };
-    let hint = if active {
-        "  [+ Add]  [- Remove]"
-    } else {
-        ""
-    };
+    let hint = if active { "  [+ Add]  [- Remove]" } else { "" };
     lines.push(Line::from(vec![
         Span::styled(format!("  {label:<8}:"), label_style),
         Span::styled(hint, Style::default().fg(Color::DarkGray)),
@@ -823,10 +821,7 @@ fn list_field_lines(
     if active {
         lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled(
-                format!("  [{input}█]"),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(format!("  [{input}█]"), Style::default().fg(Color::Yellow)),
         ]));
     }
 
