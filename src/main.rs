@@ -1,5 +1,7 @@
 use clap::Parser;
 
+mod models;
+
 /// A Docker sbx-style TUI for microsandbox.
 #[derive(Parser, Debug)]
 #[command(name = "msb-tui", version, about)]
@@ -22,6 +24,9 @@ fn main() -> anyhow::Result<()> {
 
     // TODO: bootstrap terminal, init app state, run event loop
     eprintln!("microsandbox-tui — not yet implemented");
-    eprintln!("Run `msb-tui{}` to see the design.", if cli.create { " --create" } else { "" });
+    eprintln!(
+        "Run `msb-tui{}` to see the design.",
+        if cli.create { " --create" } else { "" }
+    );
     Ok(())
 }

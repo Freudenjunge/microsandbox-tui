@@ -5,14 +5,14 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 ## Task List
 
 ### 1. Data models + fixtures
-- [ ] Add `src/models.rs` with serde structs for `SandboxSummary`, `SandboxConfig`, `PublishedPort`, `NetworkConfig`, `Mount`, `Resources`, `Metrics`, `Volume`, `Image`, `EnvVar`, `RuntimeConfig`, `Lifecycle`, `ImageConfig`.
-- [ ] Add real captured JSON fixtures under `src/fixtures/`:
+- [x] Add `src/models.rs` with serde structs for `SandboxSummary`, `SandboxConfig`, `PublishedPort`, `NetworkConfig`, `Mount`, `Resources`, `Metrics`, `Volume`, `Image`, `EnvVar`, `RuntimeConfig`, `Lifecycle`, `ImageConfig`.
+- [x] Add real captured JSON fixtures under `src/fixtures/`:
   - `sandbox-list.json`
   - `sandbox-inspect.json`
   - `metrics.json`
   - `volumes.json`
   - `images.json`
-- [ ] Write unit tests that parse every fixture and assert all expected fields.
+- [x] Write unit tests that parse every fixture and assert all expected fields.
 
 ### 2. Backend trait + CLI implementation
 - [ ] Define `MsbBackend` trait in `src/backend/mod.rs` with async methods:

@@ -1,0 +1,22 @@
+[
+  {
+    "cpu_percent": 0.32427993416786194,
+    "cpus": 2,
+    "disk_read_bytes": 254976,
+    "disk_write_bytes": 24576,
+    "memory_available_bytes": 745865216,
+    "memory_bytes": 59441152,
+    "memory_host_resident_bytes": 52428800,
+    "memory_limit_bytes": 805306368,
+    "name": "tui-fixture",
+    "net_rx_bytes": 0,
+    "net_tx_bytes": 596,
+    "state": "running",
+    "timestamp": "2026-09-20T08:49:17.539+00:00",
+    "upper_free_bytes": 4135186432,
+    "upper_host_allocated_bytes": 1400832,
+    "upper_used_bytes": 69632,
+    "uptime_secs": 4.482,
+    "vcpu_time_ns": 203536099
+  }
+]

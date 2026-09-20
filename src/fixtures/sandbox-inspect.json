@@ -1,0 +1,230 @@
+{
+  "active_config": {
+    "deployment_profile": "single_tenant",
+    "env": [
+      {
+        "key": "PATH",
+        "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      },
+      {
+        "key": "APP_ENV",
+        "value": "dev"
+      }
+    ],
+    "external_mount_policy": "strict",
+    "image": {
+      "Oci": {
+        "reference": "alpine",
+        "root_disk": {
+          "kind": "managed",
+          "size_mib": 4096
+        }
+      }
+    },
+    "init": null,
+    "labels": {
+      "app": "demo"
+    },
+    "lifecycle": {
+      "ephemeral": false,
+      "idle_timeout_secs": null,
+      "max_duration_secs": null
+    },
+    "manifest_digest": "sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395",
+    "mounts": [
+      {
+        "follow_root_symlinks": false,
+        "guest": "/data",
+        "host_permissions": "private",
+        "name": "tui-data",
+        "options": {
+          "nodev": false,
+          "noexec": false,
+          "nosuid": false,
+          "readonly": false
+        },
+        "stat_virtualization": "strict",
+        "type": "Named"
+      },
+      {
+        "follow_root_symlinks": false,
+        "guest": "/mnt/src",
+        "host": "/tmp/opencode/probe-src",
+        "host_permissions": "private",
+        "options": {
+          "nodev": false,
+          "noexec": false,
+          "nosuid": false,
+          "readonly": true
+        },
+        "quota_mib": null,
+        "stat_virtualization": "strict",
+        "type": "Bind"
+      }
+    ],
+    "name": "tui-fixture",
+    "network": {
+      "enabled": true,
+      "max_connections": null,
+      "ports": [
+        {
+          "guest_port": 80,
+          "host_bind": "127.0.0.1",
+          "host_port": 8080,
+          "protocol": "tcp"
+        },
+        {
+          "guest_port": 90,
+          "host_bind": "0.0.0.0",
+          "host_port": 9090,
+          "protocol": "udp"
+        }
+      ],
+      "strict": false,
+      "trust_host_cas": false
+    },
+    "patches": [],
+    "pull_policy": "IfMissing",
+    "resources": {
+      "cpus": 2,
+      "max_cpus": 2,
+      "max_memory_mib": 768,
+      "memory_mib": 768
+    },
+    "rlimits": [],
+    "runtime": {
+      "cmd": [
+        "/bin/sh"
+      ],
+      "disable_metrics_sample": false,
+      "entrypoint": null,
+      "hostname": null,
+      "log_level": null,
+      "metrics_sample_interval_ms": 1000,
+      "scripts": {},
+      "shell": "/bin/sh",
+      "user": null,
+      "workdir": "/"
+    },
+    "security_profile": "default"
+  },
+  "config": {
+    "deployment_profile": "single_tenant",
+    "env": [
+      {
+        "key": "PATH",
+        "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      },
+      {
+        "key": "APP_ENV",
+        "value": "dev"
+      }
+    ],
+    "external_mount_policy": "strict",
+    "image": {
+      "Oci": {
+        "reference": "alpine",
+        "root_disk": {
+          "kind": "managed",
+          "size_mib": 4096
+        }
+      }
+    },
+    "init": null,
+    "labels": {
+      "app": "demo"
+    },
+    "lifecycle": {
+      "ephemeral": false,
+      "idle_timeout_secs": null,
+      "max_duration_secs": null
+    },
+    "manifest_digest": "sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395",
+    "mounts": [
+      {
+        "follow_root_symlinks": false,
+        "guest": "/data",
+        "host_permissions": "private",
+        "name": "tui-data",
+        "options": {
+          "nodev": false,
+          "noexec": false,
+          "nosuid": false,
+          "readonly": false
+        },
+        "stat_virtualization": "strict",
+        "type": "Named"
+      },
+      {
+        "follow_root_symlinks": false,
+        "guest": "/mnt/src",
+        "host": "/tmp/opencode/probe-src",
+        "host_permissions": "private",
+        "options": {
+          "nodev": false,
+          "noexec": false,
+          "nosuid": false,
+          "readonly": true
+        },
+        "quota_mib": null,
+        "stat_virtualization": "strict",
+        "type": "Bind"
+      }
+    ],
+    "name": "tui-fixture",
+    "network": {
+      "enabled": true,
+      "max_connections": null,
+      "ports": [
+        {
+          "guest_port": 80,
+          "host_bind": "127.0.0.1",
+          "host_port": 8080,
+          "protocol": "tcp"
+        },
+        {
+          "guest_port": 90,
+          "host_bind": "0.0.0.0",
+          "host_port": 9090,
+          "protocol": "udp"
+        }
+      ],
+      "strict": false,
+      "trust_host_cas": false
+    },
+    "patches": [],
+    "pull_policy": "IfMissing",
+    "resources": {
+      "cpus": 2,
+      "max_cpus": 2,
+      "max_memory_mib": 768,
+      "memory_mib": 768
+    },
+    "rlimits": [],
+    "runtime": {
+      "cmd": [
+        "/bin/sh"
+      ],
+      "disable_metrics_sample": false,
+      "entrypoint": null,
+      "hostname": null,
+      "log_level": null,
+      "metrics_sample_interval_ms": 1000,
+      "scripts": {},
+      "shell": "/bin/sh",
+      "user": null,
+      "workdir": "/"
+    },
+    "security_profile": "default"
+  },
+  "created_at": "2026-09-20T08:49:13.053037925+00:00",
+  "name": "tui-fixture",
+  "pause": {
+    "capture_unavailable": null,
+    "paused": false,
+    "recovery_required": false
+  },
+  "pending_changes": [],
+  "status": "Running",
+  "updated_at": "2026-09-20T08:49:13.533795917+00:00"
+}

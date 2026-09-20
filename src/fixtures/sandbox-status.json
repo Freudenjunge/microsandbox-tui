@@ -1,0 +1,15 @@
+{
+  "command": "\"/bin/sh\"",
+  "cpus": 2,
+  "image": "alpine",
+  "max_cpus": 2,
+  "max_memory_mib": 768,
+  "memory_mib": 768,
+  "name": "tui-fixture",
+  "ports": [
+    "127.0.0.1:8080->80/tcp",
+    "0.0.0.0:9090->90/udp"
+  ],
+  "status": "Running",
+  "thp": "madvise"
+}
