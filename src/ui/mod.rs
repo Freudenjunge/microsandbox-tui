@@ -34,7 +34,12 @@ pub fn render_dashboard(
     error: Option<&str>,
     area: Rect,
 ) {
-    dashboard::render(frame, sandboxes, metrics, ports, selected, error, area);
+    let banner = crate::runtime::banner_text();
+    let status = dashboard::StatusLines {
+        banner: banner.as_deref(),
+        error,
+    };
+    dashboard::render(frame, sandboxes, metrics, ports, selected, status, area);
 }
 
 /// Render the help overlay (centered keybinding table).

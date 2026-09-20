@@ -37,8 +37,9 @@ mod ui;
 
 use app::{App, Op, View};
 use backend::MsbBackend;
-use backend::cli::CliBackend;
+use backend::sdk::SdkBackend;
 use event::{Action, AppEvent, poll_events};
+use std::sync::Arc;
 
 /// Polling interval for the sandbox list (`msb ls`).
 const SANDBOX_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -83,9 +84,11 @@ impl Drop for TerminalGuard {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Verify msb is installed and on PATH (CliBackend::new does this too, but
-    // we do it here first for a clean error before touching the terminal).
-    CliBackend::new()?;
+    // Fail cleanly before touching the terminal if the SDK cannot initialize.
+    if let Err(e) = SdkBackend::new() {
+        eprintln!("failed to initialize microsandbox SDK: {e:#}");
+        std::process::exit(1);
+    }
 
     // tokio runtime drives the pollers + event loop.
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -96,7 +99,7 @@ fn main() -> Result<()> {
 
 /// Run the TUI: set up the terminal, spawn pollers, and enter the event loop.
 async fn run(cli: Cli) -> Result<()> {
-    let backend = std::sync::Arc::new(CliBackend::new()?);
+    let backend = Arc::new(SdkBackend::new()?);
 
     let mut guard = TerminalGuard::enter()?;
     let mut app = App::new();
@@ -262,7 +265,7 @@ async fn run(cli: Cli) -> Result<()> {
 
 /// Execute a confirmed lifecycle/exec operation on a background task,
 /// reporting completion or failure through the event channel.
-fn run_op(op: Op, backend: &std::sync::Arc<CliBackend>, tx: mpsc::Sender<AppEvent>) {
+fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
     let backend = backend.clone();
     let describe = op.describe();
     tokio::spawn(async move {
@@ -291,6 +294,18 @@ fn run_op(op: Op, backend: &std::sync::Arc<CliBackend>, tx: mpsc::Sender<AppEven
                 }
                 Err(e) => Err(e),
             },
+            Op::InstallRuntime => {
+                crate::runtime::install_or_update()
+                    .await
+                    .map(|outcome| match outcome {
+                        crate::runtime::InstallOutcome::Installed { msb_path } => {
+                            format!("runtime installed: {}", msb_path.display())
+                        }
+                        crate::runtime::InstallOutcome::AlreadyCurrent => {
+                            "runtime already current".to_string()
+                        }
+                    })
+            }
         };
         let event = match res {
             Ok(msg) => AppEvent::OpDone(msg),
@@ -303,7 +318,7 @@ fn run_op(op: Op, backend: &std::sync::Arc<CliBackend>, tx: mpsc::Sender<AppEven
 /// Create a sandbox from a validated form spec, reporting the outcome.
 fn run_create(
     spec: crate::backend::CreateSpec,
-    backend: &std::sync::Arc<CliBackend>,
+    backend: &Arc<SdkBackend>,
     tx: mpsc::Sender<AppEvent>,
 ) {
     let backend = backend.clone();
@@ -324,7 +339,7 @@ fn run_create(
 /// Future returned by a poller closure.
 type PollFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppEvent>> + Send>>;
 /// Poller closure: takes the backend and produces an event future.
-type PollFn = fn(std::sync::Arc<CliBackend>) -> PollFuture;
+type PollFn = fn(Arc<SdkBackend>) -> PollFuture;
 
 /// Spawn a periodic poller that calls `f` on the backend at `interval`,
 /// sending the resulting `AppEvent` into `tx`. Errors are surfaced as
@@ -332,7 +347,7 @@ type PollFn = fn(std::sync::Arc<CliBackend>) -> PollFuture;
 fn spawn_poller(
     tx: mpsc::Sender<AppEvent>,
     interval: Duration,
-    backend: std::sync::Arc<CliBackend>,
+    backend: Arc<SdkBackend>,
     f: PollFn,
     name: &'static str,
 ) {

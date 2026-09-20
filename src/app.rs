@@ -65,6 +65,8 @@ pub enum Op {
     Remove(String),
     /// Run a command in the named sandbox.
     Exec { name: String, cmd: Vec<String> },
+    /// Install or update the host microsandbox runtime to the SDK version.
+    InstallRuntime,
 }
 
 impl Op {
@@ -76,6 +78,12 @@ impl Op {
             Op::Restart(n) => format!("Restart sandbox '{n}'?"),
             Op::Remove(n) => format!("REMOVE sandbox '{n}'? (rootfs is deleted)"),
             Op::Exec { name, cmd } => format!("Run in '{name}': {}", cmd.join(" ")),
+            Op::InstallRuntime => {
+                format!(
+                    "Install/update microsandbox runtime to v{}? (downloads the official bundle)",
+                    crate::runtime::sdk_version()
+                )
+            }
         }
     }
 
@@ -339,6 +347,11 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
+                Action::Render
+            }
+            // Uppercase U: install/update the host runtime (confirm dialog).
+            KeyCode::Char('U') => {
+                self.confirm = Some(Op::InstallRuntime);
                 Action::Render
             }
             KeyCode::Esc => Action::Continue,
@@ -829,6 +842,10 @@ mod tests {
         }
         // Delete on an empty list is also a no-op.
         assert_eq!(app.handle_event(key(KeyCode::Delete)), Action::Continue);
+
+        // U works even with an empty list (runtime may be missing entirely).
+        assert_eq!(app.handle_event(key(KeyCode::Char('U'))), Action::Render);
+        assert_eq!(app.confirm, Some(Op::InstallRuntime));
     }
 
     #[test]

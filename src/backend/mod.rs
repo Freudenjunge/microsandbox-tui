@@ -1,15 +1,13 @@
-//! Backend abstraction over the `msb` CLI.
+//! Backend abstraction over microsandbox.
 //!
-//! NOTE(dead_code): the trait, types, and CLI impl gain runtime callers in
-//! Task 3 (actions) and Task 4 (app). Remove these allows once those land.
+//! The [`MsbBackend`] trait is the seam between UI and the outside world:
+//! [`sdk::SdkBackend`] drives the typed SDK in production; [`fake::FakeBackend`]
+//! serves unit tests.
 
 #![allow(dead_code)]
 
-pub mod cli;
 pub mod fake;
 pub mod sdk;
-#[cfg(test)]
-mod tests;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -18,43 +16,10 @@ use crate::models::{
     Image, Metrics, PublishedPort, SandboxInspect, SandboxStatusRow, SandboxSummary, Volume,
 };
 
-/// One decoded entry of `msb logs --json` (JSON Lines).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LogEntry {
-    /// Entry body, with trailing newline as emitted.
-    pub d: String,
-    /// Session id.
-    pub id: u64,
-    /// Source stream: `stdout`, `stderr`, `output`, `system`.
-    pub s: String,
-    /// RFC 3339 timestamp.
-    pub t: String,
-    /// (unused by CLI today; kept optional for forward compatibility)
-    #[serde(default, skip_serializing)]
-    pub e: Option<serde_json::Value>,
-}
-
-impl LogEntry {
-    /// Parsed timestamp.
-    pub fn timestamp(&self) -> chrono::ParseResult<chrono::DateTime<chrono::Utc>> {
-        chrono::DateTime::parse_from_rfc3339(&self.t).map(chrono::DateTime::<chrono::Utc>::from)
-    }
-
-    /// Source stream (alias, matches models naming).
-    pub fn source(&self) -> &str {
-        &self.s
-    }
-
-    /// Payload data.
-    pub fn data(&self) -> &str {
-        &self.d
-    }
-}
-
-/// A live log line delivered by a follow task.
+/// A live log line delivered to the logs view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogLine {
-    /// Session id from `msb logs --json`.
+    /// Session id (0 for non-session/system entries).
     pub id: u64,
     /// Stream source (stdout/stderr/output/system).
     pub source: String,
@@ -64,85 +29,68 @@ pub struct LogLine {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-impl From<LogEntry> for LogLine {
-    fn from(e: LogEntry) -> Self {
-        let timestamp = e
-            .timestamp()
-            .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
-        Self {
-            id: e.id,
-            source: e.s,
-            data: e.d,
-            timestamp,
-        }
-    }
-}
-
 /// Operations the TUI performs against microsandbox.
 ///
-/// Implementations: [`cli::CliBackend`] (drives installed `msb`) and a fake for
+/// Implementations: [`sdk::SdkBackend`] (typed SDK, production) and a fake for
 /// unit tests. UI code depends only on this trait.
 #[async_trait]
 pub trait MsbBackend: Send + Sync {
     // ---- read ----
 
-    /// `msb ls --format json` — all sandboxes.
+    /// All sandboxes, newest first.
     async fn list_sandboxes(&self) -> Result<Vec<SandboxSummary>>;
 
-    /// `msb ps <name> --format json` — status row for one sandbox.
+    /// Status row for one sandbox.
     async fn status(&self, name: &str) -> Result<SandboxStatusRow>;
 
-    /// `msb inspect <name> --format json`.
+    /// Full lifecycle info for one sandbox.
     async fn inspect(&self, name: &str) -> Result<SandboxInspect>;
 
-    /// `msb metrics --all --format json` — one sample for every sandbox.
+    /// One metrics sample for every sandbox.
     async fn metrics(&self) -> Result<Vec<Metrics>>;
 
-    /// `msb volumes --format json`.
+    /// All named volumes.
     async fn list_volumes(&self) -> Result<Vec<Volume>>;
 
-    /// `msb images --format json`.
+    /// All cached images.
     async fn list_images(&self) -> Result<Vec<Image>>;
 
     // ---- lifecycle ----
 
-    /// `msb start <name>`.
+    /// Start the named sandbox.
     async fn start(&self, name: &str) -> Result<()>;
 
-    /// `msb stop <name>`.
+    /// Gracefully stop the named sandbox.
     async fn stop(&self, name: &str) -> Result<()>;
 
-    /// `msb restart <name>`.
+    /// Stop and start the named sandbox.
     async fn restart(&self, name: &str) -> Result<()>;
 
-    /// `msb rm <name>` (sandbox must be stopped).
+    /// Remove the named sandbox (must be stopped).
     async fn remove(&self, name: &str) -> Result<()>;
 
     // ---- creation ----
 
-    /// Create a sandbox.
-    ///
-    /// Implementations build the `msb create` invocation from this spec; the
-    /// image command (if any) runs the resolved image default.
+    /// Create a sandbox from this spec; returns the sandbox name.
     async fn create(&self, spec: &CreateSpec) -> Result<String>;
 
-    /// Spawn `msb logs <name> -f --json`, returning a stream of decoded lines.
-    /// Dropping the returned stream kills the child process.
+    /// Stream log lines for one sandbox.
+    /// Dropping the returned stream tears down the follow task.
     async fn logs_follow(&self, name: &str) -> Result<LogStream>;
 
-    /// Run a command inside a sandbox via `msb exec` and capture its output.
+    /// Run a command inside a sandbox and capture its output.
     ///
     /// Non-interactive: stdin is not connected, stdout and stderr are
     /// captured separately, and the command's exit code is returned.
     async fn exec(&self, name: &str, cmd: &[String]) -> Result<ExecOutput>;
 }
 
-/// The result of running a command inside a sandbox via `msb exec`.
+/// The result of running a command inside a sandbox.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecOutput {
     /// Captured stdout of the command.
     pub stdout: String,
-    /// Captured stderr of the command (`msb exec` separates the streams).
+    /// Captured stderr of the command (streams are separated).
     pub stderr: String,
     /// Process exit code of the executed command.
     pub exit_code: i32,
@@ -153,7 +101,7 @@ pub struct ExecOutput {
 pub struct CreateSpec {
     /// OCI image reference (e.g. `alpine`, `python:3.12`).
     pub image: String,
-    /// Sandbox name; empty = let `msb` generate one.
+    /// Sandbox name; `None` = auto-generate one.
     pub name: Option<String>,
     /// vCPU count.
     pub cpus: Option<u32>,
@@ -169,7 +117,7 @@ pub struct CreateSpec {
     pub env: Vec<String>,
     /// Labels, `KEY=VALUE` form.
     pub labels: Vec<String>,
-    /// Network profile(s): `public`, `private`, `host`, or None for msb default.
+    /// Network profile(s): `public`, `private`, `host`, or `None` for default.
     pub net_profile: Option<String>,
     /// Raw `--net-rule` tokens.
     pub net_rules: Vec<String>,
@@ -177,6 +125,9 @@ pub struct CreateSpec {
 
 impl CreateSpec {
     /// Build the `msb create` argument vector (without the `msb` program name).
+    ///
+    /// Retained for the CLI-fallback test surface; the SDK backend maps specs
+    /// onto `SandboxBuilder` directly.
     pub fn to_args(&self) -> Vec<String> {
         let mut args: Vec<String> = Vec::new();
         if let Some(name) = &self.name {
@@ -224,5 +175,5 @@ impl CreateSpec {
     }
 }
 
-/// A handle to a running `msb logs -f` child process.
+/// A follow stream of log lines for one sandbox.
 pub type LogStream = std::pin::Pin<Box<dyn tokio_stream::Stream<Item = LogLine> + Send>>;

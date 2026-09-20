@@ -72,10 +72,13 @@ fn sdk_home_runtime() -> Option<InstalledRuntime> {
     installed_at(msb)
 }
 
-/// A PATH lookup for `msb` (`which`-style via `$PATH` scanning).
+/// A PATH lookup for `msb` (manually scans `$PATH` entries).
 fn path_runtime() -> Option<InstalledRuntime> {
-    let path = which::which("msb").ok()?;
-    installed_at(path)
+    let path = std::env::var_os("PATH")?;
+    let hit = std::env::split_paths(&path)
+        .map(|dir| dir.join("msb"))
+        .find(|candidate| candidate.is_file())?;
+    installed_at(hit)
 }
 
 fn installed_at(path: PathBuf) -> Option<InstalledRuntime> {

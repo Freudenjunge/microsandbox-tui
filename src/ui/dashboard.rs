@@ -24,8 +24,16 @@ const CARD_HEIGHT: u16 = 8;
 /// Footer keybinding hints (dashboard context).
 const FOOTER_HINTS: &str =
     "[c] Create  [e] exec  [l] logs  [p] ports  [r] restart  [x] stop  [Del] rm  [q] quit";
-const FOOTER_HINTS_2: &str =
-    "[enter] inspect  [s] ssh  [n] network  [↑↓] select  [?] help  [Tab] views";
+const FOOTER_HINTS_2: &str = "[enter] inspect  [U] runtime  [↑↓] select  [?] help";
+
+/// Status/message lines drawn under the card grid.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StatusLines<'a> {
+    /// Runtime banner (update available / missing runtime), yellow.
+    pub banner: Option<&'a str>,
+    /// Last error, red.
+    pub error: Option<&'a str>,
+}
 
 /// Render the dashboard into `area`.
 pub fn render(
@@ -34,7 +42,7 @@ pub fn render(
     metrics: &HashMap<String, Metrics>,
     ports: &HashMap<String, Vec<PublishedPort>>,
     selected: usize,
-    error: Option<&str>,
+    status: StatusLines<'_>,
     area: Rect,
 ) {
     let mut constraints = vec![
@@ -42,7 +50,10 @@ pub fn render(
         Constraint::Min(3),    // cards
         Constraint::Length(2), // footer hints
     ];
-    if error.is_some() {
+    if status.banner.is_some() {
+        constraints.push(Constraint::Length(1)); // runtime banner
+    }
+    if status.error.is_some() {
         constraints.push(Constraint::Length(1)); // error line
     }
     let chunks = Layout::vertical(constraints).split(area);
@@ -64,12 +75,22 @@ pub fn render(
     ]);
     frame.render_widget(footer, chunks[2]);
 
-    if let Some(msg) = error {
+    // Runtime banner (update available / missing runtime), then error line.
+    let mut next = 3;
+    if let Some(text) = status.banner {
+        let line = Paragraph::new(Line::from(vec![
+            Span::styled("⬆ ", Style::default().fg(Color::Yellow)),
+            Span::styled(text.to_owned(), Style::default().fg(Color::Yellow)),
+        ]));
+        frame.render_widget(line, chunks[next]);
+        next += 1;
+    }
+    if let Some(msg) = status.error {
         let line = Paragraph::new(Line::from(vec![
             Span::styled("✗ ", Style::default().fg(Color::Red)),
             Span::styled(msg.to_owned(), Style::default().fg(Color::Red)),
         ]));
-        frame.render_widget(line, chunks[3]);
+        frame.render_widget(line, chunks[next]);
     }
 }
 

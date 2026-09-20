@@ -82,6 +82,10 @@ static DASHBOARD_KEYS: &[KeyRow] = &[
         keys: "Delete",
         action: "remove sandbox (confirm)",
     },
+    KeyRow {
+        keys: "U",
+        action: "install/update microsandbox runtime",
+    },
 ];
 
 static LOGS_KEYS: &[KeyRow] = &[
