@@ -21,15 +21,15 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
   - `create`, `exec`, `logs_follow`
   - `list_volumes`, `list_images`
 - [x] Implement `CliBackend` in `src/backend/cli.rs` using `tokio::process::Command` and `--format json`.
-- [ ] Add a `FakeBackend` (in-memory) for unit tests of the action layer.
+- [x] Add a `FakeBackend` (in-memory) for unit tests of the action layer.
 - [x] Write unit tests for CLI command vector generation and JSON parsing.
 
 ### 3. High-level actions
-- [ ] Add `src/actions.rs` with user-facing operations:
+- [x] Add `src/actions.rs` with user-facing operations:
   - `create_sandbox`, `stop_sandbox`, `start_sandbox`, `restart_sandbox`, `remove_sandbox`
   - `exec_in_sandbox`, `stream_logs`
   - `publish_port`, `unpublish_port` (stop → recreate → start with warning)
-- [ ] Unit-test the recreate flow against `FakeBackend`.
+- [x] Unit-test the recreate flow against `FakeBackend`.
 
 ### 4. App state + event loop
 - [x] Add `src/app.rs` with `App` struct holding current view, selected sandbox index, poller handles, last error, and pending action state.

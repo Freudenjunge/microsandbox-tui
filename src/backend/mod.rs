@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod cli;
+pub mod fake;
 #[cfg(test)]
 mod tests;
 
