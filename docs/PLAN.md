@@ -32,8 +32,8 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - [ ] Unit-test the recreate flow against `FakeBackend`.
 
 ### 4. App state + event loop
-- [ ] Add `src/app.rs` with `App` struct holding current view, selected sandbox index, poller handles, last error, and pending action state.
-- [ ] Set up `tokio::select!` event loop in `src/event.rs` (or `app.rs`) combining crossterm events, metric poll ticks, and list poll ticks.
+- [x] Add `src/app.rs` with `App` struct holding current view, selected sandbox index, poller handles, last error, and pending action state.
+- [x] Set up `tokio::select!` event loop in `src/event.rs` (or `app.rs`) combining crossterm events, metric poll ticks, and list poll ticks.
 - [ ] Render a basic frame with status/error line.
 
 ### 5. Dashboard UI

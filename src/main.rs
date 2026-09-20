@@ -1,7 +1,11 @@
 use clap::Parser;
 
+mod actions;
+mod app;
 mod backend;
+mod event;
 mod models;
+mod ui;
 
 /// A Docker sbx-style TUI for microsandbox.
 #[derive(Parser, Debug)]
