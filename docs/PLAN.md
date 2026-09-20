@@ -102,31 +102,41 @@ Verified SDK facts (from crates.io 0.7.2 sources, 2026-09-20):
 - [x] Delete `src/api_probe.rs` (throwaway SDK probe) and its `mod` in `main.rs`.
 
 ### 2. SdkBackend behind the MsbBackend trait
-- [ ] Add `src/backend/sdk.rs`: implement every `MsbBackend` method with the SDK.
-- [ ] Create/start/restart use detached mode (persistence independent of TUI).
-- [ ] Map SDK types → `models.rs` DTOs (anti-corruption layer stays).
-- [ ] Unit-test the testable parts: CreateSpec → SDK builder mapping, DTO
+- [x] Add `src/backend/sdk.rs`: implement every `MsbBackend` method with the SDK.
+- [x] Create/start/restart use detached mode (persistence independent of TUI).
+- [x] Map SDK types → `models.rs` DTOs (anti-corruption layer stays).
+- [x] Unit-test the testable parts: CreateSpec → SDK builder mapping, DTO
       conversions (config→summary/inspect, metrics report→Metrics, ports).
 - [ ] Live behavior verified by manual smoke test (not in CI).
 
 ### 3. Runtime management (install / update / version banner)
-- [ ] Detect installed `msb` version (PATH + `~/.microsandbox/bin`) and compare
+- [x] Detect installed `msb` version (PATH + `~/.microsandbox/bin`) and compare
       against the SDK version (`PREBUILT_VERSION`).
-- [ ] Dashboard banner: installed < SDK → offer update; installed > SDK → hint.
-- [ ] "Install/Update microsandbox" action via `setup::install_runtime`,
+- [x] Dashboard banner: installed < SDK → offer update; installed > SDK → hint.
+- [x] "Install/Update microsandbox" action via `setup::install_runtime`,
       non-blocking with spinner/status (tokio task).
 
 ### 4. Switch main.rs to SdkBackend; retire CliBackend
-- [ ] `main.rs` constructs `SdkBackend` (with `LocalBackend`) as the default.
-- [ ] Remove `CliBackend`, its fixtures-based CLI tests, and the `which` dep if
+- [x] `main.rs` constructs `SdkBackend` (with `LocalBackend`) as the default.
+- [x] Remove `CliBackend`, its fixtures-based CLI tests, and the `which` dep if
       unused (full-switch decision; FakeBackend keeps action-layer tests green).
-- [ ] Logs view: switch the tail task to `follow_logs` streams.
-- [ ] Keep recreate flow for publish/unpublish (no port modify in 0.7.2).
+- [x] Logs view: switch the tail task to `follow_logs` streams.
+- [x] Keep recreate flow for publish/unpublish (no port modify in 0.7.2).
 
 ### 5. Docs + final polish
-- [ ] Rewrite the "Backend" section of `docs/DESIGN.md` (CLI → SDK rationale:
+- [x] Rewrite the "Backend" section of `docs/DESIGN.md` (CLI → SDK rationale:
       typed API, version management, richer exec/logs/fs APIs; install policy;
       detached-mode note; honest removal of the CLI-JSON rationale).
-- [ ] Update file-structure section; mark plan tasks `[x]`.
-- [ ] All gates green: `cargo fmt --check && cargo clippy -- -D warnings &&
-      cargo test && cargo check`; CI green after push.
+- [x] Update file-structure section; mark plan tasks `[x]`.
+- [x] All gates green: `cargo fmt --check && cargo clippy -- -D warnings &&
+      cargo test && cargo check`, run locally. (The GitHub Actions workflow was
+      removed at the maintainer's request; CI no longer runs.)
+
+**Phase 2 complete** (pending the manual smoke test of task 2 against a live
+runtime). 145 unit tests, all gates green locally. Deviations recorded:
+- Full SDK switch, no CLI fallback: `CliBackend` deleted entirely; missing
+  `msb` no longer exits at startup — the dashboard banner offers install (`U`).
+- `SandboxModificationBuilder` 0.7.2 has no port methods, so publish/unpublish
+  and network-rule edits keep the stop → remove → recreate → start flow.
+- `CreateSpec::to_args` (CLI argument builder) removed with the CLI layer.
+- GitHub Actions workflow removed at maintainer request; gates are local-only.

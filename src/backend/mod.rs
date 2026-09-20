@@ -123,57 +123,5 @@ pub struct CreateSpec {
     pub net_rules: Vec<String>,
 }
 
-impl CreateSpec {
-    /// Build the `msb create` argument vector (without the `msb` program name).
-    ///
-    /// Retained for the CLI-fallback test surface; the SDK backend maps specs
-    /// onto `SandboxBuilder` directly.
-    pub fn to_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = Vec::new();
-        if let Some(name) = &self.name {
-            args.push("--name".into());
-            args.push(name.clone());
-        }
-        if let Some(cpus) = self.cpus {
-            args.push("-c".into());
-            args.push(cpus.to_string());
-        }
-        if let Some(mem) = &self.memory {
-            args.push("-m".into());
-            args.push(mem.clone());
-        }
-        if let Some(wd) = &self.workdir {
-            args.push("-w".into());
-            args.push(wd.clone());
-        }
-        for p in &self.ports {
-            args.push("-p".into());
-            args.push(p.to_cli_flag());
-        }
-        for v in &self.volumes {
-            args.push("-v".into());
-            args.push(v.clone());
-        }
-        for e in &self.env {
-            args.push("-e".into());
-            args.push(e.clone());
-        }
-        for l in &self.labels {
-            args.push("--label".into());
-            args.push(l.clone());
-        }
-        if let Some(profile) = &self.net_profile {
-            args.push("--net".into());
-            args.push(profile.clone());
-        }
-        for rule in &self.net_rules {
-            args.push("--net-rule".into());
-            args.push(rule.clone());
-        }
-        args.push(self.image.clone());
-        args
-    }
-}
-
 /// A follow stream of log lines for one sandbox.
 pub type LogStream = std::pin::Pin<Box<dyn tokio_stream::Stream<Item = LogLine> + Send>>;

@@ -7,10 +7,12 @@ edit network rules, stream logs — without memorizing CLI flags.
 
 ## Prerequisites
 
-- [`msb` CLI](https://docs.microsandbox.dev/cli/overview) installed and on `$PATH`
-- KVM (Linux), Apple Silicon (macOS), or WHP (Windows)
+- None at startup. If no `msb` runtime is detected, the dashboard shows a
+  banner — press `U` to install/update microsandbox from inside the TUI.
+- KVM (Linux), Apple Silicon (macOS), or WHP (Windows), for actually running
+  sandboxes.
 
-Install microsandbox:
+Install microsandbox manually (optional alternative to the in-TUI installer):
 
 ```sh
 curl -fsSL https://install.microsandbox.dev | sh

@@ -13,27 +13,47 @@ one-key access to exec/logs/ssh.
 
 - **Rust 2024 edition** — matches microsandbox's ecosystem, compiles to a single binary
 - **ratatui** + **crossterm** — TUI framework + terminal backend
-- **tokio** — async runtime for shelling out to `msb` concurrently
-- **serde** / **serde_json** — parse `msb --format json` output
+- **tokio** — async runtime for SDK calls, pollers, and background tasks
+- **serde** / **serde_json** — serde derives for the `models.rs` DTO layer and
+  fixture-based unit tests
 - **clap** — CLI args for the TUI itself (e.g. `msb-tui`, `msb-tui create`)
 
-### Backend: `msb` CLI (not the Rust SDK)
+### Backend: microsandbox Rust SDK (Phase 2)
 
-The TUI drives the installed `msb` CLI via `tokio::process::Command` with
-`--format json` output. This is cleaner than embedding the Rust SDK because:
+The TUI talks to microsandbox exclusively through the typed `microsandbox`
+0.7.2 SDK (`SdkBackend` wrapping `LocalBackend`). The earlier `msb`
+CLI/JSON approach (spawn `msb`, parse `--format json`) was replaced because:
 
-1. The SDK's `download-binaries` feature would install its own `msb` + `libkrunfw`,
-   conflicting with the user's existing installation
-2. The CLI is the stable, versioned interface; the SDK re-exports internal crates
-   that churn between minor versions
-3. The CLI already has `--format json` on every command we need
-4. No heavy compile-time dependencies (no libkrunfw linkage at build time)
+1. **Typed API** — no stringly-typed JSON parsing at runtime; SDK structs are
+   checked at compile time and the `models.rs` DTO mapping is unit-tested.
+2. **Runtime management** — the SDK ships `setup::install_runtime` and the
+   `PREBUILT_VERSION` constant, which power the dashboard's version banner and
+   the in-TUI install/update action. A CLI-driven TUI can only tell the user to
+   run a shell command.
+3. **Richer APIs** — `follow_logs` streams with resume cursors (replay +
+   follow in one call), captured non-interactive exec, and direct metric
+   reports; all of these would be poll-and-diff hacks over CLI JSON.
+4. **One source of truth** — the SDK and the installed `msb` runtime are
+   version-locked; the banner warns on drift instead of silently mis-parsing.
+
+Trade-offs accepted: the binary now links `libkrun`-adjacent crates (needs
+`libcap-ng` at build time) and is bound to the 0.7.2 SDK API surface.
+
+### Detached mode (policy)
+
+The SDK defaults to **attached** sandboxes: a plain `create()`/`start()` ties
+the VM's lifetime to the calling process. The TUI must never do this — all
+create/start/restart paths run detached (`detached(true)`,
+`start_detached()`, `RestartOptions { detached: true, .. }`) so sandboxes
+survive the TUI being closed.
 
 ### Prerequisites
 
-- `msb` CLI installed and on `$PATH` (verified at startup, with a helpful error
-  linking to the install script if missing)
-- KVM enabled (Linux), Apple Silicon (macOS), or WHP (Windows)
+- None at startup. If no `msb` runtime is detected, the dashboard shows a
+  banner and the `U` key opens a confirmation dialog that installs/updates the
+  runtime in the background (`setup::install_runtime`).
+- KVM enabled (Linux), Apple Silicon (macOS), or WHP (Windows) — for actually
+  running sandboxes.
 
 ## Views
 
@@ -58,8 +78,8 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 - Sandbox cards laid out in a responsive grid (2–3 columns depending on width)
 - Each card: name, state indicator (● running / ○ stopped / ⏸ paused / ✗ exited),
   image, live CPU%, memory used, net I/O, published ports, uptime
-- Polls `msb ls --format json` every 5s for sandbox list
-- Polls `msb metrics --all --format json` every 1s for live stats
+- Polls the SDK sandbox list every 5s
+- Polls fleet metric reports every 1s for live stats
 - Selected card highlighted; actions operate on selection
 
 ### 2. Create Sandbox form
@@ -67,7 +87,7 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 ```
 ┌─ Create Sandbox ──────────────────────────────────────────────────────┐
 │                                                                       │
-│  Image:   [python___________]  (autocomplete from `msb images`)       │
+│  Image:   [python___________]  (autocomplete from image list)         │
 │  Name:    [my-sandbox_______]  (auto-generated if empty)              │
 │  CPUs:    [1___]   Memory:    [512M____]                              │
 │  Workdir: [/app______________]                                        │
@@ -91,15 +111,15 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 ```
 
 - Named by default (persistent) — ephemeral is an advanced toggle
-- Image field autocompletes from `msb images --format json`
+- Image field autocompletes from the SDK image list
 - Port entries use Docker syntax: `HOST:GUEST` or `BIND:HOST:GUEST`, with `/udp` suffix
-- Network profile presets map to `--net` flags:
-  - **public** → `--net public` (default: internet allowed, private blocked)
-  - **private** → `--net private` (LAN/internal only)
-  - **host** → `--net host` (host machine access)
-  - **none** → `--no-net` (no network)
-  - **custom** → user-defined `--net-rule` list + `--net-default`
-- On confirm: runs `msb create --name <name> <flags> <image>` (detached, idle)
+- Network profile presets map to SDK network profiles:
+  - **public** → `NetworkProfile::Public` (default: internet allowed, private blocked)
+  - **private** → `NetworkProfile::Private` (LAN/internal only)
+  - **host** → host access profile
+  - **none** → networking disabled
+  - **custom** → user-defined network rule list + default policy
+- On confirm: builds a detached sandbox via `SandboxBuilder` (idle after create)
 - Shows progress while pulling image (first pull can take time)
 
 ### 3. Port Forwards view
@@ -115,19 +135,13 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Lists current published ports from `msb inspect --format json` → `network.ports[]`
-- **Publish**: prompts for `HOST:GUEST` (or `BIND:HOST:GUEST`), then:
-  1. Read current config via `msb inspect --format json`
-  2. Stop the sandbox: `msb stop <name>`
-  3. Remove it: `msb rm <name>`
-  4. Recreate with old config + new port: `msb create --name <name> -p <new> ... <image>`
-  5. Start: `msb start <name>`
+- Lists current published ports from `inspect` → `network.ports[]`
+- **Publish**: prompts for `HOST:GUEST` (or `BIND:HOST:GUEST`), then runs the
+  recreate flow (see "Port Publish/Unpublish — Implementation Detail" below)
   - ⚠️ Warns that recreation is required (microsandbox 0.7.2 can't modify ports live).
     Volume data survives; rootfs state resets unless snapshotted.
-  - NOTE: 0.7.2 has no `create --replace` flag (name collisions always error), so
-    recreate = remove + create with the same name.
 - **Unpublish**: same recreate flow, minus the port
-- Future: if `msb modify` gains `--port` support, switch to live modify
+- Future: if the SDK gains live port modification, switch to live modify
 
 ### 4. Network Rules editor
 
@@ -147,7 +161,7 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Visual editor for `--net-rule` strings
+- Visual editor for network rule strings
 - Fields: action (allow/deny), direction (egress/ingress/any), target (domain/IP/
   CIDR/suffix/group), protocol (tcp/udp/icmpv4/icmpv6/any), ports (single/range/any)
 - Apply uses the same recreate flow as port changes (network rules also require
@@ -166,10 +180,11 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Lists volumes from `msb volumes --format json`
+- Lists volumes from the SDK volume list
 - Create: name, kind (dir/disk), size
-- Remove: `msb volume rm <name>`
-- Shows which sandboxes mount each volume (cross-referenced from `msb ls` + inspect)
+- Remove: volume removal via the SDK
+- Shows which sandboxes mount each volume (cross-referenced from the sandbox
+  list + inspect)
 
 ### 6. Logs panel
 
@@ -183,14 +198,15 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Streams `msb logs -f <name> --json` and renders lines with timestamps
+- Streams logs via the SDK's `follow_logs` (replay + follow with resume
+  cursor) and renders lines with timestamps
 - Toggle follow mode, grep filter, tail count, source filter (stdout/stderr/system)
 
 ### 7. Exec / SSH
 
-- **Exec**: pops a command input at the bottom, runs `msb exec <name> -- <cmd>`,
-  shows output inline. For interactive commands, suspends the TUI and runs `msb exec`
-  in foreground (like `docker exec -it`).
+- **Exec**: pops a command input at the bottom, runs the command via the SDK's
+  captured exec API, shows output inline. For interactive commands, suspends
+  the TUI and runs the command in foreground (like `docker exec -it`).
 - **SSH**: suspends the TUI and runs `msb ssh <name>` in foreground for a full
   interactive shell.
 
@@ -207,9 +223,9 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Create: `msb snapshot create --from-sandbox <name> [--full]`
-- Restore: `msb restore <group>:<member> --name <new-name>`
-- Remove: `msb snapshot rm <group>:<member>`
+- Create: `snapshot create` from the sandbox via the SDK
+- Restore: restore a snapshot group/member as a new sandbox
+- Remove: snapshot removal via the SDK
 
 ## App State & Event Loop
 
@@ -217,8 +233,8 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 ┌─────────────┐     ┌──────────────────┐     ┌────────────────┐
 │  Input      │────▶│  App State       │◀────│  Background     │
 │  (crossterm) │     │  (current view,  │     │  Pollers        │
-└─────────────┘     │   selected sbx,  │     │  (msb ls,       │
-                    │   form state)    │     │   msb metrics)  │
+└─────────────┘     │   selected sbx,  │     │  (sandbox list, │
+                    │   form state)    │     │   metrics)      │
                     └────────┬─────────┘     └────────────────┘
                              │
                     ┌────────▼─────────┐
@@ -229,18 +245,18 @@ The TUI drives the installed `msb` CLI via `tokio::process::Command` with
 
 - **Event loop**: `tokio::select!` over crossterm input events + metric poll ticks
 - **Pollers**: 
-  - Sandbox list: every 5s (`msb ls --format json`)
-  - Metrics: every 1s (`msb metrics --all --format json`)
+  - Sandbox list: every 5s (SDK list via `SdkBackend`)
+  - Metrics: every 1s (SDK fleet metric reports)
   - Volumes/images: on-demand when entering those views
-- **Actions**: spawn `tokio::process::Command` for `msb` subcommands, parse JSON
-  output, update state, re-render
-- **Logs stream**: long-lived `msb logs -f --json` child process, lines sent over
+- **Actions**: spawn on tokio tasks calling `SdkBackend` methods (long-running
+  SDK calls never block the UI), update state, re-render
+- **Logs stream**: SDK `follow_logs` stream (replay + follow), lines sent over
   a `tokio::sync::mpsc` channel to the logs view
 
 ## Data Models
 
 ```rust
-// From `msb ls --format json`
+// Mapped from the SDK sandbox list
 struct SandboxSummary {
     name: String,
     image: String,
@@ -248,7 +264,7 @@ struct SandboxSummary {
     created_at: String,
 }
 
-// From `msb inspect --format json` (active_config subset)
+// Mapped from the SDK inspect config (active_config subset)
 struct SandboxConfig {
     name: String,
     image: ImageConfig,
@@ -281,7 +297,7 @@ struct Resources {
     max_memory_mib: u32,
 }
 
-// From `msb metrics --format json`
+// Mapped from SDK metric reports
 struct Metrics {
     name: String,
     state: String,
@@ -296,7 +312,7 @@ struct Metrics {
     uptime_secs: f64,
 }
 
-// From `msb volumes --format json`
+// Mapped from the SDK volume list
 struct Volume {
     name: String,
     kind: String,           // "dir" or "disk"
@@ -305,7 +321,7 @@ struct Volume {
     created_at: String,
 }
 
-// From `msb images --format json`
+// Mapped from the SDK image list
 struct Image {
     reference: String,
     digest: String,
@@ -339,26 +355,28 @@ struct Image {
 ## Port Publish/Unpublish — Implementation Detail
 
 Microsandbox 0.7.2 binds published ports at VM boot time (the libkrun process opens
-host-side TCP/UDP listeners). `msb modify` cannot change ports or network rules —
-only CPUs, memory, env, labels, secrets, and workdir.
+host-side TCP/UDP listeners). `SandboxModificationBuilder` cannot change ports or
+network rules — only CPUs, memory, env, labels, secrets, and workdir.
 
-**Recreate flow** (used by port publish/unpublish and network rule changes):
+**Recreate flow** (used by port publish/unpublish and network rule changes,
+driven entirely through `SdkBackend`):
 
-1. `msb inspect <name> --format json` → read full `active_config`
+1. `inspect(name)` → read the full active config
 2. Compute new config (add/remove port, add/remove rule)
-3. `msb stop <name>`
-4. `msb rm <name>` (0.7.2 has no `create --replace`; a name collision errors out)
-5. Build `msb create --name <name>` command with all original flags plus the change
-6. `msb start <name>`
+3. `stop(name)`
+4. `remove(name)` (0.7.2 has no create-with-replace; a name collision errors out)
+5. `create(spec)` with all original settings plus the change (detached)
+6. `start(name)` (detached)
 7. Warn user: rootfs state resets on recreate. Volume data persists. To preserve
-   rootfs state, snapshot first (`msb snapshot create --from-sandbox <name>`)
+   rootfs state, snapshot first.
 
-This is a known limitation. If `msb modify` gains `--port` / `--net-rule` in a
-future release, the TUI will switch to live modification without recreation.
+This is a known limitation. If the SDK gains live port / network-rule
+modification in a future release, the TUI will switch to live modification
+without recreation.
 
 ## Default Network Profile
 
-The default profile for new sandboxes is **public** (`--net public`):
+The default profile for new sandboxes is **public** (`NetworkProfile::Public`):
 
 - Outbound internet access allowed
 - Private networks (LAN, loopback, link-local, metadata) blocked
@@ -374,28 +392,31 @@ microsandbox-tui/
 ├── Cargo.toml
 ├── README.md
 ├── docs/
-│   └── DESIGN.md
+│   ├── DESIGN.md
+│   └── PLAN.md
 └── src/
-    ├── main.rs              # CLI entry, app bootstrap
+    ├── main.rs              # CLI entry, app bootstrap, op dispatch
     ├── app.rs               # App state, view routing, event loop
     ├── event.rs             # crossterm input handling
     ├── backend/
-    │   ├── mod.rs           # MsbBackend trait
-    │   └── cli.rs           # tokio::process::Command impl
+    │   ├── mod.rs           # MsbBackend trait, CreateSpec, LogLine
+    │   ├── sdk.rs           # SdkBackend (typed microsandbox 0.7.2 SDK)
+    │   └── fake.rs          # in-memory FakeBackend for action-layer tests
+    ├── runtime.rs           # msb version detect + install/update (banner)
     ├── models.rs            # SandboxSummary, SandboxConfig, Metrics, etc.
     ├── actions.rs           # high-level ops: create, stop, publish_port, etc.
+    ├── fixtures/            # captured JSON for model-layer unit tests
     └── ui/
-        ├── mod.rs           # render dispatch
-        ├── dashboard.rs     # sandbox cards grid
+        ├── mod.rs           # render dispatch + status/banner lines
+        ├── dashboard.rs     # sandbox cards grid + runtime banner
         ├── create.rs        # create sandbox form
         ├── ports.rs         # port forwards view
-        ├── network.rs       # network rules editor
-        ├── volumes.rs       # volume manager
         ├── logs.rs          # logs streaming panel
-        ├── snapshots.rs     # snapshot manager
-        ├── inspect.rs       # sandbox detail view
         └── help.rs          # keybindings overlay
 ```
+
+Planned additions in later phases: `ui/inspect.rs`, `ui/network.rs`,
+`ui/volumes.rs`, `ui/snapshots.rs`.
 
 ## MVP Scope (Phase 1)
 
