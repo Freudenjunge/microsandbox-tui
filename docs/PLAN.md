@@ -58,7 +58,7 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 
 ### 10. Main wiring
 - [x] Wire everything in `src/main.rs`: parse CLI, verify `msb` on PATH, init terminal, run event loop, restore terminal on exit.
-- [ ] Add `cargo test` and `cargo run -- --help` smoke tests in CI or commit hook.
+- [x] Add `cargo test` and `cargo run -- --help` smoke tests in CI (`.github/workflows/ci.yml`).
 
 ### 11. Final Phase 1 polish
 - [ ] Ensure all Phase 1 code compiles with `cargo clippy -- -D warnings` and `cargo test`.
