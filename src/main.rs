@@ -32,6 +32,7 @@ mod app;
 mod backend;
 mod event;
 mod models;
+mod runtime;
 mod ui;
 
 use app::{App, Op, View};
