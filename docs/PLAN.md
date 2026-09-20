@@ -15,14 +15,14 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - [x] Write unit tests that parse every fixture and assert all expected fields.
 
 ### 2. Backend trait + CLI implementation
-- [ ] Define `MsbBackend` trait in `src/backend/mod.rs` with async methods:
+- [x] Define `MsbBackend` trait in `src/backend/mod.rs` with async methods:
   - `list_sandboxes`, `status`, `inspect`, `metrics`
   - `start`, `stop`, `restart`, `remove`
   - `create`, `exec`, `logs_follow`
   - `list_volumes`, `list_images`
-- [ ] Implement `CliBackend` in `src/backend/cli.rs` using `tokio::process::Command` and `--format json`.
+- [x] Implement `CliBackend` in `src/backend/cli.rs` using `tokio::process::Command` and `--format json`.
 - [ ] Add a `FakeBackend` (in-memory) for unit tests of the action layer.
-- [ ] Write unit tests for CLI command vector generation and JSON parsing.
+- [x] Write unit tests for CLI command vector generation and JSON parsing.
 
 ### 3. High-level actions
 - [ ] Add `src/actions.rs` with user-facing operations:
