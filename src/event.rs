@@ -35,7 +35,7 @@ pub enum AppEvent {
     MetricsUpdated(Vec<Metrics>),
     /// An async error occurred (shown on the status line).
     Error(String),
-    /// A long-running msb operation finished successfully.
+    /// A long-running SDK operation finished successfully.
     OpDone(String),
     /// New log lines arrived for the logs view.
     LogLines(Vec<LogLine>),

@@ -20,9 +20,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::models::{Metrics, PublishedPort, SandboxSummary};
+
+/// Opaque base background for every view. Solid by design — the terminal's
+/// own background (often translucent in fish/zsh setups) must not bleed
+/// through ratatui's `Reset` default.
+pub const BG: Color = Color::Rgb(16, 16, 20);
 
 /// Render the dashboard view (header + cards + footer).
 pub fn render_dashboard(
@@ -73,7 +78,9 @@ pub fn render_confirm(frame: &mut Frame, message: &str, area: Rect) {
     ])
     .split(vert[1]);
 
-    frame.render_widget(Clear, horiz[1]);
+    // Paint the dialog background instead of `Clear`, which would reset
+    // cells to a transparent `Reset` background.
+    frame.render_widget(Block::default().style(Style::default().bg(BG)), horiz[1]);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(

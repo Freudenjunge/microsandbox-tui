@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
 /// One row of the keybinding table.
 struct KeyRow {
@@ -128,8 +128,12 @@ static GROUPS: &[KeyGroup] = &[
 
 /// Render the help overlay centered inside `area`.
 pub fn render(frame: &mut Frame, area: Rect) {
-    // Clear the underlying content first.
-    frame.render_widget(Clear, area);
+    // Paint an opaque backdrop instead of `Clear`, which would reset cells
+    // to a transparent `Reset` background.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(crate::ui::BG)),
+        area,
+    );
 
     // Compute a centered box that fits the content.
     let total_rows: u16 = GROUPS

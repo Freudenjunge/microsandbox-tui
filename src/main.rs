@@ -5,8 +5,8 @@
 //! remains unit-testable. We spawn three background tasks that feed
 //! [`AppEvent`]s into an mpsc channel:
 //!
-//!   - **Sandbox list poller** — `msb ls` every 5 s
-//!   - **Metrics poller** — `msb metrics --all` every 1 s
+//!   - **Sandbox list poller** — SDK list every 5 s
+//!   - **Metrics poller** — SDK fleet metric reports every 1 s
 //!   - **Input poller** — crossterm keys + periodic ticks ([`event::poll_events`])
 //!
 //! The main loop `tokio::select!`s on the channel receiver, dispatches each
@@ -24,6 +24,8 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::style::Style;
+use ratatui::widgets::Block;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
 
@@ -94,7 +96,13 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run(cli))
+    rt.block_on(run(cli))?;
+    // The SDK's LocalBackend parks blocking threads (sqlx/SQLite workers,
+    // migration locks) that never complete on their own. A plain drop of
+    // `rt` would wait on them forever and the TUI would never exit; shut
+    // down without draining them — the OS reaps the threads on exit.
+    rt.shutdown_background();
+    Ok(())
 }
 
 /// Run the TUI: set up the terminal, spawn pollers, and enter the event loop.
@@ -378,6 +386,11 @@ fn spawn_poller(
 fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
+        // Opaque base layer: without it, transparent terminal themes
+        // (e.g. milky fish/zsh setups) bleed through ratatui's Reset
+        // background. Widgets only patch cells they touch, so this solid
+        // backdrop persists behind every view.
+        frame.render_widget(Block::default().style(Style::default().bg(ui::BG)), area);
         match app.view {
             View::Dashboard => {
                 ui::render_dashboard(
