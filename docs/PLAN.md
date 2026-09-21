@@ -241,6 +241,35 @@ rules.
 - [x] `docs/DESIGN.md` views section updated; deviations recorded.
 - [ ] Manual smoke test note.
 
+---
+
+# Phase 2.7 — Design fidelity pass (MVP polish)
+
+Goal: tighten the Stitch fidelity after the 2.6 rework — drop the mockup's
+fake window chrome bits (traffic-light dots, clock), then close the largest
+design gap: the dashboard right sidebar with an embedded quick-create panel
+(image picker + name + launch, `Ctrl+A` for the full form) and a live
+selected-sandbox log preview, exactly like the mockup's right column.
+
+## Task List
+
+### 1. Chrome trims
+- [x] Remove the fake traffic-light dots from the title bar.
+- [x] Remove the clock from the title bar.
+- [x] Keep: name+version, session info, LIVE pill, tab bar, banner, footer.
+
+### 2. Dashboard sidebar
+- [x] Two-pane body on wide terminals (cards 65% / sidebar 35%), single-pane
+      below ~100 columns.
+- [x] Sidebar top: `⚡ QUICK CREATE MICROVM` panel — name field, image
+      picker (reuses `CreateForm` state), `[Enter] Launch`, `Ctrl+A` opens
+      the full advanced form; submit queues the same detached create.
+- [x] Sidebar bottom: `STREAM: <selected sandbox>` — last lines of the
+      selected sandbox's log tail (bounded), hint `l` for the full view.
+
+### 3. Gates + push
+- [ ] All four gates green; push; smoke-test note.
+
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
   iptables messages, per-port traffic counters, security policies, buffer
