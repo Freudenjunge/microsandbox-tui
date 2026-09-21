@@ -86,33 +86,24 @@ pub fn render_tab_bar(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(vec![Span::raw(" ")])), rows[0]);
     frame.render_widget(tab_bar_line(tabs), rows[1]);
 
-    // Underline rail: accent under the active tab, muted elsewhere.
+    // Underline rail: accent under the active tab, muted elsewhere. The
+    // rail uses `─` (a 3-byte char), so segments are built directly instead
+    // of byte-slicing one big string.
     let t = &THEME;
-    let mut rail = String::new();
+    let mut spans = Vec::new();
     for tab in tabs {
         let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
         let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1;
-        for _ in 0..width {
-            rail.push('─');
-        }
-        rail.push(' ');
-    }
-    // Render rail segment-by-segment: the active tab's segment is accent.
-    let mut spans = Vec::new();
-    let mut offset = 0usize;
-    for tab in tabs {
-        let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
-        let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1 + 1; // +1 space
-        let seg = &rail[offset..offset + width.min(rail.len() - offset)];
+        let seg: String = std::iter::repeat_n('─', width).collect();
         spans.push(Span::styled(
-            seg.to_string(),
+            seg,
             if tab.active {
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(t.border)
             },
         ));
-        offset += width;
+        spans.push(Span::raw(" "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
 }

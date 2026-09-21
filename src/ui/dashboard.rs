@@ -737,4 +737,56 @@ mod tests {
             "WEIRD"
         );
     }
+
+    #[test]
+    fn dashboard_renders_visible_content_offscreen() {
+        // Regression: the frame rendered (cursor-hide emitted) but the
+        // buffer stayed empty on some terminal sizes. Render off-screen via
+        // TestBackend and assert real chrome content is in the cells.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        let sandboxes = vec![SandboxSummary {
+            created_at: chrono::Utc::now(),
+            image: "alpine".into(),
+            name: "probe".into(),
+            status: SandboxState::Running,
+        }];
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &sandboxes,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    0,
+                    StatusLines {
+                        banner: Some("msb v0.7.1 installed, v0.7.2 available — press [U]"),
+                        error: None,
+                        status_text: None,
+                    },
+                    None,
+                    &[],
+                    f.area(),
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let text = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("microsandbox"), "title missing:\n{text}");
+        assert!(text.contains("SANDBOXES"), "tabs missing:\n{text}");
+        assert!(text.contains("probe"), "card missing:\n{text}");
+        assert!(text.contains("QUICK CREATE"), "sidebar missing:\n{text}");
+        assert!(text.contains("STREAM"), "preview missing:\n{text}");
+        assert!(text.contains("Navigation:"), "nav legend missing:\n{text}");
+        assert!(text.contains("press [U]"), "banner missing:\n{text}");
+    }
 }
