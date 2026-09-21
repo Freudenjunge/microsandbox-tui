@@ -423,7 +423,9 @@ fn network_policy_for(profile: &str) -> Option<microsandbox::NetworkPolicy> {
 /// Exposed for unit tests (the builder itself requires a live runtime to
 /// resolve, so we test the pieces instead of the final create call).
 pub(crate) fn apply_spec_to_builder(builder: SandboxBuilder, spec: &CreateSpec) -> SandboxBuilder {
-    let mut builder = builder.detached(true);
+    // The image is mandatory — the SDK validates it as "image source is
+    // required" otherwise (regression found in the phase2.5 smoke test).
+    let mut builder = builder.detached(true).image(spec.image.as_str());
 
     if let Some(cpus) = spec.cpus {
         builder = builder.cpus(cpus as u8);

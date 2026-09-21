@@ -215,7 +215,7 @@ async fn run(cli: Cli) -> Result<()> {
                             let _ = tx.send(AppEvent::LogsEnded).await;
                         }
                         Err(e) => {
-                            let _ = tx.send(AppEvent::Error(format!("logs: {e}"))).await;
+                            let _ = tx.send(AppEvent::Error(format!("logs: {e:#}"))).await;
                         }
                     }
                 });
@@ -246,7 +246,7 @@ async fn run(cli: Cli) -> Result<()> {
                         let _ = tx.send(AppEvent::ImagesUpdated(names)).await;
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::Error(format!("images: {e}"))).await;
+                        let _ = tx.send(AppEvent::Error(format!("images: {e:#}"))).await;
                     }
                 }
             });
@@ -272,7 +272,7 @@ async fn run(cli: Cli) -> Result<()> {
                             .await;
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::Error(format!("ports: {e}"))).await;
+                        let _ = tx.send(AppEvent::Error(format!("ports: {e:#}"))).await;
                     }
                 }
             });
@@ -339,7 +339,7 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
         };
         let event = match res {
             Ok(msg) => AppEvent::OpDone(msg),
-            Err(e) => AppEvent::Error(format!("{describe} — failed: {e}")),
+            Err(e) => AppEvent::Error(format!("{describe} — failed: {e:#}")),
         };
         let _ = tx.send(event).await;
     });
@@ -359,7 +359,7 @@ fn run_create(
             }
             Err(e) => {
                 let _ = tx
-                    .send(AppEvent::Error(format!("create failed: {e}")))
+                    .send(AppEvent::Error(format!("create failed: {e:#}")))
                     .await;
             }
         }
@@ -394,7 +394,7 @@ fn spawn_poller(
                     }
                 }
                 Err(e) => {
-                    let msg = format!("{name}: {e}");
+                    let msg = format!("{name}: {e:#}");
                     if tx.send(AppEvent::Error(msg)).await.is_err() {
                         break;
                     }
