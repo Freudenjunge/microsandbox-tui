@@ -28,6 +28,7 @@ use crate::models::{Metrics, PublishedPort, SandboxSummary};
 use crate::ui::theme::THEME;
 
 /// Render the dashboard view (header + cards + footer).
+#[allow(clippy::too_many_arguments)]
 pub fn render_dashboard(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
@@ -35,6 +36,8 @@ pub fn render_dashboard(
     ports: &HashMap<String, Vec<PublishedPort>>,
     selected: usize,
     error: Option<&str>,
+    quick: Option<&create::CreateForm>,
+    preview: &[crate::backend::LogLine],
     area: Rect,
 ) {
     let banner = crate::runtime::banner_text();
@@ -43,7 +46,9 @@ pub fn render_dashboard(
         error,
         status_text: None,
     };
-    dashboard::render(frame, sandboxes, metrics, ports, selected, status, area);
+    dashboard::render(
+        frame, sandboxes, metrics, ports, selected, status, quick, preview, area,
+    );
 }
 
 /// Render the help overlay (centered keybinding table).

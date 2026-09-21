@@ -37,17 +37,11 @@ pub fn render_title_bar(frame: &mut Frame, info: &TitleInfo, area: Rect) {
     frame.render_widget(title_bar_line(info), area);
 }
 
-/// Build the title-bar line: dots, name, version, session info, LIVE, clock.
+/// Build the title-bar line: name, version, session info.
 fn title_bar_line(info: &TitleInfo) -> Line<'static> {
     let t = &THEME;
-    let dot = |color| Span::styled("● ", Style::default().fg(color));
-
     let version = info.runtime_version.as_deref().unwrap_or("?").to_string();
-    let mut spans = vec![
-        dot(t.err),
-        dot(t.warn),
-        dot(t.ok),
-        Span::raw(" "),
+    Line::from(vec![
         Span::styled(
             "microsandbox",
             Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
@@ -57,18 +51,7 @@ fn title_bar_line(info: &TitleInfo) -> Line<'static> {
             format!("  [session: tty1 • {} • pid: {}]", info.size, info.pid),
             Style::default().fg(t.muted),
         ),
-    ];
-
-    // Clock at the far right; the spacer is padded when the line is drawn
-    // into a full-width paragraph so it right-aligns visually on typical
-    // widths. Paragraph clips rather than wraps, so this stays 1 row.
-    let clock = chrono::Local::now().format("%H:%M:%S").to_string();
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        format!("{clock:>16}"),
-        Style::default().fg(t.text),
-    ));
-    Line::from(spans)
+    ])
 }
 
 // ---------- tab bar ----------
@@ -303,7 +286,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn title_bar_contains_name_version_clock() {
+    fn title_bar_contains_name_version() {
         let info = TitleInfo {
             runtime_version: Some("0.7.2".into()),
             size: "120x34".into(),
@@ -315,8 +298,8 @@ mod tests {
         assert!(text.contains("v0.7.2"), "{text}");
         assert!(text.contains("120x34"), "{text}");
         assert!(text.contains("pid: 42"), "{text}");
-        // A clock in HH:MM:SS is always rendered.
-        assert!(text.contains(':'), "{text}");
+        // Fake window chrome is gone: no clock, no traffic dots.
+        assert!(!text.contains("●"), "{text}");
     }
 
     #[test]

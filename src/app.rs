@@ -116,6 +116,9 @@ pub struct PendingOp {
     pub op: Op,
 }
 
+/// Maximum lines kept for the dashboard sidebar log preview.
+const PREVIEW_MAX_LINES: usize = 6;
+
 /// The central application state.
 #[derive(Debug)]
 pub struct App {
@@ -144,6 +147,11 @@ pub struct App {
     pub create_form: Option<CreateForm>,
     /// Logs-view state; `Some` while the logs view is open.
     pub logs_state: Option<LogsState>,
+    /// Bounded log preview for the selected sandbox on the dashboard
+    /// sidebar (fed by the same tail task as the logs view).
+    pub preview_lines: Vec<crate::backend::LogLine>,
+    /// Sandbox name the preview buffer belongs to.
+    pub preview_for: Option<String>,
     /// Ports-view state; `Some` while the ports view is open.
     pub ports_state: Option<PortsState>,
     /// Cached image references for the create form autocomplete.
@@ -171,6 +179,8 @@ impl App {
             queued_create: None,
             create_form: None,
             logs_state: None,
+            preview_lines: Vec::new(),
+            preview_for: None,
             ports_state: None,
             images: Vec::new(),
             ports: std::collections::HashMap::new(),
@@ -208,10 +218,20 @@ impl App {
                 Action::Render
             }
             AppEvent::LogLines(lines) => {
+                let mut rendered = false;
                 if let Some(state) = &mut self.logs_state {
-                    for line in lines {
-                        state.push_line(line);
+                    for line in lines.iter() {
+                        state.push_line(line.clone());
                     }
+                    rendered = true;
+                }
+                // Dashboard sidebar preview mirrors the same lines for the
+                // sandbox it is tailing.
+                if self.preview_for.is_some() {
+                    self.push_preview_lines(&lines);
+                    rendered = true;
+                }
+                if rendered {
                     Action::Render
                 } else {
                     Action::Continue
@@ -547,12 +567,34 @@ impl App {
     /// Move the selection up one card (clamped at the top).
     pub fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+        self.reset_preview_if_moved();
     }
 
     /// Move the selection down one card (clamped at the bottom).
     pub fn select_next(&mut self) {
         if self.selected + 1 < self.sandboxes.len() {
             self.selected += 1;
+        }
+        self.reset_preview_if_moved();
+    }
+
+    /// Clear the preview buffer when the selection moved to another sandbox.
+    fn reset_preview_if_moved(&mut self) {
+        let current = self.selected_sandbox().map(|s| s.name.clone());
+        if self.preview_for.as_ref() != current.as_ref() {
+            self.preview_lines.clear();
+            self.preview_for = current;
+        }
+    }
+
+    /// Append preview lines, bounded to [`PREVIEW_MAX_LINES`].
+    fn push_preview_lines(&mut self, lines: &[crate::backend::LogLine]) {
+        for line in lines {
+            self.preview_lines.push(line.clone());
+        }
+        let overflow = self.preview_lines.len().saturating_sub(PREVIEW_MAX_LINES);
+        if overflow > 0 {
+            self.preview_lines.drain(0..overflow);
         }
     }
 
@@ -572,6 +614,8 @@ impl App {
                 .unwrap_or_else(|| self.selected.min(self.sandboxes.len().saturating_sub(1))),
             None => self.selected.min(self.sandboxes.len().saturating_sub(1)),
         };
+        // Keep the preview target in sync with the (possibly changed) list.
+        self.reset_preview_if_moved();
     }
 
     /// Replace the metrics map, keyed by sandbox name.

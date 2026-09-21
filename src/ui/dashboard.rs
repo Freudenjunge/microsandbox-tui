@@ -34,6 +34,8 @@ pub fn render(
     ports: &HashMap<String, Vec<PublishedPort>>,
     selected: usize,
     status: StatusLines<'_>,
+    quick: Option<&crate::ui::create::CreateForm>,
+    preview: &[crate::backend::LogLine],
     area: Rect,
 ) {
     let t = &THEME;
@@ -92,7 +94,17 @@ pub fn render(
         }
     }
 
-    render_body(frame, sandboxes, metrics, ports, selected, body);
+    // Two-pane body on wide terminals (cards 65% / sidebar 35%) like the
+    // mockup; the sidebar hides while the full create form is open (the
+    // form covers the frame) and on narrow terminals.
+    if body.width >= 100 && quick.is_none() {
+        let cols = Layout::horizontal([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(body);
+        render_body(frame, sandboxes, metrics, ports, selected, cols[0]);
+        render_sidebar(frame, sandboxes, selected, preview, cols[1]);
+    } else {
+        render_body(frame, sandboxes, metrics, ports, selected, body);
+    }
 
     let hints = vec![
         FooterHint {
@@ -175,6 +187,121 @@ fn render_body(
     } else {
         render_grid(frame, sandboxes, metrics, ports, selected, area);
     }
+}
+
+/// Render the right sidebar: quick-create panel + selected-sandbox stream
+/// preview (the mockup's right column).
+fn render_sidebar(
+    frame: &mut Frame,
+    sandboxes: &[SandboxSummary],
+    selected: usize,
+    preview: &[crate::backend::LogLine],
+    area: Rect,
+) {
+    let rows = Layout::vertical([
+        Constraint::Length(7), // quick create panel
+        Constraint::Min(3),    // stream preview
+    ])
+    .split(area);
+    render_quick_create(frame, rows[0]);
+    render_stream_preview(frame, sandboxes, selected, preview, rows[1]);
+}
+
+/// The mockup's `⚡ QUICK CREATE MICROVM` panel (collapsed form: image +
+/// name summary, launch hint). `c`/`Ctrl+A` open the full form.
+fn render_quick_create(frame: &mut Frame, area: Rect) {
+    let t = &THEME;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent))
+        .style(Style::default().bg(t.panel))
+        .title(Span::styled(
+            " ⚡ QUICK CREATE MICROVM ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" Image:  ", Style::default().fg(t.muted)),
+            Span::styled("<pick with c>", Style::default().fg(t.text)),
+        ]),
+        Line::from(vec![
+            Span::styled(" Name:   ", Style::default().fg(t.muted)),
+            Span::styled("(auto)", Style::default().fg(t.text)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[c]",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" open form   ", Style::default().fg(t.muted)),
+            Span::styled(
+                "[^a]",
+                Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" advanced", Style::default().fg(t.muted)),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The mockup's `STREAM: <sandbox>` preview: last few log lines of the
+/// selected sandbox, `tail -n 6 -f` style.
+fn render_stream_preview(
+    frame: &mut Frame,
+    sandboxes: &[SandboxSummary],
+    selected: usize,
+    preview: &[crate::backend::LogLine],
+    area: Rect,
+) {
+    let t = &THEME;
+    let name = sandboxes
+        .get(selected)
+        .map(|s| s.name.as_str())
+        .unwrap_or("—");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.border))
+        .style(Style::default().bg(t.panel))
+        .title(Span::styled(
+            format!(" ● STREAM: {name} "),
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines: Vec<Line> = if preview.is_empty() {
+        vec![Line::from(Span::styled(
+            "  (no output yet — tail running)",
+            Style::default().fg(t.muted),
+        ))]
+    } else {
+        preview
+            .iter()
+            .map(|l| {
+                let ts = l.timestamp.format("%H:%M:%S").to_string();
+                Line::from(vec![
+                    Span::styled(format!("{ts} "), Style::default().fg(t.muted)),
+                    Span::styled(
+                        {
+                            let d = &l.data;
+                            if d.chars().count() > (inner.width as usize).saturating_sub(12) {
+                                d.chars()
+                                    .take(inner.width.saturating_sub(12) as usize)
+                                    .collect::<String>()
+                            } else {
+                                d.clone()
+                            }
+                        },
+                        Style::default().fg(t.text),
+                    ),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Centered empty-state message.

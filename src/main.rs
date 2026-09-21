@@ -181,54 +181,58 @@ async fn run(cli: Cli) -> Result<()> {
             run_create(spec, &backend, event_tx.clone());
         }
 
-        // Entering the Logs view: start a live tail task for this sandbox.
+        // Log tail task: runs for the Logs view AND for the dashboard's
+        // sidebar preview of the selected sandbox (one task at a time).
         let logs_name = app.logs_state.as_ref().map(|s| s.sandbox_name.clone());
-        match (&app.view, logs_name) {
-            (View::Logs, Some(name))
-                if log_task.as_ref().map(|(n, _)| n.as_str()) != Some(name.as_str()) =>
-            {
-                // Different sandbox than the running task: abort and respawn.
-                if let Some((_, abort)) = log_task.take() {
-                    let _ = abort.send(());
-                }
-                let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
-                let tx = event_tx.clone();
-                let backend = backend.clone();
-                let task_name = name.clone();
-                tokio::spawn(async move {
-                    let mut abort_rx = abort_rx;
-                    match backend.logs_follow(&name).await {
-                        Ok(mut stream) => {
-                            loop {
-                                tokio::select! {
-                                    _ = &mut abort_rx => break,
-                                    line = stream.next() => match line {
-                                        Some(line) => {
-                                            if tx.send(AppEvent::LogLines(vec![line])).await.is_err() {
-                                                break;
-                                            }
+        let preview_name = if app.view == View::Dashboard {
+            app.preview_for.clone()
+        } else {
+            None
+        };
+        // Target sandbox for the active tail task: logs view wins, else the
+        // dashboard preview target.
+        let tail_target = logs_name.or(preview_name);
+        let running_name = log_task.as_ref().map(|(n, _)| n.clone());
+        if tail_target.is_some() && running_name.as_ref() != tail_target.as_ref() {
+            // Different sandbox than the running task: abort and respawn.
+            if let Some((_, abort)) = log_task.take() {
+                let _ = abort.send(());
+            }
+            let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
+            let tx = event_tx.clone();
+            let backend = backend.clone();
+            let task_name = tail_target.clone().expect("checked above");
+            let spawn_name = task_name.clone();
+            tokio::spawn(async move {
+                let mut abort_rx = abort_rx;
+                match backend.logs_follow(&spawn_name).await {
+                    Ok(mut stream) => {
+                        loop {
+                            tokio::select! {
+                                _ = &mut abort_rx => break,
+                                line = stream.next() => match line {
+                                    Some(line) => {
+                                        if tx.send(AppEvent::LogLines(vec![line])).await.is_err() {
+                                            break;
                                         }
-                                        None => break,
                                     }
+                                    None => break,
                                 }
                             }
-                            let _ = tx.send(AppEvent::LogsEnded).await;
                         }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::Error(format!("logs: {e:#}"))).await;
-                        }
+                        let _ = tx.send(AppEvent::LogsEnded).await;
                     }
-                });
-                log_task = Some((task_name, abort_tx));
-            }
-            _ => {}
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Error(format!("logs: {e:#}"))).await;
+                    }
+                }
+            });
+            log_task = Some((task_name, abort_tx));
         }
 
-        // Leaving the Logs view: stop the tail task.
-        if app.view != View::Logs
-            && app.logs_state.is_none()
-            && let Some((_, abort)) = log_task.take()
-        {
+        // No logs view open and no preview target: stop the tail task.
+        let tail_needed = app.view == View::Logs || tail_target.is_some();
+        if !tail_needed && let Some((_, abort)) = log_task.take() {
             let _ = abort.send(());
         }
 
@@ -428,6 +432,8 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
         );
         match app.view {
             View::Dashboard => {
+                // The quick-create sidebar panel hides itself while the
+                // full create form is open (form replaces the frame).
                 ui::render_dashboard(
                     frame,
                     &app.sandboxes,
@@ -435,6 +441,8 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                     &app.ports,
                     app.selected,
                     app.error.as_deref(),
+                    None,
+                    &app.preview_lines,
                     area,
                 );
             }
