@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::ui::theme::THEME;
 
@@ -68,9 +68,53 @@ pub struct Tab<'a> {
     pub count: Option<usize>,
 }
 
-/// Render the tab bar plus right-aligned runtime/daemon info into a 1-row area.
+/// Render the tab bar plus right-aligned runtime/daemon info into a 3-row area.
 pub fn render_tab_bar(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
-    frame.render_widget(tab_bar_line(tabs), area);
+    // Row 0: breathing room (the mockup's taller nav band).
+    // Row 1: the tabs themselves.
+    // Row 2: the underline rail (full-width border bottom).
+    if area.height < 2 {
+        frame.render_widget(tab_bar_line(tabs), area);
+        return;
+    }
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
+    frame.render_widget(Paragraph::new(Line::from(vec![Span::raw(" ")])), rows[0]);
+    frame.render_widget(tab_bar_line(tabs), rows[1]);
+
+    // Underline rail: accent under the active tab, muted elsewhere.
+    let t = &THEME;
+    let mut rail = String::new();
+    for tab in tabs {
+        let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
+        let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1;
+        for _ in 0..width {
+            rail.push('─');
+        }
+        rail.push(' ');
+    }
+    // Render rail segment-by-segment: the active tab's segment is accent.
+    let mut spans = Vec::new();
+    let mut offset = 0usize;
+    for tab in tabs {
+        let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
+        let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1 + 1; // +1 space
+        let seg = &rail[offset..offset + width.min(rail.len() - offset)];
+        spans.push(Span::styled(
+            seg.to_string(),
+            if tab.active {
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.border)
+            },
+        ));
+        offset += width;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
 }
 
 /// Build the tab-bar line with the active tab highlighted as a filled pill.
@@ -178,9 +222,33 @@ pub enum FooterRole {
     Plain,
 }
 
-/// Render the footer keyhint bar into a 1-row area.
+/// Render the footer into a 2-row area: hints + navigation legend.
 pub fn render_footer(frame: &mut Frame, hints: &[FooterHint<'_>], area: Rect) {
-    frame.render_widget(footer_line(hints), area);
+    if area.height < 2 {
+        frame.render_widget(footer_line(hints), area);
+        return;
+    }
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+    frame.render_widget(footer_line(hints), rows[0]);
+    frame.render_widget(navigation_line(), rows[1]);
+}
+
+/// The navigation legend line: `Navigation: Tab / ↑↓←→` right-aligned.
+fn navigation_line() -> Line<'static> {
+    let t = &THEME;
+    Line::from(vec![
+        Span::styled(" Navigation: ", Style::default().fg(t.muted)),
+        Span::styled(
+            "Tab",
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" / ", Style::default().fg(t.muted)),
+        Span::styled(
+            "↑↓←→",
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  •  UTF-8 • 24-bit Truecolor", Style::default().fg(t.ok)),
+    ])
 }
 
 /// Build the footer hint line with per-role colored keys.
@@ -208,6 +276,79 @@ fn footer_line(hints: &[FooterHint<'_>]) -> Line<'static> {
 
 // ---------- shared layout ----------
 
+/// A zoned body: ONE bordered surface split by separator lines (the mockup's
+/// panels are areas inside a common frame, not individually boxed cards).
+pub struct ZonedLayout {
+    /// The outer frame rect (borders drawn by [`render_zone_frame`]).
+    pub frame: Rect,
+    /// Interior rows of the frame (borders excluded; each `sep`-th row is a
+    /// separator owned by the frame).
+    pub rows: Vec<Rect>,
+}
+
+/// Split `area` into a zoned layout: outer border + 1-row horizontal
+/// separators between `weights` rows (relative row heights).
+pub fn zone_rows(area: Rect, weights: &[u16]) -> ZonedLayout {
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    // N rows need N-1 separator rows in between.
+    let seps = weights.len().saturating_sub(1);
+    let sep_total: u16 = seps as u16;
+    let content_h = inner.height.saturating_sub(sep_total);
+    let weight_sum: u16 = weights.iter().sum();
+    let mut rows = Vec::with_capacity(weights.len());
+    let mut y = inner.y;
+    for (i, w) in weights.iter().enumerate() {
+        // Proportional share of the remaining height; last row gets the rest.
+        let h = if i + 1 == weights.len() {
+            inner.y + inner.height - y
+        } else {
+            content_height_share(content_h, *w, weight_sum)
+        };
+        rows.push(Rect::new(inner.x, y, inner.width, h));
+        y += h + 1; // +1 separator row
+    }
+    ZonedLayout { frame: area, rows }
+}
+
+/// Proportional share helper (u16 safe).
+fn content_height_share(content: u16, weight: u16, sum: u16) -> u16 {
+    if sum == 0 {
+        0
+    } else {
+        (u32::from(content) * u32::from(weight) / u32::from(sum)) as u16
+    }
+}
+
+/// Render the zoned frame: outer border + horizontal separators between the
+/// given interior rows.
+pub fn render_zone_frame(frame: &mut Frame, layout: &ZonedLayout, area: Rect) {
+    let t = &THEME;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.border));
+    frame.render_widget(block, area);
+    // Horizontal separators at the top edge of each row except the first.
+    for row in layout.rows.iter().skip(1) {
+        let sep_y = row.y.saturating_sub(1);
+        if sep_y <= area.y || sep_y >= area.y + area.height.saturating_sub(1) {
+            continue;
+        }
+        let sep = Rect::new(area.x + 1, sep_y, area.width.saturating_sub(2), 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(sep.width as usize),
+                Style::default().fg(t.border),
+            ))),
+            sep,
+        );
+    }
+}
+
 /// The chrome bands shared by every full-screen view: title bar, tab bar,
 /// optional banner/error/status, then the body and the footer.
 ///
@@ -225,7 +366,7 @@ pub fn chrome_layout(
     // one slot in the constraint list (we never emit `Length(0)` rows).
     let mut constraints = vec![
         Constraint::Length(1), // title bar
-        Constraint::Length(1), // tab bar
+        Constraint::Length(3), // tab bar (taller nav band + underline rail)
     ];
     if banner_h > 0 {
         constraints.push(Constraint::Length(1));
@@ -234,7 +375,7 @@ pub fn chrome_layout(
         constraints.push(Constraint::Length(1));
     }
     constraints.push(Constraint::Min(1));
-    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(2)); // footer: hints + nav legend
 
     let chunks = Layout::vertical(constraints).split(area);
 
@@ -335,6 +476,24 @@ mod tests {
     }
 
     #[test]
+    fn zone_rows_splits_with_separators() {
+        let area = Rect::new(0, 0, 40, 12);
+        let layout = zone_rows(area, &[2, 1]);
+        assert_eq!(layout.rows.len(), 2);
+        // Interior height is 12 - 2 (borders) - 1 (separator) = 9; split 2:1.
+        assert_eq!(layout.rows[0].height, 6);
+        assert_eq!(layout.rows[1].height, 3);
+        // Separator row sits between the two rows.
+        assert_eq!(
+            layout.rows[1].y,
+            layout.rows[0].y + layout.rows[0].height + 1
+        );
+        // Rows live inside the border.
+        assert_eq!(layout.rows[0].x, area.x + 1);
+        assert_eq!(layout.rows[0].width, area.width - 2);
+    }
+
+    #[test]
     fn footer_renders_hints_in_order() {
         let hints = vec![
             FooterHint {
@@ -360,8 +519,8 @@ mod tests {
             chrome_layout(area, Some("update available"), Some("busy…"));
         assert_eq!(banner.map(|r| r.height), Some(1));
         assert_eq!(status.map(|r| r.height), Some(1));
-        assert_eq!(footer.height, 1);
-        assert_eq!(body.height, 24 - 5);
+        assert_eq!(footer.height, 2, "footer carries the nav legend");
+        assert_eq!(body.height, 24 - 8);
 
         let (_, _, banner, status, _, _) = chrome_layout(area, None, None);
         assert!(banner.is_none());

@@ -22,6 +22,19 @@ use crate::models::{Metrics, PublishedPort, SandboxState, SandboxSummary};
 use crate::ui::chrome::{self, FooterHint, FooterRole, Tab, TitleInfo};
 use crate::ui::theme::THEME;
 
+/// Vertical separator column drawn between two side-by-side zones inside a
+/// common surface (the mockup's `divide-x` line).
+fn draw_vertical_separator(frame: &mut Frame, x: u16, area: Rect) {
+    let t = &THEME;
+    for y in area.y..area.y.saturating_add(area.height) {
+        let cell = Rect::new(x, y, 1, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("│", Style::default().fg(t.border)))),
+            cell,
+        );
+    }
+}
+
 /// Height in rows of a single card (including its border).
 const CARD_HEIGHT: u16 = 8;
 
@@ -95,13 +108,50 @@ pub fn render(
     }
 
     // Two-pane body on wide terminals (cards 65% / sidebar 35%) like the
-    // mockup; the sidebar hides while the full create form is open (the
-    // form covers the frame) and on narrow terminals.
+    // mockup: ONE surface, split by a vertical separator line — not two
+    // separate boxes. The sidebar hides while the full create form is open
+    // (the form covers the frame) and on narrow terminals.
     if body.width >= 100 && quick.is_none() {
-        let cols = Layout::horizontal([Constraint::Percentage(65), Constraint::Percentage(35)])
-            .split(body);
-        render_body(frame, sandboxes, metrics, ports, selected, cols[0]);
-        render_sidebar(frame, sandboxes, selected, preview, cols[1]);
+        // Zoned surface: outer frame, interior split 65/35 with a divider.
+        let cols = Layout::horizontal([
+            Constraint::Percentage(65),
+            Constraint::Length(1),
+            Constraint::Percentage(35),
+        ])
+        .split(body);
+        // Draw the shared surface as one border around the whole body.
+        let surface = Rect::new(body.x, body.y, body.width, body.height);
+        let inner = Rect::new(
+            surface.x + 1,
+            surface.y,
+            surface.width.saturating_sub(2),
+            surface.height,
+        );
+        let cards = Rect::new(
+            inner.x,
+            inner.y,
+            cols[0].width.saturating_sub(1),
+            inner.height,
+        );
+        let divider_x = cols[1].x;
+        let sidebar = Rect::new(
+            divider_x + 1,
+            inner.y,
+            inner.x + inner.width - divider_x - 1,
+            inner.height,
+        );
+        let zoned = chrome::ZonedLayout {
+            frame: surface,
+            rows: vec![cards, sidebar],
+        };
+        chrome::render_zone_frame(frame, &zoned, surface);
+        draw_vertical_separator(
+            frame,
+            divider_x,
+            Rect::new(divider_x, inner.y, 1, inner.height),
+        );
+        render_body(frame, sandboxes, metrics, ports, selected, cards);
+        render_sidebar(frame, sandboxes, selected, preview, sidebar);
     } else {
         render_body(frame, sandboxes, metrics, ports, selected, body);
     }
@@ -189,8 +239,9 @@ fn render_body(
     }
 }
 
-/// Render the right sidebar: quick-create panel + selected-sandbox stream
-/// preview (the mockup's right column).
+/// Render the right sidebar as ONE surface split by a horizontal separator:
+/// quick-create zone on top, selected-sandbox stream zone below (the
+/// mockup's right column).
 fn render_sidebar(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
@@ -198,40 +249,40 @@ fn render_sidebar(
     preview: &[crate::backend::LogLine],
     area: Rect,
 ) {
-    let rows = Layout::vertical([
-        Constraint::Length(7), // quick create panel
-        Constraint::Min(3),    // stream preview
-    ])
-    .split(area);
-    render_quick_create(frame, rows[0]);
-    render_stream_preview(frame, sandboxes, selected, preview, rows[1]);
+    let layout = chrome::zone_rows(area, &[4, 1]);
+    chrome::render_zone_frame(frame, &layout, area);
+    render_quick_create(frame, layout.rows[0]);
+    render_stream_preview(frame, sandboxes, selected, preview, layout.rows[1]);
 }
 
-/// The mockup's `⚡ QUICK CREATE MICROVM` panel (collapsed form: image +
-/// name summary, launch hint). `c`/`Ctrl+A` open the full form.
+/// The mockup's `⚡ QUICK CREATE MICROVM` zone header + collapsed content.
+/// `c`/`Ctrl+A` open the full form.
 fn render_quick_create(frame: &mut Frame, area: Rect) {
     let t = &THEME;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.accent))
-        .style(Style::default().bg(t.panel))
-        .title(Span::styled(
-            " ⚡ QUICK CREATE MICROVM ",
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" ⚡ ", Style::default().fg(t.warn)),
+        Span::styled(
+            "QUICK CREATE MICROVM",
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let lines = vec![
-        Line::from(vec![
+        ),
+        Span::raw("  "),
+        Span::styled("[Ctrl+A]", Style::default().fg(t.muted)),
+        Span::styled(" Advanced", Style::default().fg(t.muted)),
+    ])];
+    if area.height > 1 {
+        lines.push(Line::from(vec![
             Span::styled(" Image:  ", Style::default().fg(t.muted)),
             Span::styled("<pick with c>", Style::default().fg(t.text)),
-        ]),
-        Line::from(vec![
+        ]));
+    }
+    if area.height > 2 {
+        lines.push(Line::from(vec![
             Span::styled(" Name:   ", Style::default().fg(t.muted)),
             Span::styled("(auto)", Style::default().fg(t.text)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
+        ]));
+    }
+    if area.height > 3 {
+        lines.push(Line::from(vec![
             Span::styled(
                 "[c]",
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
@@ -242,12 +293,12 @@ fn render_quick_create(frame: &mut Frame, area: Rect) {
                 Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" advanced", Style::default().fg(t.muted)),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(lines), inner);
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// The mockup's `STREAM: <sandbox>` preview: last few log lines of the
+/// The mockup's `STREAM: <sandbox>` zone: last few log lines of the
 /// selected sandbox, `tail -n 6 -f` style.
 fn render_stream_preview(
     frame: &mut Frame,
@@ -261,47 +312,32 @@ fn render_stream_preview(
         .get(selected)
         .map(|s| s.name.as_str())
         .unwrap_or("—");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.border))
-        .style(Style::default().bg(t.panel))
-        .title(Span::styled(
-            format!(" ● STREAM: {name} "),
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" ● ", Style::default().fg(t.accent)),
+        Span::styled(
+            format!("STREAM: {name}"),
             Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines: Vec<Line> = if preview.is_empty() {
-        vec![Line::from(Span::styled(
+        ),
+        Span::raw("  "),
+        Span::styled("tail -n 6 -f", Style::default().fg(t.muted)),
+    ])];
+    if preview.is_empty() {
+        lines.push(Line::from(Span::styled(
             "  (no output yet — tail running)",
             Style::default().fg(t.muted),
-        ))]
+        )));
     } else {
-        preview
-            .iter()
-            .map(|l| {
-                let ts = l.timestamp.format("%H:%M:%S").to_string();
-                Line::from(vec![
-                    Span::styled(format!("{ts} "), Style::default().fg(t.muted)),
-                    Span::styled(
-                        {
-                            let d = &l.data;
-                            if d.chars().count() > (inner.width as usize).saturating_sub(12) {
-                                d.chars()
-                                    .take(inner.width.saturating_sub(12) as usize)
-                                    .collect::<String>()
-                            } else {
-                                d.clone()
-                            }
-                        },
-                        Style::default().fg(t.text),
-                    ),
-                ])
-            })
-            .collect()
-    };
-    frame.render_widget(Paragraph::new(lines), inner);
+        let max = (area.width as usize).saturating_sub(12);
+        for l in preview.iter().take(area.height as usize) {
+            let ts = l.timestamp.format("%H:%M:%S").to_string();
+            let data: String = l.data.chars().take(max).collect();
+            lines.push(Line::from(vec![
+                Span::styled(format!("{ts} "), Style::default().fg(t.muted)),
+                Span::styled(data, Style::default().fg(t.text)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Centered empty-state message.
