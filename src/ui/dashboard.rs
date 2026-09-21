@@ -17,6 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::models::{Metrics, PublishedPort, SandboxState, SandboxSummary};
+use crate::ui::theme::THEME;
 
 /// Height in rows of a single card (including its border).
 const CARD_HEIGHT: u16 = 8;
@@ -45,6 +46,7 @@ pub fn render(
     status: StatusLines<'_>,
     area: Rect,
 ) {
+    let t = &THEME;
     let mut constraints = vec![
         Constraint::Length(1), // header
         Constraint::Min(3),    // cards
@@ -67,11 +69,8 @@ pub fn render(
     }
 
     let footer = Paragraph::new(vec![
-        Line::from(Span::styled(FOOTER_HINTS, Style::default().fg(Color::Gray))),
-        Line::from(Span::styled(
-            FOOTER_HINTS_2,
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(Span::styled(FOOTER_HINTS, Style::default().fg(t.text))),
+        Line::from(Span::styled(FOOTER_HINTS_2, Style::default().fg(t.muted))),
     ]);
     frame.render_widget(footer, chunks[2]);
 
@@ -79,16 +78,16 @@ pub fn render(
     let mut next = 3;
     if let Some(text) = status.banner {
         let line = Paragraph::new(Line::from(vec![
-            Span::styled("⬆ ", Style::default().fg(Color::Yellow)),
-            Span::styled(text.to_owned(), Style::default().fg(Color::Yellow)),
+            Span::styled("⬆ ", Style::default().fg(t.warn)),
+            Span::styled(text.to_owned(), Style::default().fg(t.warn)),
         ]));
         frame.render_widget(line, chunks[next]);
         next += 1;
     }
     if let Some(msg) = status.error {
         let line = Paragraph::new(Line::from(vec![
-            Span::styled("✗ ", Style::default().fg(Color::Red)),
-            Span::styled(msg.to_owned(), Style::default().fg(Color::Red)),
+            Span::styled("✗ ", Style::default().fg(t.err)),
+            Span::styled(msg.to_owned(), Style::default().fg(t.err)),
         ]));
         frame.render_widget(line, chunks[next]);
     }
@@ -96,37 +95,35 @@ pub fn render(
 
 /// Header line: sandbox count on the left, quick actions on the right.
 fn render_header(frame: &mut Frame, count: usize, area: Rect) {
+    let t = &THEME;
     let line = Line::from(vec![
         Span::styled(
             format!(" Sandboxes ({count})"),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("[c] Create  [q] Quit", Style::default().fg(Color::DarkGray)),
+        Span::styled("[c] Create  [q] Quit", Style::default().fg(t.muted)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Centered empty-state message.
 fn render_empty(frame: &mut Frame, area: Rect) {
+    let t = &THEME;
     let para = Paragraph::new(Line::from(vec![
-        Span::styled("No sandboxes. ", Style::default().fg(Color::Gray)),
-        Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("No sandboxes. ", Style::default().fg(t.text)),
+        Span::styled("Press ", Style::default().fg(t.muted)),
         Span::styled(
             "[c]",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" to create one.", Style::default().fg(Color::DarkGray)),
+        Span::styled(" to create one.", Style::default().fg(t.muted)),
     ]))
     .centered()
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+            .border_style(Style::default().fg(t.muted)),
     );
     frame.render_widget(para, area);
 }
@@ -182,13 +179,12 @@ fn render_card(
     selected: bool,
     area: Rect,
 ) {
+    let t = &THEME;
     let (symbol, color) = state_indicator(&sbx.status);
     let border_style = if selected {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(t.muted)
     };
     let title = if selected { " ▶ " } else { "   " };
     let block = Block::default()
@@ -199,11 +195,9 @@ fn render_card(
     frame.render_widget(block, area);
 
     let name_style = if selected {
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(t.fg)
     };
 
     let mut lines = vec![
@@ -215,64 +209,58 @@ fn render_card(
         ]),
         Line::from(Span::styled(
             sbx.image.clone(),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.muted),
         )),
     ];
 
     match metrics {
         Some(m) => {
             lines.push(Line::from(vec![
-                Span::styled("CPU ", Style::default().fg(Color::DarkGray)),
+                Span::styled("CPU ", Style::default().fg(t.muted)),
                 Span::styled(
                     format!("{:.0}%", m.cpu_percent),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(t.text),
                 ),
                 Span::raw("  "),
-                Span::styled("MEM ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format_bytes(m.memory_bytes),
-                    Style::default().fg(Color::Gray),
-                ),
+                Span::styled("MEM ", Style::default().fg(t.muted)),
+                Span::styled(format_bytes(m.memory_bytes), Style::default().fg(t.text)),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Net ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Net ", Style::default().fg(t.muted)),
                 Span::styled(
                     format!(
                         "↓{} ↑{}",
                         format_bytes(m.net_rx_bytes),
                         format_bytes(m.net_tx_bytes)
                     ),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(t.text),
                 ),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Ports ", Style::default().fg(Color::DarkGray)),
-                Span::styled(ports_short(ports), Style::default().fg(Color::Gray)),
+                Span::styled("Ports ", Style::default().fg(t.muted)),
+                Span::styled(ports_short(ports), Style::default().fg(t.text)),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Uptime ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format_duration(m.uptime_secs),
-                    Style::default().fg(Color::Gray),
-                ),
+                Span::styled("Uptime ", Style::default().fg(t.muted)),
+                Span::styled(format_duration(m.uptime_secs), Style::default().fg(t.text)),
             ]));
         }
         None => {
             lines.push(Line::from(Span::styled(
                 "CPU --   MEM --",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.muted),
             )));
             lines.push(Line::from(Span::styled(
                 "Net --",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.muted),
             )));
             lines.push(Line::from(vec![
-                Span::styled("Ports ", Style::default().fg(Color::DarkGray)),
-                Span::styled(ports_short(ports), Style::default().fg(Color::Gray)),
+                Span::styled("Ports ", Style::default().fg(t.muted)),
+                Span::styled(ports_short(ports), Style::default().fg(t.text)),
             ]));
             lines.push(Line::from(Span::styled(
                 "Uptime --",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.muted),
             )));
         }
     }
@@ -344,21 +332,23 @@ pub fn format_duration(secs: f64) -> String {
 
 /// Symbol + color for a sandbox state indicator.
 pub fn state_indicator(state: &SandboxState) -> (&'static str, Color) {
+    let t = &THEME;
     match state {
-        SandboxState::Running => ("●", Color::Green),
-        SandboxState::Stopped => ("○", Color::Gray),
-        SandboxState::Paused => ("⏸", Color::Yellow),
-        SandboxState::Exited => ("✗", Color::Red),
-        SandboxState::Created => ("○", Color::Cyan),
-        SandboxState::Crashed => ("✗", Color::Red),
-        SandboxState::Stalled => ("⏸", Color::Yellow),
-        SandboxState::Unknown(_) => ("?", Color::DarkGray),
+        SandboxState::Running => ("●", t.ok),
+        SandboxState::Stopped => ("○", t.text),
+        SandboxState::Paused => ("⏸", t.warn),
+        SandboxState::Exited => ("✗", t.err),
+        SandboxState::Created => ("○", t.accent),
+        SandboxState::Crashed => ("✗", t.err),
+        SandboxState::Stalled => ("⏸", t.warn),
+        SandboxState::Unknown(_) => ("?", t.muted),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::THEME;
 
     #[test]
     fn format_bytes_scales_and_trim() {
@@ -385,13 +375,14 @@ mod tests {
 
     #[test]
     fn state_indicator_maps_states() {
-        assert_eq!(state_indicator(&SandboxState::Running), ("●", Color::Green));
-        assert_eq!(state_indicator(&SandboxState::Stopped), ("○", Color::Gray));
-        assert_eq!(state_indicator(&SandboxState::Paused), ("⏸", Color::Yellow));
-        assert_eq!(state_indicator(&SandboxState::Exited), ("✗", Color::Red));
+        let t = &THEME;
+        assert_eq!(state_indicator(&SandboxState::Running), ("●", t.ok));
+        assert_eq!(state_indicator(&SandboxState::Stopped), ("○", t.text));
+        assert_eq!(state_indicator(&SandboxState::Paused), ("⏸", t.warn));
+        assert_eq!(state_indicator(&SandboxState::Exited), ("✗", t.err));
         assert_eq!(
             state_indicator(&SandboxState::Unknown("weird".into())),
-            ("?", Color::DarkGray)
+            ("?", t.muted)
         );
     }
 

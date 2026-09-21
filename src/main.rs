@@ -390,7 +390,10 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
         // (e.g. milky fish/zsh setups) bleed through ratatui's Reset
         // background. Widgets only patch cells they touch, so this solid
         // backdrop persists behind every view.
-        frame.render_widget(Block::default().style(Style::default().bg(ui::BG)), area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(ui::theme::THEME.bg)),
+            area,
+        );
         match app.view {
             View::Dashboard => {
                 ui::render_dashboard(

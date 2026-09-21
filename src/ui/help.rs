@@ -6,9 +6,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
+
+use crate::ui::theme::THEME;
 
 /// One row of the keybinding table.
 struct KeyRow {
@@ -60,7 +62,7 @@ static DASHBOARD_KEYS: &[KeyRow] = &[
     },
     KeyRow {
         keys: "s",
-        action: "SSH into sandbox",
+        action: "start sandbox",
     },
     KeyRow {
         keys: "p",
@@ -130,10 +132,8 @@ static GROUPS: &[KeyGroup] = &[
 pub fn render(frame: &mut Frame, area: Rect) {
     // Paint an opaque backdrop instead of `Clear`, which would reset cells
     // to a transparent `Reset` background.
-    frame.render_widget(
-        Block::default().style(Style::default().bg(crate::ui::BG)),
-        area,
-    );
+    let t = &THEME;
+    frame.render_widget(Block::default().style(Style::default().bg(THEME.bg)), area);
 
     // Compute a centered box that fits the content.
     let total_rows: u16 = GROUPS
@@ -149,11 +149,9 @@ pub fn render(frame: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .title(Span::styled(
             " Keybindings ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(t.accent))
         .padding(Padding::horizontal(2));
 
     let mut lines: Vec<Line> = Vec::new();
@@ -161,18 +159,16 @@ pub fn render(frame: &mut Frame, area: Rect) {
         lines.push(Line::from(Span::styled(
             group.title,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(t.warn)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
         for row in group.rows {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {:<8}", row.keys),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(row.action, Style::default().fg(Color::Gray)),
+                Span::styled(row.action, Style::default().fg(t.text)),
             ]));
         }
         lines.push(Line::raw(""));
@@ -183,11 +179,9 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::raw("  "),
             Span::styled(
                 "Esc / ?",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  close", Style::default().fg(Color::DarkGray)),
+            Span::styled("  close", Style::default().fg(t.muted)),
         ]);
     }
 

@@ -13,21 +13,18 @@ pub mod dashboard;
 pub mod help;
 pub mod logs;
 pub mod ports;
+pub mod theme;
 
 use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::models::{Metrics, PublishedPort, SandboxSummary};
-
-/// Opaque base background for every view. Solid by design — the terminal's
-/// own background (often translucent in fish/zsh setups) must not bleed
-/// through ratatui's `Reset` default.
-pub const BG: Color = Color::Rgb(16, 16, 20);
+use crate::ui::theme::THEME;
 
 /// Render the dashboard view (header + cards + footer).
 pub fn render_dashboard(
@@ -64,6 +61,7 @@ pub fn render_logs_panel(frame: &mut Frame, state: &logs::LogsState, area: Rect)
 
 /// Render a modal confirmation dialog for a pending operation.
 pub fn render_confirm(frame: &mut Frame, message: &str, area: Rect) {
+    let t = &THEME;
     let width = message.len().clamp(40, 60) as u16 + 8;
     let vert = Layout::vertical([
         Constraint::Fill(1),
@@ -80,28 +78,26 @@ pub fn render_confirm(frame: &mut Frame, message: &str, area: Rect) {
 
     // Paint the dialog background instead of `Clear`, which would reset
     // cells to a transparent `Reset` background.
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), horiz[1]);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(THEME.bg)),
+        horiz[1],
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
             " Confirm ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(t.err).add_modifier(Modifier::BOLD),
         ))
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(t.err));
     let text = vec![
         Line::from(Span::raw(message)),
         Line::from(""),
         Line::from(vec![
-            Span::styled(
-                "y",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("y", Style::default().fg(t.ok).add_modifier(Modifier::BOLD)),
             Span::raw(" = yes   "),
             Span::styled(
                 "n/Esc",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(t.err).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" = no"),
         ]),
@@ -111,16 +107,15 @@ pub fn render_confirm(frame: &mut Frame, message: &str, area: Rect) {
 
 /// Render a "Not implemented" placeholder for views not yet built.
 pub fn render_placeholder(frame: &mut Frame, title: &str, area: Rect) {
+    let t = &THEME;
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.muted));
     let text = Line::from(vec![
         Span::styled(
             "Not implemented yet",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(t.warn).add_modifier(Modifier::DIM),
         ),
         Span::raw("  —  press "),
         Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),

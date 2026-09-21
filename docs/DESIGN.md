@@ -55,6 +55,21 @@ survive the TUI being closed.
 - KVM enabled (Linux), Apple Silicon (macOS), or WHP (Windows) — for actually
   running sandboxes.
 
+## Theme
+
+One polished dark palette lives in `src/ui/theme.rs` (`ui::theme::THEME`) and
+is the single source of color for every view:
+
+- **Opaque base background** — painted behind every frame; translucent
+  terminal profiles never bleed through, on any platform.
+- **Three text tones** (`fg` > `text` > `muted`) carry the whole hierarchy.
+- **One accent** (cyan) reserved for selection, focus, and interactive hints.
+- **Semantic colors** (`ok`/`warn`/`err`) only where state has meaning:
+  running/stopped indicators, runtime banner, errors, destructive actions.
+
+Additional palettes (light, terminal-palette "system") can be added as more
+`Theme` statics later; nothing else changes when they do.
+
 ## Views
 
 ### 1. Dashboard (default view)

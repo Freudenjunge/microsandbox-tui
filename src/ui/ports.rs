@@ -1,19 +1,20 @@
 //! Port Forwards view (read-only in Phase 1).
 //!
-//! Lists the published ports for a sandbox (from `msb inspect` →
-//! `network.ports`). Phase 1 is read-only: publish/unpublish requires the
-//! recreate flow (stop → create --replace → start) because microsandbox 0.7.2
-//! binds ports at boot time. The view shows a note explaining this.
+//! Lists the published ports for a sandbox (from `inspect` →
+//! `network.ports`). Publish/unpublish requires the recreate flow
+//! (stop → remove → recreate → start) because microsandbox 0.7.2 binds ports
+//! at boot time. The view shows a note explaining this.
 
 #![allow(dead_code)]
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 
 use crate::models::PublishedPort;
+use crate::ui::theme::THEME;
 
 /// State for the ports view.
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ impl PortsState {
 
 /// Render the ports view into `area`.
 pub fn render_ports(frame: &mut Frame, state: &PortsState, area: Rect) {
+    let t = &THEME;
     let chunks = Layout::vertical([
         Constraint::Min(3),    // table / empty state
         Constraint::Length(2), // footer hints + note
@@ -52,11 +54,9 @@ pub fn render_ports(frame: &mut Frame, state: &PortsState, area: Rect) {
         .borders(Borders::ALL)
         .title(Span::styled(
             title,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.muted));
 
     let inner = block.inner(chunks[0]);
     frame.render_widget(block, chunks[0]);
@@ -64,17 +64,13 @@ pub fn render_ports(frame: &mut Frame, state: &PortsState, area: Rect) {
     if state.ports.is_empty() {
         let empty = Paragraph::new(Line::from(vec![
             Span::raw("  "),
-            Span::styled("No published ports", Style::default().fg(Color::Yellow)),
+            Span::styled("No published ports", Style::default().fg(t.warn)),
         ]))
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(t.muted));
         frame.render_widget(empty, inner);
     } else {
         let header = Row::new(["HOST BIND", "HOST PORT", "GUEST PORT", "PROTOCOL"])
-            .style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .style(Style::default().fg(t.fg).add_modifier(Modifier::BOLD))
             .bottom_margin(0);
 
         let rows = state.ports.iter().map(|p| {
@@ -84,7 +80,7 @@ pub fn render_ports(frame: &mut Frame, state: &PortsState, area: Rect) {
                 p.guest_port.to_string(),
                 p.protocol.clone(),
             ])
-            .style(Style::default().fg(Color::Gray))
+            .style(Style::default().fg(t.text))
         });
 
         let widths = [
@@ -102,13 +98,11 @@ pub fn render_ports(frame: &mut Frame, state: &PortsState, area: Rect) {
     let footer = Paragraph::new(vec![
         Line::from(Span::styled(
             "[+] Publish  [-] Unpublish  [Esc] back",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(t.text),
         )),
         Line::from(Span::styled(
             "Publish/unpublish requires recreate in msb 0.7.2",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(t.muted).add_modifier(Modifier::DIM),
         )),
     ]);
     frame.render_widget(footer, chunks[1]);

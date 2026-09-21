@@ -140,3 +140,39 @@ runtime). 145 unit tests, all gates green locally. Deviations recorded:
   and network-rule edits keep the stop → remove → recreate → start flow.
 - `CreateSpec::to_args` (CLI argument builder) removed with the CLI layer.
 - GitHub Actions workflow removed at maintainer request; gates are local-only.
+
+---
+
+# Phase 2.5 — UX polish (findings from the manual smoke test)
+
+The first live smoke test surfaced correctness and UX issues. Fixes and
+redesigns are tracked here.
+
+## Task List
+
+### 1. Smoke-test correctness fixes
+- [x] `q` never exited: tokio runtime drop waits on the SDK's parked
+      blocking threads (sqlx/SQLite workers). `main` now shuts the runtime
+      down without draining them (commit 9587aac).
+- [x] Opaque base background behind every view + overlays (translucent
+      fish/terminal themes bled through `Color::Reset`).
+
+### 2. Central dark theme
+- [x] Add `src/ui/theme.rs`: one polished dark palette (opaque `bg`, three
+      text tones, accent, semantic `ok`/`warn`/`err`); sweep dashboard,
+      logs, ports, help, and shared widgets onto it. `create.rs` follows
+      with task 3.
+- [x] Help overlay text corrected: `s` = start (not SSH).
+
+### 3. Create form: quick + advanced + image picker
+- [ ] Quick path (default): image picker + optional name; SDK defaults for
+      everything else (cpus/memory, `public` network, no ports/volumes/env).
+- [ ] Image picker: list opens immediately (pulled images + curated
+      suggestions), type-to-filter, `↑↓`+`Enter` to select, `Esc` closes.
+- [ ] `a` toggles advanced fields (cpus, memory, workdir, ports, volumes,
+      env, labels, network profile) with defaults prefilled.
+- [ ] Theming + footer hints for the new form; unit tests for state logic.
+
+### 4. Re-run smoke test
+- [ ] Dashboard render with theme, create flow end-to-end, logs, exec,
+      stop, remove; `q` exits cleanly; `msb ls` shows no leftovers.

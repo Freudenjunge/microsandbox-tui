@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::backend::LogLine;
+use crate::ui::theme::THEME;
 
 /// Maximum number of log lines retained in memory.
 const MAX_LINES: usize = 10_000;
@@ -244,18 +245,13 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
 
 /// Title bar: `Logs: <name> (following)` or `(paused)`.
 fn render_title_bar(frame: &mut Frame, state: &LogsState, area: Rect) {
+    let t = &THEME;
     let status_text = if state.follow { "following" } else { "paused" };
-    let status_color = if state.follow {
-        Color::Green
-    } else {
-        Color::Yellow
-    };
+    let status_color = if state.follow { t.ok } else { t.warn };
     let line = Line::from(vec![
         Span::styled(
             format!(" Logs: {}", state.sandbox_name),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
@@ -268,16 +264,18 @@ fn render_title_bar(frame: &mut Frame, state: &LogsState, area: Rect) {
 
 /// Map a log source to a display color.
 fn source_color(source: &str) -> Color {
+    let t = &THEME;
     match source {
-        "stderr" => Color::Red,
-        "system" => Color::Yellow,
-        "output" => Color::Cyan,
-        _ => Color::White,
+        "stderr" => t.err,
+        "system" => t.warn,
+        "output" => t.accent,
+        _ => t.fg,
     }
 }
 
 /// Render the scrollable log line area.
 fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
+    let t = &THEME;
     let visible = state.visible_lines();
     let height = area.height as usize;
     let total = visible.len();
@@ -293,7 +291,7 @@ fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
         .map(|line| {
             let ts = line.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
             Line::from(vec![
-                Span::styled(format!("[{ts}] "), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("[{ts}] "), Style::default().fg(t.muted)),
                 Span::styled(
                     line.data.clone(),
                     Style::default().fg(source_color(&line.source)),
@@ -304,7 +302,7 @@ fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.muted));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let para = Paragraph::new(lines);
@@ -313,18 +311,19 @@ fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
 
 /// Grep input line shown while the user is typing a pattern.
 fn render_grep_input(frame: &mut Frame, state: &LogsState, area: Rect) {
+    let t = &THEME;
     let line = Line::from(vec![
-        Span::styled(" grep: ", Style::default().fg(Color::Cyan)),
-        Span::styled(state.grep_input.clone(), Style::default().fg(Color::White)),
+        Span::styled(" grep: ", Style::default().fg(t.accent)),
+        Span::styled(state.grep_input.clone(), Style::default().fg(t.fg)),
         Span::styled(
             "▌",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(t.accent)
                 .add_modifier(Modifier::SLOW_BLINK),
         ),
         Span::styled(
             "  [Enter] confirm  [Esc] cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(t.muted),
         ),
     ]);
     frame.render_widget(Paragraph::new(line), area);
@@ -332,6 +331,7 @@ fn render_grep_input(frame: &mut Frame, state: &LogsState, area: Rect) {
 
 /// Footer keybinding hints + auto-scroll indicator.
 fn render_footer(frame: &mut Frame, state: &LogsState, area: Rect) {
+    let t = &THEME;
     let footer_hints = "[f] follow  [g] grep  [s] source  [Esc] back";
     let scroll_indicator = if state.auto_scroll {
         "↓ auto".to_string()
@@ -339,9 +339,9 @@ fn render_footer(frame: &mut Frame, state: &LogsState, area: Rect) {
         format!("↑ {} from bottom", state.scroll)
     };
     let line = Line::from(vec![
-        Span::styled(footer_hints, Style::default().fg(Color::DarkGray)),
+        Span::styled(footer_hints, Style::default().fg(t.muted)),
         Span::raw(" "),
-        Span::styled(scroll_indicator, Style::default().fg(Color::Gray)),
+        Span::styled(scroll_indicator, Style::default().fg(t.text)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
