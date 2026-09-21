@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+pub mod chrome;
 pub mod create;
 pub mod dashboard;
 pub mod help;
@@ -40,6 +41,7 @@ pub fn render_dashboard(
     let status = dashboard::StatusLines {
         banner: banner.as_deref(),
         error,
+        status_text: None,
     };
     dashboard::render(frame, sandboxes, metrics, ports, selected, status, area);
 }

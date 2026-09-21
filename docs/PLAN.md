@@ -202,16 +202,16 @@ rules.
 - [x] Update the Theme section of `docs/DESIGN.md`.
 
 ### 2. Shared chrome (`src/ui/chrome.rs`)
-- [ ] Title bar: traffic dots, `microsandbox vX.Y.Z` (runtime detection),
+- [x] Title bar: traffic dots, `microsandbox vX.Y.Z` (runtime detection),
       session/size/pid, LIVE pill, clock.
-- [ ] Tab bar: `[1] SANDBOXES (n)  [2] LOGS  [3] PORTS` + runtime/daemon state
+- [x] Tab bar: `[1] SANDBOXES (n)  [2] LOGS  [3] PORTS` + runtime/daemon state
       on the right; number keys switch views.
-- [ ] Update banner (runtime `banner_text`) restyled as full-width warn band.
-- [ ] Footer keyhint bar shared by all views.
+- [x] Update banner (runtime `banner_text`) restyled as full-width warn band.
+- [x] Footer keyhint bar shared by all views.
 
 ### 3. Dashboard
-- [ ] Fleet stats bar (n running / stopped, sum of memory from metrics).
-- [ ] Card grid: status pill, image chip, CPU gauge `[■■■□□…]`, memory,
+- [x] Fleet stats bar (n running / stopped, sum of memory from metrics).
+- [x] Card grid: status pill, image chip, CPU gauge `[■■■□□…]`, memory,
       net I/O rates (computed from consecutive metric samples), ports, uptime
       from `created_at`.
 - [ ] Status/event panel (real status + error + banner lines only).
