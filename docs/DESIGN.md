@@ -58,14 +58,20 @@ survive the TUI being closed.
 ## Theme
 
 One polished dark palette lives in `src/ui/theme.rs` (`ui::theme::THEME`) and
-is the single source of color for every view:
+is the single source of color for every view, derived from the Stitch design
+system (`design/stitch_microsandbox_tui_design_system/`):
 
-- **Opaque base background** — painted behind every frame; translucent
-  terminal profiles never bleed through, on any platform.
-- **Three text tones** (`fg` > `text` > `muted`) carry the whole hierarchy.
-- **One accent** (cyan) reserved for selection, focus, and interactive hints.
-- **Semantic colors** (`ok`/`warn`/`err`) only where state has meaning:
-  running/stopped indicators, runtime banner, errors, destructive actions.
+- **Opaque base background** (`#0d1117`, GitHub-Dark) — painted behind every
+  frame; translucent terminal profiles never bleed through, on any platform.
+- **Three text tones** (`fg` `#f0f6fc` > `text` `#c9d1d9` > `muted` `#6e7681`)
+  carry the whole hierarchy.
+- **One accent** (neon cyan `#00f0ff`) reserved for selection, focus, and
+  interactive hints.
+- **Semantic colors** only where state has meaning: `ok` `#00ff88` (running),
+  `warn` `#ffe600` (banners), `err` `#ff2a6d` (errors, destructive).
+- **Structural tones**: `border` `#30363d` (card/panel borders), `panel`
+  `#161b22` (raised panel background), `selection` `#0f2937` (row/card
+  highlight).
 
 Additional palettes (light, terminal-palette "system") can be added as more
 `Theme` statics later; nothing else changes when they do.

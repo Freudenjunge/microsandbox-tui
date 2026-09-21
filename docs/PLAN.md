@@ -178,3 +178,65 @@ redesigns are tracked here.
 ### 4. Re-run smoke test
 - [ ] Dashboard render with theme, create flow end-to-end, logs, exec,
       stop, remove; `q` exits cleanly; `msb ls` shows no leftovers.
+
+---
+
+# Phase 2.6 — Stitch design rework (`design/stitch_microsandbox_tui_design_system/`)
+
+Goal: restyle the TUI after the Stitch mockups — neon-cyberpunk accents on a
+GitHub-Dark base: title bar with LIVE/clock, tab bar, full-width update banner,
+dashboard card grid with quick-create sidebar, logs toolbar + stream inspector,
+ports matrix. **Invented mockup telemetry is deliberately not rendered**
+(firecracker/eBPF/cgroupv2/iptables strings, per-port traffic counters, security
+policies): only data the SDK actually provides is shown, per the architecture
+rules.
+
+## Task List
+
+### 1. Palette
+- [x] Swap `THEME` in `src/ui/theme.rs` to the Stitch palette: bg `#0d1117`,
+      fg `#f0f6fc`, text `#c9d1d9`, muted `#6e7681`, accent `#00f0ff`,
+      ok `#00ff88`, warn `#ffe600`, err `#ff2a6d`.
+- [x] Add `border` (`#30363d`), `panel` (`#161b22`), `selection` (`#0f2937`)
+      roles for cards, tables, and highlighted rows.
+- [x] Update the Theme section of `docs/DESIGN.md`.
+
+### 2. Shared chrome (`src/ui/chrome.rs`)
+- [ ] Title bar: traffic dots, `microsandbox vX.Y.Z` (runtime detection),
+      session/size/pid, LIVE pill, clock.
+- [ ] Tab bar: `[1] SANDBOXES (n)  [2] LOGS  [3] PORTS` + runtime/daemon state
+      on the right; number keys switch views.
+- [ ] Update banner (runtime `banner_text`) restyled as full-width warn band.
+- [ ] Footer keyhint bar shared by all views.
+
+### 3. Dashboard
+- [ ] Fleet stats bar (n running / stopped, sum of memory from metrics).
+- [ ] Card grid: status pill, image chip, CPU gauge `[■■■□□…]`, memory,
+      net I/O rates (computed from consecutive metric samples), ports, uptime
+      from `created_at`.
+- [ ] Status/event panel (real status + error + banner lines only).
+- [ ] Right sidebar: embedded quick create (image picker + name, `Ctrl+A`
+      opens the full form) + selected-sandbox log preview (bounded tail).
+
+### 4. Logs
+- [ ] Toolbar rows: target, grep input, follow/source/clear pills.
+- [ ] Stream inspector header: sandbox name, image, matched/total, mem/cpu.
+- [ ] Line rendering: line numbers, timestamps, source badges, level colors,
+      warn/err row tint.
+- [ ] Buffer metrics bar (lines, matched, scroll position).
+
+### 5. Ports
+- [ ] Global host⇄guest matrix over all sandboxes (state, sandbox, bind,
+      guest port, proto).
+- [ ] Inspector sidebar for the selected binding (real fields only).
+- [ ] Publish/unpublish wiring through the recreate flow with confirm dialog.
+
+### 6. Create + Help polish
+- [ ] Create form restyled onto the new chrome/palette.
+- [ ] Help overlay updated (number-key view switching, pane focus).
+
+### 7. Gates + docs
+- [ ] `cargo fmt --check && cargo clippy -- -D warnings && cargo test &&
+      cargo check` green.
+- [ ] `docs/DESIGN.md` views section updated; deviations recorded.
+- [ ] Manual smoke test note.
