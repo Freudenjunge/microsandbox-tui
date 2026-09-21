@@ -164,6 +164,8 @@ async fn run(cli: Cli) -> Result<()> {
     let mut log_task: Option<(String, tokio::sync::oneshot::Sender<()>)> = None;
     // Name of the sandbox whose ports we last fetched (avoids refetching).
     let mut ports_fetched_for: Option<String> = None;
+    // Whether the image list was fetched for the create form this session.
+    let mut images_fetched = false;
 
     while let Some(event) = event_rx.recv().await {
         let action = app.handle_event(event);
@@ -228,6 +230,26 @@ async fn run(cli: Cli) -> Result<()> {
             && let Some((_, abort)) = log_task.take()
         {
             let _ = abort.send(());
+        }
+
+        // Entering the Create view: fetch the local image list once so the
+        // picker shows pulled images.
+        if app.view == View::Create && !images_fetched {
+            images_fetched = true;
+            let tx = event_tx.clone();
+            let backend = backend.clone();
+            tokio::spawn(async move {
+                match backend.list_images().await {
+                    Ok(list) => {
+                        let names: Vec<String> =
+                            list.into_iter().map(|img| img.reference).collect();
+                        let _ = tx.send(AppEvent::ImagesUpdated(names)).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Error(format!("images: {e}"))).await;
+                    }
+                }
+            });
         }
 
         // Entering the Ports view: fetch ports once per sandbox.

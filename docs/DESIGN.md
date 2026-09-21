@@ -125,8 +125,13 @@ Additional palettes (light, terminal-palette "system") can be added as more
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
+- **Quick mode (default)**: image picker + optional name — everything else
+  takes runtime defaults (no cpus/memory limit, `public` network profile,
+  no ports/volumes/env). `Ctrl+A` expands the advanced fields.
 - Named by default (persistent) — ephemeral is an advanced toggle
-- Image field autocompletes from the SDK image list
+- Image field: an always-visible picker lists pulled images first, then
+  curated suggestions; typing filters, `↑↓`+`Enter` adopts
+- Advanced fields prefilled **empty** = use the runtime default
 - Port entries use Docker syntax: `HOST:GUEST` or `BIND:HOST:GUEST`, with `/udp` suffix
 - Network profile presets map to SDK network profiles:
   - **public** → `NetworkProfile::Public` (default: internet allowed, private blocked)

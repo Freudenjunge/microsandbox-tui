@@ -165,13 +165,15 @@ redesigns are tracked here.
 - [x] Help overlay text corrected: `s` = start (not SSH).
 
 ### 3. Create form: quick + advanced + image picker
-- [ ] Quick path (default): image picker + optional name; SDK defaults for
+- [x] Quick path (default): image picker + optional name; SDK defaults for
       everything else (cpus/memory, `public` network, no ports/volumes/env).
-- [ ] Image picker: list opens immediately (pulled images + curated
-      suggestions), type-to-filter, `↑↓`+`Enter` to select, `Esc` closes.
-- [ ] `a` toggles advanced fields (cpus, memory, workdir, ports, volumes,
-      env, labels, network profile) with defaults prefilled.
-- [ ] Theming + footer hints for the new form; unit tests for state logic.
+- [x] Image picker: list is always visible (pulled images first, then
+      curated suggestions), type-to-filter, `↑↓`+`Enter` to select; typed
+      custom references pass through.
+- [x] `Ctrl+A` toggles advanced fields (cpus, memory, workdir, ports,
+      volumes, env, network profile) prefilled empty = runtime defaults;
+      a one-line summary keeps them visible from quick mode.
+- [x] Theming + footer hints for the new form; unit tests for state logic.
 
 ### 4. Re-run smoke test
 - [ ] Dashboard render with theme, create flow end-to-end, logs, exec,
