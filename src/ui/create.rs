@@ -755,17 +755,50 @@ fn trim_filter(list: &[String]) -> Vec<String> {
 // rendering
 // ---------------------------------------------------------------------------
 
-/// Render the create-sandbox form into `area`.
+/// Render the create-sandbox form into `area` (full frame; chrome included).
 pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
+    let runtime_version = match crate::runtime::detect() {
+        crate::runtime::RuntimeStatus::Installed { runtime, .. } => {
+            runtime.version.as_ref().map(|v| v.to_string())
+        }
+        crate::runtime::RuntimeStatus::Missing => None,
+    };
+    let title = crate::ui::chrome::TitleInfo {
+        runtime_version,
+        size: format!("{}x{}", area.width, area.height),
+        pid: std::process::id(),
+        live: true,
+    };
+    let (title_area, tabs_area, _banner, _status, _body, footer_area) =
+        crate::ui::chrome::chrome_layout(area, None, None);
+
+    crate::ui::chrome::render_title_bar(frame, &title, title_area);
+    let tabs = vec![
+        crate::ui::chrome::Tab {
+            key: '1',
+            label: "SANDBOXES",
+            active: false,
+            count: None,
+        },
+        crate::ui::chrome::Tab {
+            key: 'C',
+            label: "CREATE",
+            active: true,
+            count: None,
+        },
+    ];
+    crate::ui::chrome::render_tab_bar(frame, &tabs, tabs_area);
+
     let t = &THEME;
     let mode = if form.advanced { "Advanced" } else { "Quick" };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            format!(" Create Sandbox — {mode} "),
+            format!(" ⚡ QUICK CREATE MICROVM — {mode} "),
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
-        .border_style(Style::default().fg(t.muted));
+        .border_style(Style::default().fg(t.accent))
+        .style(Style::default().bg(t.panel));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -830,6 +863,31 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+
+    // Chrome footer over the legacy hint line.
+    let hints = vec![
+        crate::ui::chrome::FooterHint {
+            key: "[Tab]",
+            label: "next field",
+            role: crate::ui::chrome::FooterRole::Plain,
+        },
+        crate::ui::chrome::FooterHint {
+            key: "[Enter]",
+            label: if form.advanced { "create" } else { "next" },
+            role: crate::ui::chrome::FooterRole::Accent,
+        },
+        crate::ui::chrome::FooterHint {
+            key: "[^a]",
+            label: if form.advanced { "quick" } else { "advanced" },
+            role: crate::ui::chrome::FooterRole::Warn,
+        },
+        crate::ui::chrome::FooterHint {
+            key: "[Esc]",
+            label: "cancel",
+            role: crate::ui::chrome::FooterRole::Err,
+        },
+    ];
+    crate::ui::chrome::render_footer(frame, &hints, footer_area);
 }
 
 /// The image suggestion picker: filtered list with a highlighted row.

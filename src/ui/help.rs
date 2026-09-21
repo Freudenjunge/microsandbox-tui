@@ -26,12 +26,12 @@ struct KeyGroup {
 
 static GLOBAL_KEYS: &[KeyRow] = &[
     KeyRow {
-        keys: "q",
-        action: "quit",
+        keys: "1 / 2 / 3",
+        action: "tab bar: sandboxes / logs / ports",
     },
     KeyRow {
-        keys: "Tab",
-        action: "cycle views (dashboard → volumes → snapshots)",
+        keys: "q",
+        action: "quit",
     },
     KeyRow {
         keys: "?",
@@ -96,16 +96,31 @@ static LOGS_KEYS: &[KeyRow] = &[
         action: "toggle follow",
     },
     KeyRow {
-        keys: "g",
+        keys: "g / /",
         action: "grep filter",
-    },
-    KeyRow {
-        keys: "t",
-        action: "tail count",
     },
     KeyRow {
         keys: "s",
         action: "source filter (stdout/stderr/system)",
+    },
+    KeyRow {
+        keys: "↑ ↓ / PgUp PgDn",
+        action: "scroll buffer",
+    },
+    KeyRow {
+        keys: "Esc",
+        action: "back to dashboard",
+    },
+];
+
+static PORTS_KEYS: &[KeyRow] = &[
+    KeyRow {
+        keys: "↑ ↓",
+        action: "select binding in the matrix",
+    },
+    KeyRow {
+        keys: "-",
+        action: "unpublish selected binding (confirm; recreates)",
     },
     KeyRow {
         keys: "Esc",
@@ -126,6 +141,10 @@ static GROUPS: &[KeyGroup] = &[
         title: "Logs",
         rows: LOGS_KEYS,
     },
+    KeyGroup {
+        title: "Ports",
+        rows: PORTS_KEYS,
+    },
 ];
 
 /// Render the help overlay centered inside `area`.
@@ -142,7 +161,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         .sum::<u16>()
         + 1; // closing border
     let height = total_rows.min(area.height);
-    let width = 56.min(area.width);
+    let width = 60.min(area.width);
     let centered = center_rect(area, width, height);
 
     let block = Block::default()

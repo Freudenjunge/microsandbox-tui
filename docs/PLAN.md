@@ -232,8 +232,8 @@ rules.
 - [x] Publish/unpublish wiring through the recreate flow with confirm dialog.
 
 ### 6. Create + Help polish
-- [ ] Create form restyled onto the new chrome/palette.
-- [ ] Help overlay updated (number-key view switching, pane focus).
+- [x] Create form restyled onto the new chrome/palette.
+- [x] Help overlay updated (number-key view switching, pane focus).
 
 ### 7. Gates + docs
 - [ ] `cargo fmt --check && cargo clippy -- -D warnings && cargo test &&
