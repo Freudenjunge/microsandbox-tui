@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::backend::LogLine;
+use crate::ui::chrome;
 use crate::ui::theme::THEME;
 
 /// Maximum number of log lines retained in memory.
@@ -221,42 +222,162 @@ impl LogsState {
 
 // ---------- rendering ----------
 
-/// Render the logs view into `area`.
+/// Render the logs view into `area` (full frame; chrome bands included).
 pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
-    let mut constraints = vec![
-        Constraint::Length(1), // title bar
-        Constraint::Min(1),    // log lines
-        Constraint::Length(1), // footer
-    ];
-    if state.grep_mode {
-        constraints.insert(2, Constraint::Length(1)); // grep input
-    }
-    let chunks = Layout::vertical(constraints).split(area);
+    let t = &THEME;
+    let runtime_version = match crate::runtime::detect() {
+        crate::runtime::RuntimeStatus::Installed { runtime, .. } => {
+            runtime.version.as_ref().map(|v| v.to_string())
+        }
+        crate::runtime::RuntimeStatus::Missing => None,
+    };
+    let title = chrome::TitleInfo {
+        runtime_version,
+        size: format!("{}x{}", area.width, area.height),
+        pid: std::process::id(),
+        live: true,
+    };
+    let grep_active = state.grep.is_some() || state.grep_mode;
 
-    render_title_bar(frame, state, chunks[0]);
-    render_log_area(frame, state, chunks[1]);
-    if state.grep_mode {
-        render_grep_input(frame, state, chunks[2]);
-        render_footer(frame, state, chunks[3]);
-    } else {
-        render_footer(frame, state, chunks[2]);
+    let (title_area, tabs_area, _banner, status_area, body, footer_area) =
+        chrome::chrome_layout(area, None, None);
+
+    chrome::render_title_bar(frame, &title, title_area);
+    let tabs = vec![
+        chrome::Tab {
+            key: '1',
+            label: "SANDBOXES",
+            active: false,
+            count: None,
+        },
+        chrome::Tab {
+            key: '2',
+            label: "LOGS",
+            active: true,
+            count: None,
+        },
+        chrome::Tab {
+            key: '3',
+            label: "PORTS",
+            active: false,
+            count: None,
+        },
+    ];
+    chrome::render_tab_bar(frame, &tabs, tabs_area);
+
+    // Body: toolbar (target+grep / follow+source), inspector line, log area.
+    let toolbar_h = 1 + u16::from(grep_active);
+    let chunks = Layout::vertical([
+        Constraint::Length(toolbar_h), // target/grep + controls
+        Constraint::Length(1),         // stream inspector header
+        Constraint::Min(1),            // log lines
+        Constraint::Length(1),         // buffer metrics bar
+    ])
+    .split(body);
+
+    render_toolbar(frame, state, chunks[0]);
+    if grep_active {
+        render_grep_input(
+            frame,
+            state,
+            Layout::vertical([Constraint::Length(1); 2]).split(chunks[0])[1],
+        );
     }
+    render_inspector_header(frame, state, chunks[1]);
+    render_log_area(frame, state, chunks[2]);
+    render_buffer_metrics(frame, state, chunks[3]);
+
+    if let Some(status) = status_area {
+        let _ = status; // no transient status wiring for logs yet
+    }
+
+    let hints = vec![
+        chrome::FooterHint {
+            key: "[f]",
+            label: "Follow",
+            role: chrome::FooterRole::Accent,
+        },
+        chrome::FooterHint {
+            key: "[/]",
+            label: "Grep",
+            role: chrome::FooterRole::Accent,
+        },
+        chrome::FooterHint {
+            key: "[s]",
+            label: "Source",
+            role: chrome::FooterRole::Plain,
+        },
+        chrome::FooterHint {
+            key: "[p]",
+            label: "Pause",
+            role: chrome::FooterRole::Plain,
+        },
+        chrome::FooterHint {
+            key: "[Esc/1]",
+            label: "Sandboxes",
+            role: chrome::FooterRole::Warn,
+        },
+        chrome::FooterHint {
+            key: "[q]",
+            label: "Quit",
+            role: chrome::FooterRole::Err,
+        },
+    ];
+    chrome::render_footer(frame, &hints, footer_area);
+    let _ = t;
 }
 
-/// Title bar: `Logs: <name> (following)` or `(paused)`.
-fn render_title_bar(frame: &mut Frame, state: &LogsState, area: Rect) {
+/// Toolbar row: target pill + grep indicator + follow/source pills.
+fn render_toolbar(frame: &mut Frame, state: &LogsState, area: Rect) {
     let t = &THEME;
-    let status_text = if state.follow { "following" } else { "paused" };
-    let status_color = if state.follow { t.ok } else { t.warn };
+    let follow = if state.follow { "ON" } else { "OFF" };
+    let follow_color = if state.follow { t.ok } else { t.warn };
+    let source = state
+        .source_filter
+        .clone()
+        .unwrap_or_else(|| "ALL".to_string());
+    let grep = state.grep.clone().unwrap_or_else(|| "—".to_string());
     let line = Line::from(vec![
         Span::styled(
-            format!(" Logs: {}", state.sandbox_name),
+            format!(" ▶ Target: {} ", state.sandbox_name),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("[/] ", Style::default().fg(t.muted)),
+        Span::styled(format!("grep: {grep}"), Style::default().fg(t.text)),
+        Span::raw("  "),
+        Span::styled(
+            format!("[f] Follow: {follow}"),
+            Style::default().fg(follow_color),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("[s] Source: {source}"),
+            Style::default().fg(t.muted),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Stream inspector header: sandbox, source mix, matched count.
+fn render_inspector_header(frame: &mut Frame, state: &LogsState, area: Rect) {
+    let t = &THEME;
+    let total = state.lines.len();
+    let visible = state.visible_lines().len();
+    let matched = if state.grep.is_some() {
+        format!(" [Filter: MATCHED {visible}/{total}]")
+    } else {
+        String::new()
+    };
+    let line = Line::from(vec![
+        Span::styled(" ● ", Style::default().fg(t.accent)),
+        Span::styled(
+            format!("STREAM: {}", state.sandbox_name),
             Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" "),
         Span::styled(
-            format!("({status_text})"),
-            Style::default().fg(status_color),
+            format!("  •  {total} buffered{matched}"),
+            Style::default().fg(t.muted),
         ),
     ]);
     frame.render_widget(Paragraph::new(line), area);
@@ -273,7 +394,24 @@ fn source_color(source: &str) -> Color {
     }
 }
 
-/// Render the scrollable log line area.
+/// Level badge heuristic: scan the payload for level keywords.
+fn level_of(data: &str) -> Option<(&'static str, Color)> {
+    let t = &THEME;
+    let lower = data.to_lowercase();
+    if lower.contains("[err") || lower.contains("error") {
+        Some(("ERR", t.err))
+    } else if lower.contains("[warn") || lower.contains("warn") {
+        Some(("WARN", t.warn))
+    } else if lower.contains("[debug") || lower.contains("debug") {
+        Some(("DEBUG", t.accent))
+    } else if lower.contains("[info") || lower.contains("info") {
+        Some(("INFO", t.ok))
+    } else {
+        None
+    }
+}
+
+/// Render the scrollable log line area with line numbers and level colors.
 fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
     let t = &THEME;
     let visible = state.visible_lines();
@@ -286,23 +424,38 @@ fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
     let start = end.saturating_sub(height);
     let window = &visible[start.min(total)..end.min(total)];
 
+    // Highest line id in the buffer to derive dense 1-based display numbers.
     let lines: Vec<Line> = window
         .iter()
         .map(|line| {
-            let ts = line.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-            Line::from(vec![
-                Span::styled(format!("[{ts}] "), Style::default().fg(t.muted)),
+            let ts = line.timestamp.format("%H:%M:%S").to_string();
+            let mut spans = vec![
+                Span::styled(format!("{:>6} ", line.id), Style::default().fg(t.muted)),
+                Span::styled(format!("{ts} "), Style::default().fg(t.muted)),
                 Span::styled(
-                    line.data.clone(),
+                    format!("[{:<7}] ", line.source),
                     Style::default().fg(source_color(&line.source)),
                 ),
-            ])
+            ];
+            if let Some((lvl, color)) = level_of(&line.data) {
+                spans.push(Span::styled(
+                    format!("[{lvl}] "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+            let row_tint = match level_of(&line.data) {
+                Some((_, c)) if c == t.err => Style::default().bg(t.err),
+                Some((_, c)) if c == t.warn => Style::default().bg(t.warn),
+                _ => Style::default(),
+            };
+            spans.push(Span::styled(line.data.clone(), Style::default().fg(t.text)));
+            Line::from(spans).style(row_tint)
         })
         .collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.muted));
+        .border_style(Style::default().fg(t.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let para = Paragraph::new(lines);
@@ -313,7 +466,7 @@ fn render_log_area(frame: &mut Frame, state: &LogsState, area: Rect) {
 fn render_grep_input(frame: &mut Frame, state: &LogsState, area: Rect) {
     let t = &THEME;
     let line = Line::from(vec![
-        Span::styled(" grep: ", Style::default().fg(t.accent)),
+        Span::styled(" Filter (grep): ", Style::default().fg(t.accent)),
         Span::styled(state.grep_input.clone(), Style::default().fg(t.fg)),
         Span::styled(
             "▌",
@@ -329,8 +482,33 @@ fn render_grep_input(frame: &mut Frame, state: &LogsState, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Footer keybinding hints + auto-scroll indicator.
-fn render_footer(frame: &mut Frame, state: &LogsState, area: Rect) {
+/// Buffer metrics bar under the log area.
+fn render_buffer_metrics(frame: &mut Frame, state: &LogsState, area: Rect) {
+    let t = &THEME;
+    let total = state.lines.len();
+    let visible = state.visible_lines().len();
+    let pos = if state.auto_scroll {
+        "BOTTOM".to_string()
+    } else {
+        format!("-{} from bottom", state.scroll)
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" Buffer: {total} lines"),
+            Style::default().fg(t.muted),
+        ),
+        Span::raw("  •  "),
+        Span::styled(format!("Matched: {visible}"), Style::default().fg(t.muted)),
+        Span::raw("  •  "),
+        Span::styled(format!("Pos: {pos}"), Style::default().fg(t.muted)),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Footer keybinding hints + auto-scroll indicator (legacy single-line
+/// footer, kept for narrow terminals without the chrome bar).
+#[allow(dead_code)]
+fn render_footer_legacy(frame: &mut Frame, state: &LogsState, area: Rect) {
     let t = &THEME;
     let footer_hints = "[f] follow  [g] grep  [s] source  [Esc] back";
     let scroll_indicator = if state.auto_scroll {

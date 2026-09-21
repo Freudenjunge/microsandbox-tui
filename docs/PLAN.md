@@ -219,11 +219,11 @@ rules.
       opens the full form) + selected-sandbox log preview (bounded tail).
 
 ### 4. Logs
-- [ ] Toolbar rows: target, grep input, follow/source/clear pills.
-- [ ] Stream inspector header: sandbox name, image, matched/total, mem/cpu.
-- [ ] Line rendering: line numbers, timestamps, source badges, level colors,
+- [x] Toolbar rows: target, grep input, follow/source/clear pills.
+- [x] Stream inspector header: sandbox name, image, matched/total, mem/cpu.
+- [x] Line rendering: line numbers, timestamps, source badges, level colors,
       warn/err row tint.
-- [ ] Buffer metrics bar (lines, matched, scroll position).
+- [x] Buffer metrics bar (lines, matched, scroll position).
 
 ### 5. Ports
 - [ ] Global host⇄guest matrix over all sandboxes (state, sandbox, bind,

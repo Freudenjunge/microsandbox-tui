@@ -305,6 +305,10 @@ impl App {
     /// Keys on the dashboard: selection, view switching, lifecycle ops.
     fn handle_dashboard_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
+            // Tab-bar number keys (mockup: [1] sandboxes, [2] logs, [3] ports).
+            KeyCode::Char('1') => Action::Render, // already home
+            KeyCode::Char('2') => self.open_logs(),
+            KeyCode::Char('3') => self.open_ports(),
             KeyCode::Char('q') => {
                 self.quit = true;
                 Action::Quit
