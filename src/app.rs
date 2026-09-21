@@ -19,7 +19,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::event::Action;
 use crate::event::AppEvent;
-use crate::models::{Metrics, SandboxSummary};
+use crate::models::{Metrics, PublishedPort, SandboxSummary};
 use crate::ui::create::CreateForm;
 use crate::ui::logs::LogsState;
 use crate::ui::ports::PortsState;
@@ -65,6 +65,10 @@ pub enum Op {
     Remove(String),
     /// Run a command in the named sandbox.
     Exec { name: String, cmd: Vec<String> },
+    /// Publish a port on the named sandbox (recreate flow).
+    PublishPort { name: String, port: PublishedPort },
+    /// Unpublish a port from the named sandbox (recreate flow).
+    UnpublishPort { name: String, port: PublishedPort },
     /// Install or update the host microsandbox runtime to the SDK version.
     InstallRuntime,
 }
@@ -78,6 +82,18 @@ impl Op {
             Op::Restart(n) => format!("Restart sandbox '{n}'?"),
             Op::Remove(n) => format!("REMOVE sandbox '{n}'? (rootfs is deleted)"),
             Op::Exec { name, cmd } => format!("Run in '{name}': {}", cmd.join(" ")),
+            Op::PublishPort { name, port } => {
+                format!(
+                    "Publish {}:{}→{}/{} on '{name}'? (recreates the sandbox; rootfs resets)",
+                    port.host_bind, port.host_port, port.guest_port, port.protocol
+                )
+            }
+            Op::UnpublishPort { name, port } => {
+                format!(
+                    "Unpublish {}:{} from '{name}'? (recreates the sandbox; rootfs resets)",
+                    port.host_port, port.guest_port
+                )
+            }
             Op::InstallRuntime => {
                 format!(
                     "Install/update microsandbox runtime to v{}? (downloads the official bundle)",
@@ -410,15 +426,57 @@ impl App {
         }
     }
 
-    /// Keys on the ports view.
+    /// Keys on the ports view: binding selection, publish/unpublish, back.
     fn handle_ports_key(&mut self, key: KeyEvent) -> Action {
+        // Publish/unpublish target the currently focused matrix binding.
+        if let Some(op) = self.pending_port_op(key) {
+            self.confirm = Some(op);
+            return Action::Render;
+        }
+        let Some(state) = &mut self.ports_state else {
+            self.view = View::Dashboard;
+            return Action::Render;
+        };
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.ports_state = None;
                 self.view = View::Dashboard;
                 Action::Render
             }
+            KeyCode::Char('1') => {
+                self.ports_state = None;
+                self.view = View::Dashboard;
+                Action::Render
+            }
+            KeyCode::Up => {
+                state.select_prev();
+                Action::Render
+            }
+            KeyCode::Down => {
+                let rows = crate::ui::ports::matrix_rows(&self.sandboxes, &self.ports).len();
+                state.select_next(rows.max(1));
+                Action::Render
+            }
             _ => Action::Continue,
+        }
+    }
+
+    /// Map `+`/`-` on the ports view to a confirmed recreate op for the
+    /// selected binding. `+` publishes (Phase 1 note: form lands with the
+    /// quick-create sidebar; today it reports the recreate requirement for
+    /// the selected binding), `-` unpublishes the focused binding.
+    fn pending_port_op(&self, key: KeyEvent) -> Option<Op> {
+        let state = self.ports_state.as_ref()?;
+        match key.code {
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                let (name, p) =
+                    crate::ui::ports::selected_binding(state, &self.sandboxes, &self.ports)?;
+                Some(Op::UnpublishPort {
+                    name: name.to_string(),
+                    port: p.clone(),
+                })
+            }
+            _ => None,
         }
     }
 

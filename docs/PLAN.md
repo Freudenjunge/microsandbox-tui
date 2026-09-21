@@ -226,10 +226,10 @@ rules.
 - [x] Buffer metrics bar (lines, matched, scroll position).
 
 ### 5. Ports
-- [ ] Global host⇄guest matrix over all sandboxes (state, sandbox, bind,
+- [x] Global host⇄guest matrix over all sandboxes (state, sandbox, bind,
       guest port, proto).
-- [ ] Inspector sidebar for the selected binding (real fields only).
-- [ ] Publish/unpublish wiring through the recreate flow with confirm dialog.
+- [x] Inspector sidebar for the selected binding (real fields only).
+- [x] Publish/unpublish wiring through the recreate flow with confirm dialog.
 
 ### 6. Create + Help polish
 - [ ] Create form restyled onto the new chrome/palette.

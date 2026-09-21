@@ -324,6 +324,16 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                 }
                 Err(e) => Err(e),
             },
+            Op::PublishPort { name, port } => {
+                actions::publish_port(backend.as_ref(), name, port.clone())
+                    .await
+                    .map(|_| format!("published {}:{} on {name}", port.host_port, port.guest_port))
+            }
+            Op::UnpublishPort { name, port } => {
+                actions::unpublish_port(backend.as_ref(), name, port)
+                    .await
+                    .map(|_| format!("unpublished {}:{name}", port.host_port))
+            }
             Op::InstallRuntime => {
                 crate::runtime::install_or_update()
                     .await
@@ -440,7 +450,9 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                 None => ui::render_placeholder(frame, "Logs", area),
             },
             View::Ports => match &app.ports_state {
-                Some(state) => ui::ports::render_ports(frame, state, area),
+                Some(state) => {
+                    ui::ports::render_ports(frame, state, &app.sandboxes, &app.ports, area)
+                }
                 None => ui::render_placeholder(frame, "Ports", area),
             },
             View::Inspect => {

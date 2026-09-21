@@ -52,8 +52,14 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
 }
 
 /// Render the port-forwards view for a sandbox.
-pub fn render_ports(frame: &mut Frame, state: &ports::PortsState, area: Rect) {
-    ports::render_ports(frame, state, area);
+pub fn render_ports(
+    frame: &mut Frame,
+    state: &ports::PortsState,
+    sandboxes: &[SandboxSummary],
+    port_cache: &HashMap<String, Vec<PublishedPort>>,
+    area: Rect,
+) {
+    ports::render_ports(frame, state, sandboxes, port_cache, area);
 }
 
 /// Render the logs panel for a sandbox.
