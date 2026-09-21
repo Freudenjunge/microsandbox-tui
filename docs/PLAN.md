@@ -236,7 +236,22 @@ rules.
 - [x] Help overlay updated (number-key view switching, pane focus).
 
 ### 7. Gates + docs
-- [ ] `cargo fmt --check && cargo clippy -- -D warnings && cargo test &&
+- [x] `cargo fmt --check && cargo clippy -- -D warnings && cargo test &&
       cargo check` green.
-- [ ] `docs/DESIGN.md` views section updated; deviations recorded.
+- [x] `docs/DESIGN.md` views section updated; deviations recorded.
 - [ ] Manual smoke test note.
+
+**Deviations from the mockups (deliberate):**
+- All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
+  iptables messages, per-port traffic counters, security policies, buffer
+  KB/lines-per-second stats — the 0.7.2 SDK exposes none of these.
+- Glow effects (mockup box-shadows) are approximated with the accent border
+  + bold; ratatui has no glow.
+- The dashboard's right sidebar (embedded quick create + log preview) is
+  **not** part of this phase — the tab bar navigates to the full views
+  instead; the sidebar can be added later without breaking the chrome.
+- Publish-port on the ports view is wired to the recreate flow via confirm,
+  but there is no dedicated bind-new-port form yet (`+` currently does
+  nothing; a form is future work).
+- Level badges in logs are heuristic (keyword scan), since LogLine carries
+  no structured level field.

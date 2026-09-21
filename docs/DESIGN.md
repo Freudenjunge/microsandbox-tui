@@ -78,6 +78,16 @@ Additional palettes (light, terminal-palette "system") can be added as more
 
 ## Views
 
+The Stitch design system (`design/stitch_microsandbox_tui_design_system/`)
+drives the visual language: shared chrome bands on every full-screen view
+(`src/ui/chrome.rs`) — title bar (traffic dots, `microsandbox vX.Y.Z`,
+session info, clock), tab bar with filled-pill active tab
+(`[1] SANDBOXES  [2] LOGS  [3] PORTS`, number keys switch), full-width warn
+banner for runtime updates, and a footer keyhint bar. Mockup-only telemetry
+(firecracker/eBPF/cgroupv2/iptables strings, per-port traffic counters,
+security policies) is deliberately **not** rendered — the 0.7.2 SDK provides
+none of it; panels show only real backend data.
+
 ### 1. Dashboard (default view)
 
 ```
@@ -96,12 +106,14 @@ Additional palettes (light, terminal-palette "system") can be added as more
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Sandbox cards laid out in a responsive grid (2–3 columns depending on width)
-- Each card: name, state indicator (● running / ○ stopped / ⏸ paused / ✗ exited),
-  image, live CPU%, memory used, net I/O, published ports, uptime
+- Sandbox cards laid out in a responsive grid (1–3 columns depending on width)
+- Each card: name, image chip, right-aligned uppercase status pill
+  (● RUNNING / ○ STOPPED / ⏸ PAUSED / ✗ EXITED, colored per state), live CPU%
+  with a `[■■■□□□□□□□]` gauge, memory used / limit with percent, net I/O with
+  ↓/↑ arrows, published ports, uptime
 - Polls the SDK sandbox list every 5s
 - Polls fleet metric reports every 1s for live stats
-- Selected card highlighted; actions operate on selection
+- Selected card highlighted with the accent border; actions operate on selection
 
 ### 2. Create Sandbox form
 
@@ -150,23 +162,31 @@ Additional palettes (light, terminal-palette "system") can be added as more
 
 ### 3. Port Forwards view
 
+The Stitch "HOST ⇄ GUEST PORT FORWARDING MATRIX": a global table over **all**
+sandboxes (state, sandbox, host bind, guest port, proto) flattened from the
+lazily refreshed `inspect` port cache, with a selected-binding inspector
+sidebar on the right.
+
 ```
-┌─ Ports: my-app ───────────────────────────────────────────────────────┐
-│                                                                       │
-│  HOST BIND    HOST PORT  GUEST PORT  PROTO                            │
-│  127.0.0.1    8080       80          tcp                              │
-│  0.0.0.0      9090       90          tcp                              │
-│                                                                       │
-│  [+] Publish port   [-] Unpublish   [Esc] back                        │
-└────────────────────────────────────────────────────────────────────────┘
+┌─ ■ HOST ⇄ GUEST PORT MATRIX ──────────────────────────────────────────┐
+│  STATE      SANDBOX       HOST BIND      GUEST PORT                  │
+│  ● ACTIVE   my-app        127.0.0.1:8080 80/tcp                      │
+│  ● ACTIVE   devbox        0.0.0.0:9090   90/udp                      │
+│  ✗ EXITED   worker        127.0.0.1:5050 50/tcp                      │
+└───────────────────────────────────────────────────────────────────────┘
+  ⚡ SELECTED BINDING            [+] Publish  [-] Unpublish  [Esc] back
+  Sandbox: my-app
+  Bind:     127.0.0.1:8080
+  Guest:    80/tcp
+  Recreate: required on edit
 ```
 
-- Lists current published ports from `inspect` → `network.ports[]`
-- **Publish**: prompts for `HOST:GUEST` (or `BIND:HOST:GUEST`), then runs the
-  recreate flow (see "Port Publish/Unpublish — Implementation Detail" below)
+- `↑↓` moves the binding selection across sandboxes
+- **Unpublish** (`-`): confirm dialog, then the recreate flow (see below)
+- **Publish**: recreate flow with confirm (see "Port Publish/Unpublish —
+  Implementation Detail" below; a dedicated bind-new-port form is future work)
   - ⚠️ Warns that recreation is required (microsandbox 0.7.2 can't modify ports live).
     Volume data survives; rootfs state resets unless snapshotted.
-- **Unpublish**: same recreate flow, minus the port
 - Future: if the SDK gains live port modification, switch to live modify
 
 ### 4. Network Rules editor
@@ -362,20 +382,25 @@ struct Image {
 | Key | Context | Action |
 |-----|---------|--------|
 | `q` | global | quit |
-| `Tab` | global | cycle views (dashboard → volumes → snapshots) |
+| `1` / `2` / `3` | global | tab bar: sandboxes / logs / ports |
 | `?` | global | help overlay |
 | `↑↓` | dashboard | select sandbox card |
 | `Enter` | dashboard | inspect selected sandbox |
 | `c` | dashboard | create sandbox form |
 | `e` | dashboard | exec command in sandbox |
 | `l` | dashboard | logs panel |
-| `s` | dashboard | SSH into sandbox |
-| `p` | dashboard | port forwards view |
-| `n` | dashboard | network rules editor |
+| `s` | dashboard | start sandbox |
+| `p` | dashboard | port forwards view (matrix) |
 | `r` | dashboard | restart sandbox |
 | `x` | dashboard | stop sandbox |
 | `Delete` | dashboard | remove sandbox (confirm) |
+| `U` | dashboard | install/update runtime (confirm) |
 | `f` | logs | toggle follow |
+| `g` / `/` | logs | grep filter |
+| `s` | logs | cycle source filter |
+| `↑↓` / `PgUp`/`PgDn` | logs | scroll buffer |
+| `↑↓` | ports | select binding in matrix |
+| `-` | ports | unpublish selected binding (confirm) |
 | `Esc` | any sub-view | back to dashboard |
 
 ## Port Publish/Unpublish — Implementation Detail
@@ -434,10 +459,12 @@ microsandbox-tui/
     ├── fixtures/            # captured JSON for model-layer unit tests
     └── ui/
         ├── mod.rs           # render dispatch + status/banner lines
+        ├── chrome.rs        # shared bands: title bar, tab bar, banner, footer
+        ├── theme.rs         # Stitch palette (single color source)
         ├── dashboard.rs     # sandbox cards grid + runtime banner
-        ├── create.rs        # create sandbox form
-        ├── ports.rs         # port forwards view
-        ├── logs.rs          # logs streaming panel
+        ├── create.rs        # create sandbox form (quick + advanced)
+        ├── ports.rs         # host⇄guest port matrix + inspector
+        ├── logs.rs          # logs streaming panel (toolbar + tints)
         └── help.rs          # keybindings overlay
 ```
 
