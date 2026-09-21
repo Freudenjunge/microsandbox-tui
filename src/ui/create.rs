@@ -769,10 +769,8 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         pid: std::process::id(),
         live: true,
     };
-    let (title_area, tabs_area, _banner, _status, _body, footer_area) =
-        crate::ui::chrome::chrome_layout(area, None, None);
+    let areas = crate::ui::chrome::chrome_layout(area, None, None);
 
-    crate::ui::chrome::render_title_bar(frame, &title, title_area);
     let tabs = vec![
         crate::ui::chrome::Tab {
             key: '1',
@@ -787,7 +785,7 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
             count: None,
         },
     ];
-    crate::ui::chrome::render_tab_bar(frame, &tabs, tabs_area);
+    crate::ui::chrome::render_chrome(frame, &areas, &title, &tabs);
 
     let t = &THEME;
     let mode = if form.advanced { "Advanced" } else { "Quick" };
@@ -800,8 +798,8 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         .border_style(Style::default().fg(t.accent))
         .style(Style::default().bg(t.panel));
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = block.inner(areas.body);
+    frame.render_widget(block, areas.body);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -887,7 +885,7 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
             role: crate::ui::chrome::FooterRole::Err,
         },
     ];
-    crate::ui::chrome::render_footer(frame, &hints, footer_area);
+    crate::ui::chrome::render_chrome_footer(frame, &areas, &hints);
 }
 
 /// The image suggestion picker: filtered list with a highlighted row.

@@ -65,10 +65,7 @@ pub fn render(
         live: true,
     };
 
-    let (title_area, tabs_area, banner_area, status_area, body, footer_area) =
-        chrome::chrome_layout(area, status.banner, status.error.or(status.status_text));
-
-    chrome::render_title_bar(frame, &title, title_area);
+    let areas = chrome::chrome_layout(area, status.banner, status.error.or(status.status_text));
 
     let running = sandboxes.iter().filter(|s| s.status.is_running()).count();
     let stopped = sandboxes.len() - running;
@@ -92,47 +89,39 @@ pub fn render(
             count: None,
         },
     ];
-    chrome::render_tab_bar(frame, &tabs, tabs_area);
     let _ = (running, stopped);
 
-    if let Some(banner) = status.banner {
-        chrome::render_banner(frame, banner, banner_area.expect("banner area"));
+    chrome::render_chrome(frame, &areas, &title, &tabs);
+
+    if status.banner.is_some() {
+        chrome::render_chrome_bands(frame, &areas, status.banner, None);
     }
     let status_msg = status.error.or(status.status_text);
     if let Some(msg) = status_msg {
-        if status.error.is_some() {
-            chrome::render_error_line(frame, msg, status_area.expect("status area"));
-        } else {
-            chrome::render_status_line(frame, msg, status_area.expect("status area"));
-        }
+        chrome::render_chrome_bands(frame, &areas, None, Some((msg, status.error.is_some())));
     }
 
     // Two-pane body on wide terminals (cards 65% / sidebar 35%) like the
     // mockup: ONE surface, split by a vertical separator line — not two
     // separate boxes. The sidebar hides while the full create form is open
     // (the form covers the frame) and on narrow terminals.
-    if body.width >= 100 && quick.is_none() {
-        // Draw the shared surface border ONCE, then split the interior.
-        let surface_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(t.border));
-        let inner = surface_block.inner(body);
-        frame.render_widget(surface_block, body);
-
+    if areas.body.width >= 100 && quick.is_none() {
+        // The body is already inside the framed chrome; the zoned surface
+        // shares the chrome frame (no second border).
         let cols = Layout::horizontal([
             Constraint::Percentage(65),
             Constraint::Length(1),
             Constraint::Percentage(35),
         ])
-        .split(inner);
+        .split(areas.body);
         let cards = cols[0];
         let divider_x = cols[1].x;
         let sidebar = cols[2];
-        draw_vertical_separator(frame, divider_x, inner);
+        draw_vertical_separator(frame, divider_x, areas.body);
         render_body(frame, sandboxes, metrics, ports, selected, cards);
         render_sidebar(frame, sandboxes, selected, preview, sidebar);
     } else {
-        render_body(frame, sandboxes, metrics, ports, selected, body);
+        render_body(frame, sandboxes, metrics, ports, selected, areas.body);
     }
 
     let hints = vec![
@@ -187,7 +176,7 @@ pub fn render(
             role: FooterRole::Plain,
         },
     ];
-    chrome::render_footer(frame, &hints, footer_area);
+    chrome::render_chrome_footer(frame, &areas, &hints);
     let _ = t;
 }
 

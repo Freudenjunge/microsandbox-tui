@@ -112,10 +112,8 @@ pub fn render_ports(
         live: true,
     };
 
-    let (title_area, tabs_area, _banner, _status, body, footer_area) =
-        chrome::chrome_layout(area, None, None);
+    let areas = chrome::chrome_layout(area, None, None);
 
-    chrome::render_title_bar(frame, &title, title_area);
     let tabs = vec![
         Tab {
             key: '1',
@@ -136,11 +134,11 @@ pub fn render_ports(
             count: None,
         },
     ];
-    chrome::render_tab_bar(frame, &tabs, tabs_area);
+    chrome::render_chrome(frame, &areas, &title, &tabs);
 
     // Body: matrix table (70%) + inspector sidebar (30%).
-    let cols =
-        Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)]).split(body);
+    let cols = Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(areas.body);
     render_matrix(frame, sandboxes, port_cache, cols[0]);
     render_inspector(frame, state, sandboxes, port_cache, cols[1]);
 
@@ -171,7 +169,7 @@ pub fn render_ports(
             role: FooterRole::Plain,
         },
     ];
-    chrome::render_footer(frame, &hints, footer_area);
+    chrome::render_chrome_footer(frame, &areas, &hints);
 }
 
 /// The ports of the sandbox that owns the currently highlighted matrix row.

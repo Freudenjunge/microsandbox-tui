@@ -37,6 +37,12 @@ pub fn render_title_bar(frame: &mut Frame, info: &TitleInfo, area: Rect) {
     frame.render_widget(title_bar_line(info), area);
 }
 
+/// Render the title line inside the framed chrome (alias for
+/// [`render_title_bar`], kept for the chrome call site).
+fn chrome_title_line(frame: &mut Frame, info: &TitleInfo, area: Rect) {
+    render_title_bar(frame, info, area);
+}
+
 /// Build the title-bar line: name, version, session info.
 fn title_bar_line(info: &TitleInfo) -> Line<'static> {
     let t = &THEME;
@@ -340,24 +346,49 @@ pub fn render_zone_frame(frame: &mut Frame, layout: &ZonedLayout, area: Rect) {
     }
 }
 
-/// The chrome bands shared by every full-screen view: title bar, tab bar,
-/// optional banner/error/status, then the body and the footer.
+/// The chrome bands shared by every full-screen view, computed for one
+/// `area`: a single outer frame wraps **everything** (title, tabs, optional
+/// banner/status, body, footer); interior separator lines divide the bands.
 ///
-/// Returns `(title, tabs, banner|None, status|None, body, footer)`.
-#[allow(clippy::type_complexity)]
-pub fn chrome_layout(
-    area: Rect,
-    banner: Option<&str>,
-    status: Option<&str>,
-) -> (Rect, Rect, Option<Rect>, Option<Rect>, Rect, Rect) {
+/// Bands are rendered by [`render_chrome`]; the body area is returned to
+/// the view.
+#[derive(Debug, Clone, Copy)]
+pub struct ChromeAreas {
+    /// The whole framed surface (outer border included).
+    pub surface: Rect,
+    /// Title band inside the frame.
+    pub title: Rect,
+    /// Tab band (tabs row + underline rail row) inside the surface.
+    pub tabs: Rect,
+    /// Optional banner band.
+    pub banner: Option<Rect>,
+    /// Optional status band.
+    pub status: Option<Rect>,
+    /// The view's content area (inside the surface, below the separators).
+    pub body: Rect,
+    /// Footer band (hints + nav legend) inside the surface.
+    pub footer: Rect,
+}
+
+/// Compute the framed chrome layout for `area`.
+pub fn chrome_layout(area: Rect, banner: Option<&str>, status: Option<&str>) -> ChromeAreas {
     let banner_h = u16::from(banner.is_some());
     let status_h = u16::from(status.is_some());
-    // With both optionals present the indices are: banner=2, status=3,
-    // body=4, footer=5. Each missing optional shifts the following bands up
-    // one slot in the constraint list (we never emit `Length(0)` rows).
+    let surface = area;
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+
+    // Interior bands: title, separator, tabs(2: row + underline rail),
+    // [banner], [status], body, footer(2). The rail row under the tabs acts
+    // as the separator toward banner/status/body.
     let mut constraints = vec![
-        Constraint::Length(1), // title bar
-        Constraint::Length(3), // tab bar (taller nav band + underline rail)
+        Constraint::Length(1), // title
+        Constraint::Length(1), // separator below title
+        Constraint::Length(2), // tabs (row + underline rail)
     ];
     if banner_h > 0 {
         constraints.push(Constraint::Length(1));
@@ -365,12 +396,12 @@ pub fn chrome_layout(
     if status_h > 0 {
         constraints.push(Constraint::Length(1));
     }
-    constraints.push(Constraint::Min(1));
-    constraints.push(Constraint::Length(2)); // footer: hints + nav legend
+    constraints.push(Constraint::Min(1)); // body
+    constraints.push(Constraint::Length(2)); // footer
 
-    let chunks = Layout::vertical(constraints).split(area);
+    let chunks = Layout::vertical(constraints).split(inner);
 
-    let mut idx = 2;
+    let mut idx = 3;
     let banner_area = (banner_h > 0).then(|| {
         idx += 1;
         chunks[idx - 1]
@@ -381,7 +412,124 @@ pub fn chrome_layout(
     });
     let body = chunks[idx];
     let footer = chunks[idx + 1];
-    (chunks[0], chunks[1], banner_area, status_area, body, footer)
+    ChromeAreas {
+        surface,
+        title: chunks[0],
+        tabs: chunks[2],
+        banner: banner_area,
+        status: status_area,
+        body,
+        footer,
+    }
+}
+
+/// Render the framed chrome: outer border, title band with separator line,
+/// and the tab underline rail acting as the tabs/body separator. The view
+/// then renders its content into `areas.body`; banner/status (if present)
+/// are drawn by [`render_chrome_bands`]; the footer by [`render_chrome_footer`].
+pub fn render_chrome(frame: &mut Frame, areas: &ChromeAreas, info: &TitleInfo, tabs: &[Tab<'_>]) {
+    let t = &THEME;
+    // One outer frame around everything.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.border));
+    frame.render_widget(block, areas.surface);
+
+    // Separator line between title and tabs (its own band row).
+    let sep_title = areas.tabs.y.saturating_sub(1);
+    if sep_title > areas.title.y {
+        let sep = Rect::new(
+            areas.surface.x + 1,
+            sep_title,
+            areas.surface.width.saturating_sub(2),
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(sep.width as usize),
+                Style::default().fg(t.border),
+            ))),
+            sep,
+        );
+    }
+
+    chrome_title_line(frame, info, areas.title);
+    render_tabs_inside(frame, tabs, areas.tabs);
+}
+
+/// Draw the tab row + underline rail that closes the tabs band (the rail
+/// visually separates the nav band from the body below).
+fn render_tabs_inside(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(tab_bar_line(tabs), rows[0]);
+    // Underline rail spanning the full interior width; the active tab's
+    // segment glows accent, the rest stays border-colored.
+    let t = &THEME;
+    let mut spans = Vec::new();
+    for tab in tabs {
+        let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
+        let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1;
+        let seg: String = std::iter::repeat_n('─', width).collect();
+        spans.push(Span::styled(
+            seg,
+            if tab.active {
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.border)
+            },
+        ));
+        spans.push(Span::raw(" "));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), rows[1]);
+}
+
+/// Render banner/status bands inside the framed chrome (after
+/// [`render_chrome`], before the body is drawn).
+pub fn render_chrome_bands(
+    frame: &mut Frame,
+    areas: &ChromeAreas,
+    banner: Option<&str>,
+    status: Option<(&str, bool)>,
+) {
+    if let (Some(text), Some(band)) = (banner, areas.banner) {
+        render_banner(frame, text, band);
+    }
+    if let (Some((text, is_err)), Some(band)) = (status, areas.status) {
+        if is_err {
+            render_error_line(frame, text, band);
+        } else {
+            render_status_line(frame, text, band);
+        }
+    }
+}
+
+/// Render the two-row footer inside the framed chrome, with a separator
+/// line above it (body | footer division).
+pub fn render_chrome_footer(frame: &mut Frame, areas: &ChromeAreas, hints: &[FooterHint<'_>]) {
+    let t = &THEME;
+    // Separator between body and footer.
+    let sep_y = areas.footer.y.saturating_sub(1);
+    if sep_y >= areas.body.y {
+        let sep = Rect::new(
+            areas.surface.x + 1,
+            sep_y,
+            areas.surface.width.saturating_sub(2),
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(sep.width as usize),
+                Style::default().fg(t.border),
+            ))),
+            sep,
+        );
+    }
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(areas.footer);
+    frame.render_widget(footer_line(hints), rows[0]);
+    frame.render_widget(navigation_line(), rows[1]);
 }
 
 // ---------- pure helpers (unit-tested) ----------
@@ -506,20 +654,25 @@ mod tests {
     #[test]
     fn chrome_layout_splits_optional_bands() {
         let area = Rect::new(0, 0, 80, 24);
-        let (_, _, banner, status, body, footer) =
-            chrome_layout(area, Some("update available"), Some("busy…"));
-        assert_eq!(banner.map(|r| r.height), Some(1));
-        assert_eq!(status.map(|r| r.height), Some(1));
-        assert_eq!(footer.height, 2, "footer carries the nav legend");
-        assert_eq!(body.height, 24 - 8);
+        let areas = chrome_layout(area, Some("update available"), Some("busy…"));
+        assert_eq!(areas.banner.map(|r| r.height), Some(1));
+        assert_eq!(areas.status.map(|r| r.height), Some(1));
+        assert_eq!(areas.footer.height, 2, "footer carries the nav legend");
+        // 24 = 2 (frame) + 1 (title) + 1 (sep) + 2 (tabs) + 1 (banner)
+        //    + 1 (status) + 2 (footer)
+        assert_eq!(areas.body.height, 24 - 10);
 
-        let (_, _, banner, status, _, _) = chrome_layout(area, None, None);
-        assert!(banner.is_none());
-        assert!(status.is_none());
+        let areas = chrome_layout(area, None, None);
+        assert!(areas.banner.is_none());
+        assert!(areas.status.is_none());
 
         // Status-only layout must still find a 1-row status band.
-        let (_, _, banner, status, _, _) = chrome_layout(area, None, Some("x"));
-        assert!(banner.is_none());
-        assert_eq!(status.map(|r| r.height), Some(1));
+        let areas = chrome_layout(area, None, Some("x"));
+        assert!(areas.banner.is_none());
+        assert_eq!(areas.status.map(|r| r.height), Some(1));
+
+        // Everything lives inside one framed surface.
+        assert_eq!(areas.surface, area);
+        assert_eq!(areas.title.x, area.x + 1);
     }
 }

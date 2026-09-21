@@ -239,10 +239,8 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
     };
     let grep_active = state.grep.is_some() || state.grep_mode;
 
-    let (title_area, tabs_area, _banner, status_area, body, footer_area) =
-        chrome::chrome_layout(area, None, None);
+    let areas = chrome::chrome_layout(area, None, None);
 
-    chrome::render_title_bar(frame, &title, title_area);
     let tabs = vec![
         chrome::Tab {
             key: '1',
@@ -263,7 +261,7 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
             count: None,
         },
     ];
-    chrome::render_tab_bar(frame, &tabs, tabs_area);
+    chrome::render_chrome(frame, &areas, &title, &tabs);
 
     // Body: toolbar (target+grep / follow+source), inspector line, log area.
     let toolbar_h = 1 + u16::from(grep_active);
@@ -273,7 +271,7 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
         Constraint::Min(1),            // log lines
         Constraint::Length(1),         // buffer metrics bar
     ])
-    .split(body);
+    .split(areas.body);
 
     render_toolbar(frame, state, chunks[0]);
     if grep_active {
@@ -286,10 +284,6 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
     render_inspector_header(frame, state, chunks[1]);
     render_log_area(frame, state, chunks[2]);
     render_buffer_metrics(frame, state, chunks[3]);
-
-    if let Some(status) = status_area {
-        let _ = status; // no transient status wiring for logs yet
-    }
 
     let hints = vec![
         chrome::FooterHint {
@@ -323,7 +317,7 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
             role: chrome::FooterRole::Err,
         },
     ];
-    chrome::render_footer(frame, &hints, footer_area);
+    chrome::render_chrome_footer(frame, &areas, &hints);
     let _ = t;
 }
 
