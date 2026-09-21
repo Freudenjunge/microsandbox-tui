@@ -24,9 +24,9 @@ use crate::ui::theme::THEME;
 
 /// Vertical separator column drawn between two side-by-side zones inside a
 /// common surface (the mockup's `divide-x` line).
-fn draw_vertical_separator(frame: &mut Frame, x: u16, area: Rect) {
+fn draw_vertical_separator(frame: &mut Frame, x: u16, row: Rect) {
     let t = &THEME;
-    for y in area.y..area.y.saturating_add(area.height) {
+    for y in row.y..row.y.saturating_add(row.height) {
         let cell = Rect::new(x, y, 1, 1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled("│", Style::default().fg(t.border)))),
@@ -112,44 +112,23 @@ pub fn render(
     // separate boxes. The sidebar hides while the full create form is open
     // (the form covers the frame) and on narrow terminals.
     if body.width >= 100 && quick.is_none() {
-        // Zoned surface: outer frame, interior split 65/35 with a divider.
+        // Draw the shared surface border ONCE, then split the interior.
+        let surface_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(t.border));
+        let inner = surface_block.inner(body);
+        frame.render_widget(surface_block, body);
+
         let cols = Layout::horizontal([
             Constraint::Percentage(65),
             Constraint::Length(1),
             Constraint::Percentage(35),
         ])
-        .split(body);
-        // Draw the shared surface as one border around the whole body.
-        let surface = Rect::new(body.x, body.y, body.width, body.height);
-        let inner = Rect::new(
-            surface.x + 1,
-            surface.y,
-            surface.width.saturating_sub(2),
-            surface.height,
-        );
-        let cards = Rect::new(
-            inner.x,
-            inner.y,
-            cols[0].width.saturating_sub(1),
-            inner.height,
-        );
+        .split(inner);
+        let cards = cols[0];
         let divider_x = cols[1].x;
-        let sidebar = Rect::new(
-            divider_x + 1,
-            inner.y,
-            inner.x + inner.width - divider_x - 1,
-            inner.height,
-        );
-        let zoned = chrome::ZonedLayout {
-            frame: surface,
-            rows: vec![cards, sidebar],
-        };
-        chrome::render_zone_frame(frame, &zoned, surface);
-        draw_vertical_separator(
-            frame,
-            divider_x,
-            Rect::new(divider_x, inner.y, 1, inner.height),
-        );
+        let sidebar = cols[2];
+        draw_vertical_separator(frame, divider_x, inner);
         render_body(frame, sandboxes, metrics, ports, selected, cards);
         render_sidebar(frame, sandboxes, selected, preview, sidebar);
     } else {
@@ -239,9 +218,9 @@ fn render_body(
     }
 }
 
-/// Render the right sidebar as ONE surface split by a horizontal separator:
-/// quick-create zone on top, selected-sandbox stream zone below (the
-/// mockup's right column).
+/// Render the right sidebar as zones inside the (already bordered) surface:
+/// a horizontal separator line divides the quick-create zone from the
+/// stream zone below — no second border of its own.
 fn render_sidebar(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
@@ -249,10 +228,29 @@ fn render_sidebar(
     preview: &[crate::backend::LogLine],
     area: Rect,
 ) {
-    let layout = chrome::zone_rows(area, &[4, 1]);
-    chrome::render_zone_frame(frame, &layout, area);
-    render_quick_create(frame, layout.rows[0]);
-    render_stream_preview(frame, sandboxes, selected, preview, layout.rows[1]);
+    if area.height == 0 {
+        return;
+    }
+    // First `quick_h` rows: quick create; separator; rest: stream preview.
+    let quick_h = area.height.min(4);
+    let sep_y = area.y + quick_h;
+    render_quick_create(frame, Rect::new(area.x, area.y, area.width, quick_h));
+    let stream_h = area.height.saturating_sub(quick_h + 1);
+    if stream_h == 0 {
+        return;
+    }
+    let stream = Rect::new(area.x, sep_y + 1, area.width, stream_h);
+    // Horizontal separator across the sidebar column.
+    let t = &THEME;
+    let sep = Rect::new(area.x, sep_y, area.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(sep.width as usize),
+            Style::default().fg(t.border),
+        ))),
+        sep,
+    );
+    render_stream_preview(frame, sandboxes, selected, preview, stream);
 }
 
 /// The mockup's `⚡ QUICK CREATE MICROVM` zone header + collapsed content.
@@ -343,6 +341,8 @@ fn render_stream_preview(
 /// Centered empty-state message.
 fn render_empty(frame: &mut Frame, area: Rect) {
     let t = &THEME;
+    // No border of its own: the empty state lives inside the dashboard's
+    // zoned surface, which already draws the frame.
     let para = Paragraph::new(Line::from(vec![
         Span::styled("No sandboxes. ", Style::default().fg(t.text)),
         Span::styled("Press ", Style::default().fg(t.muted)),
@@ -352,12 +352,7 @@ fn render_empty(frame: &mut Frame, area: Rect) {
         ),
         Span::styled(" to create one.", Style::default().fg(t.muted)),
     ]))
-    .centered()
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(t.border)),
-    );
+    .centered();
     frame.render_widget(para, area);
 }
 
