@@ -457,18 +457,20 @@ pub fn render_chrome(frame: &mut Frame, areas: &ChromeAreas, info: &TitleInfo, t
     render_tabs_inside(frame, tabs, areas.tabs);
 }
 
-/// Draw the tab row + underline rail that closes the tabs band (the rail
-/// visually separates the nav band from the body below).
+/// Draw the tab row + full-width underline rail that closes the tabs band.
+/// The rail spans the entire interior width: the active tab's segment glows
+/// accent, inactive tabs and the remaining width render as the border-tone
+/// separator toward the body below (the mockup's nav `border-b`).
 fn render_tabs_inside(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
     if area.height == 0 {
         return;
     }
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     frame.render_widget(tab_bar_line(tabs), rows[0]);
-    // Underline rail spanning the full interior width; the active tab's
-    // segment glows accent, the rest stays border-colored.
+
     let t = &THEME;
     let mut spans = Vec::new();
+    let mut used = 0usize;
     for tab in tabs {
         let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
         let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1;
@@ -482,6 +484,16 @@ fn render_tabs_inside(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
             },
         ));
         spans.push(Span::raw(" "));
+        used += width + 1;
+    }
+    // Fill the rest of the width so the rail doubles as the full separator
+    // between the tab band and the area below.
+    if area.width as usize > used {
+        let pad = area.width as usize - used;
+        spans.push(Span::styled(
+            "─".repeat(pad),
+            Style::default().fg(t.border),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), rows[1]);
 }
