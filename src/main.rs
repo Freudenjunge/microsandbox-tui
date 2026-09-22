@@ -35,6 +35,7 @@ mod backend;
 mod event;
 mod models;
 mod runtime;
+mod shell_window;
 mod ui;
 
 use app::{App, Op, View};
@@ -182,22 +183,16 @@ async fn run(cli: Cli) -> Result<()> {
         }
         // (The captured-exec path from the removed EXEC tab is gone; `e`
         // now opens the interactive shell window below.)
-        // Interactive shell hand-off (`e`): tear the TUI down, run the
-        // sandbox shell in the foreground, restore the TUI afterwards.
+        // Interactive shell (`e`): spawn a NEW terminal window with the
+        // sandbox shell — the dashboard keeps running in parallel
+        // (maintainer: parallel use, no TUI suspension).
         if app.view == View::Dashboard && app.take_shell_request() {
             let Some(sbx) = app.selected_sandbox().map(|s| s.name.clone()) else {
                 continue;
             };
-            drop(guard); // leave alternate screen + raw mode
-            let res = std::process::Command::new("msb")
-                .args(["ssh", &sbx])
-                .status();
-            guard = TerminalGuard::enter()?;
-            app.shell_suspended = false;
-            app.status = Some(match res {
-                Ok(code) if code.success() => format!("shell to {sbx} closed"),
-                Ok(code) => format!("shell exited with {}", code.code().unwrap_or(-1)),
-                Err(e) => format!("shell failed: {e}"),
+            app.status = Some(match crate::shell_window::spawn_shell_window(&sbx) {
+                Ok(()) => format!("shell window opened for {sbx}"),
+                Err(e) => format!("shell window failed: {e}"),
             });
             render(&mut guard.terminal, &app)?;
         }
