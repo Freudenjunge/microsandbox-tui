@@ -382,13 +382,18 @@ publish port:port` mental model). New IA, agreed with the maintainer:
 - [x] Unit tests for input parsing / history append.
 
 ### 3. Create modal on `c`
-- [ ] `c` opens the existing quick form as a centered modal over the
-      dashboard; `Ctrl+A` expands advanced fields inside the modal;
-      `Esc`/submit behave as before.
+- [x] `c` opens the existing quick form (full-screen form retained after
+      user feedback; the exec tab was removed instead — 'e' now opens the
+      interactive shell window directly, per the maintainer's correction).
 
 ### 4. Polish + gates
-- [ ] Help overlay + footer hints updated to the new navigation.
-- [ ] All four gates green; push; smoke-test handoff.
+- [x] Help overlay + footer hints updated to the new navigation.
+- [x] All four gates green; push; smoke-test handoff.
+
+**Phase 2.9 complete.** 154 unit tests, all gates green. Follow-up fixes
+from the next smoke round: workdir on cards (Ports line removed), the
+PORTS detail tab's keys were dead until the dispatch was rerouted, `e` =
+interactive shell window (EXEC tab removed entirely), `s`/`S` = start.
 
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
