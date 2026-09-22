@@ -156,9 +156,11 @@ pub struct App {
     pub ports_state: Option<PortsState>,
     /// Cached image references for the create form autocomplete.
     pub images: Vec<String>,
-    /// Published ports per sandbox (dashboard cards + ports view), refreshed
-    /// lazily when the ports view is opened.
+    /// Published ports per sandbox (dashboard cards + ports view).
     pub ports: std::collections::HashMap<String, Vec<crate::models::PublishedPort>>,
+    /// True when the port cache should be refetched (view entered, `r`
+    /// pressed, or a publish/unpublish recreate finished).
+    pub ports_cache_dirty: bool,
     /// True while a long-running `msb` operation is in flight.
     pub busy: bool,
     /// True until the FIRST sandbox-list refresh arrives (drives the
@@ -187,6 +189,7 @@ impl App {
             ports_state: None,
             images: Vec::new(),
             ports: std::collections::HashMap::new(),
+            ports_cache_dirty: false,
             busy: false,
             initial_list_loaded: false,
         }
@@ -220,6 +223,9 @@ impl App {
             AppEvent::OpDone(msg) => {
                 self.status = Some(msg);
                 self.busy = false;
+                // Publish/unpublish/restart recreate the sandbox: its port
+                // bindings changed, so the ports cache must be refetched.
+                self.ports_cache_dirty = true;
                 Action::Render
             }
             AppEvent::LogLines(lines) => {
@@ -461,18 +467,22 @@ impl App {
         {
             match form.handle_key(key) {
                 crate::ui::ports::PublishFormAction::Submit(port) => {
-                    let name = self
-                        .ports_state
-                        .as_ref()
-                        .map(|s| s.sandbox_name.clone())
-                        .unwrap_or_default();
+                    // The port belongs to the SELECTED matrix row's sandbox
+                    // — the matrix is a global overview, but each binding
+                    // belongs to exactly one sandbox.
+                    let target = crate::ui::ports::selected_binding(
+                        self.ports_state.as_ref().expect("state checked above"),
+                        &self.sandboxes,
+                        &self.ports,
+                    )
+                    .map(|(name, _)| name.to_string())
+                    .or_else(|| self.ports_state.as_ref().map(|s| s.sandbox_name.clone()));
                     if let Some(state) = self.ports_state.as_mut() {
                         state.publish_form = None;
                     }
-                    self.confirm = Some(Op::PublishPort {
-                        name,
-                        port: port.clone(),
-                    });
+                    if let Some(name) = target {
+                        self.confirm = Some(Op::PublishPort { name, port });
+                    }
                     return Action::Render;
                 }
                 crate::ui::ports::PublishFormAction::Cancel => {
@@ -506,6 +516,11 @@ impl App {
             }
             KeyCode::Char('+') | KeyCode::Char('p') => {
                 state.publish_form = Some(crate::ui::ports::PublishForm::new());
+                Action::Render
+            }
+            // Refresh the port cache from inspect.
+            KeyCode::Char('r') => {
+                self.ports_cache_dirty = true;
                 Action::Render
             }
             KeyCode::Up => {
@@ -579,6 +594,9 @@ impl App {
         };
         self.ports_state = Some(PortsState::new(&sbx.name));
         self.view = View::Ports;
+        // Always refetch on entry: the recreate flow may have changed ports
+        // since the last visit.
+        self.ports_cache_dirty = true;
         Action::Render
     }
 

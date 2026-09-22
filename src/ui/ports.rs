@@ -296,7 +296,7 @@ pub fn render_ports(
         .split(areas.body);
     render_matrix(frame, sandboxes, port_cache, cols[0]);
     if state.publish_form.is_some() {
-        render_publish_form(frame, state, cols[1]);
+        render_publish_form(frame, state, sandboxes, port_cache, cols[1]);
     } else {
         render_inspector(frame, state, sandboxes, port_cache, cols[1]);
     }
@@ -304,17 +304,22 @@ pub fn render_ports(
     let hints = vec![
         FooterHint {
             key: "[+]",
-            label: "Publish",
+            label: "Publish (selected)",
             role: FooterRole::Accent,
         },
         FooterHint {
             key: "[-]",
-            label: "Unpublish",
+            label: "Unpublish (selected)",
             role: FooterRole::Err,
         },
         FooterHint {
             key: "[↑↓]",
             label: "Select binding",
+            role: FooterRole::Plain,
+        },
+        FooterHint {
+            key: "[r]",
+            label: "Refresh",
             role: FooterRole::Plain,
         },
         FooterHint {
@@ -434,17 +439,31 @@ fn state_selected_snapshot() -> usize {
 }
 
 /// Render the inline publish-port form (replaces the inspector while open).
-fn render_publish_form(frame: &mut Frame, state: &PortsState, area: Rect) {
+/// The form always binds on the sandbox of the currently selected matrix
+/// row — the matrix is the global overview, but each port belongs to
+/// exactly one sandbox.
+fn render_publish_form(
+    frame: &mut Frame,
+    state: &PortsState,
+    sandboxes: &[SandboxSummary],
+    port_cache: &std::collections::HashMap<String, Vec<PublishedPort>>,
+    area: Rect,
+) {
     let t = &THEME;
     let Some(form) = &state.publish_form else {
         return;
     };
+    // Resolve the binding target: the selected row's sandbox (falling back
+    // to the sandbox that opened the view when the matrix is empty).
+    let target = selected_binding(state, sandboxes, port_cache)
+        .map(|(name, _)| name.to_string())
+        .unwrap_or_else(|| state.sandbox_name.clone());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent))
         .style(Style::default().bg(t.panel))
         .title(Span::styled(
-            format!(" [+] BIND NEW PORT — {} ", state.sandbox_name),
+            format!(" [+] BIND NEW PORT — {target} "),
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);

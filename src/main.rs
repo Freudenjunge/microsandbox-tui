@@ -163,7 +163,7 @@ async fn run(cli: Cli) -> Result<()> {
     // Abort handle + identity of the running log-tail task (one at a time).
     let mut log_task: Option<(String, tokio::sync::oneshot::Sender<()>)> = None;
     // Name of the sandbox whose ports we last fetched (avoids refetching).
-    let mut ports_fetched_for: Option<String> = None;
+    let mut ports_fetched_for: Option<bool> = None;
     // Whether the image list was fetched for the create form this session.
     let mut images_fetched = false;
 
@@ -256,27 +256,29 @@ async fn run(cli: Cli) -> Result<()> {
             });
         }
 
-        // Entering the Ports view: fetch ports once per sandbox.
-        if app.view == View::Ports
-            && let Some(sbx) = app.selected_sandbox()
-            && ports_fetched_for.as_deref() != Some(sbx.name.as_str())
-        {
-            ports_fetched_for = Some(sbx.name.clone());
+        // Port cache refresh: on entering the ports view, when marked dirty
+        // (`r`), or after a recreate op — fetch ports for ALL sandboxes so
+        // the global matrix reflects each sandbox's own bindings.
+        if app.view == View::Ports && (app.ports_cache_dirty || ports_fetched_for != Some(true)) {
+            app.ports_cache_dirty = false;
+            ports_fetched_for = Some(true);
             let tx = event_tx.clone();
             let backend = backend.clone();
-            let name = sbx.name.clone();
+            let names: Vec<String> = app.sandboxes.iter().map(|s| s.name.clone()).collect();
             tokio::spawn(async move {
-                match backend.inspect(&name).await {
-                    Ok(insp) => {
-                        let _ = tx
-                            .send(AppEvent::PortsUpdated {
-                                name,
-                                ports: insp.active_config.network.ports,
-                            })
-                            .await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::Error(format!("ports: {e:#}"))).await;
+                for name in names {
+                    match backend.inspect(&name).await {
+                        Ok(insp) => {
+                            let _ = tx
+                                .send(AppEvent::PortsUpdated {
+                                    name,
+                                    ports: insp.active_config.network.ports,
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::Error(format!("ports: {e:#}"))).await;
+                        }
                     }
                 }
             });

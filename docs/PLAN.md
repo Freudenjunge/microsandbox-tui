@@ -332,6 +332,12 @@ the smoke test — the two existing 'Test'/'Test2' sandboxes should now list
 after restart, and `+` on the ports view should publish through the
 recreate flow.
 
+Follow-up (2.8a) after user feedback "ports belong to a sandbox, not
+global": publish/unpublish now target the SELECTED matrix row's sandbox
+(the form title shows it), and the port cache refetches for ALL sandboxes
+on view entry, `r`, and after every recreate op — bindings used to go to
+the view's opening sandbox and the cache never refreshed.
+
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
   iptables messages, per-port traffic counters, security policies, buffer
