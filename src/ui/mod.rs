@@ -38,6 +38,7 @@ pub fn render_dashboard(
     error: Option<&str>,
     quick: Option<&create::CreateForm>,
     preview: &[crate::backend::LogLine],
+    initial_loading: bool,
     area: Rect,
 ) {
     let banner = crate::runtime::banner_text();
@@ -47,7 +48,16 @@ pub fn render_dashboard(
         status_text: None,
     };
     dashboard::render(
-        frame, sandboxes, metrics, ports, selected, status, quick, preview, area,
+        frame,
+        sandboxes,
+        metrics,
+        ports,
+        selected,
+        status,
+        quick,
+        preview,
+        initial_loading,
+        area,
     );
 }
 

@@ -443,6 +443,7 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                     app.error.as_deref(),
                     None,
                     &app.preview_lines,
+                    !app.initial_list_loaded,
                     area,
                 );
             }

@@ -309,10 +309,10 @@ Findings from the first live smoke test (2026-09-22):
       parses; the "Test2 regression" JSON shape is covered.
 
 ### 2. Loading indicators
-- [ ] `App` tracks initial-load state per poller (sandboxes/metrics);
+- [x] `App` tracks initial-load state per poller (sandboxes/metrics);
       dashboard shows `Loading…` in the card area until the first list
       arrives.
-- [ ] After a create submit, the status line already shows
+- [x] After a create submit, the status line already shows
       `Creating <name>…`; also show it until the next list refresh.
 
 ### 3. Publish-port form on the ports view

@@ -49,6 +49,7 @@ pub fn render(
     status: StatusLines<'_>,
     quick: Option<&crate::ui::create::CreateForm>,
     preview: &[crate::backend::LogLine],
+    initial_loading: bool,
     area: Rect,
 ) {
     let t = &THEME;
@@ -118,8 +119,14 @@ pub fn render(
         let divider_x = cols[1].x;
         let sidebar = cols[2];
         draw_vertical_separator(frame, divider_x, areas.body);
-        render_body(frame, sandboxes, metrics, ports, selected, cards);
+        if initial_loading {
+            render_loading(frame, cards);
+        } else {
+            render_body(frame, sandboxes, metrics, ports, selected, cards);
+        }
         render_sidebar(frame, sandboxes, selected, preview, sidebar);
+    } else if initial_loading {
+        render_loading(frame, areas.body);
     } else {
         render_body(frame, sandboxes, metrics, ports, selected, areas.body);
     }
@@ -325,6 +332,18 @@ fn render_stream_preview(
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Loading placeholder shown until the first sandbox-list refresh arrives
+/// (smoke-test finding 2.8: no indicator between start and first poll).
+fn render_loading(frame: &mut Frame, area: Rect) {
+    let t = &THEME;
+    let para = Paragraph::new(Line::from(vec![
+        Span::styled("◌ ", Style::default().fg(t.accent)),
+        Span::styled("Loading sandboxes…", Style::default().fg(t.muted)),
+    ]))
+    .centered();
+    frame.render_widget(para, area);
 }
 
 /// Centered empty-state message.
@@ -752,6 +771,7 @@ mod tests {
                     },
                     None,
                     &[],
+                    false,
                     f.area(),
                 );
             })

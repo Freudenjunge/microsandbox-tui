@@ -161,6 +161,9 @@ pub struct App {
     pub ports: std::collections::HashMap<String, Vec<crate::models::PublishedPort>>,
     /// True while a long-running `msb` operation is in flight.
     pub busy: bool,
+    /// True until the FIRST sandbox-list refresh arrives (drives the
+    /// dashboard's loading placeholder — smoke-test finding 2.8).
+    pub initial_list_loaded: bool,
 }
 
 impl App {
@@ -185,6 +188,7 @@ impl App {
             images: Vec::new(),
             ports: std::collections::HashMap::new(),
             busy: false,
+            initial_list_loaded: false,
         }
     }
 
@@ -201,6 +205,7 @@ impl App {
             }
             AppEvent::SandboxesUpdated(list) => {
                 self.update_sandboxes(list);
+                self.initial_list_loaded = true;
                 Action::Render
             }
             AppEvent::MetricsUpdated(samples) => {
