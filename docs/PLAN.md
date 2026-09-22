@@ -277,6 +277,54 @@ borders in the zoned surface, framed chrome (title/tabs/body/footer inside
 one window), continuous separators. The full TUI smoke test against a live
 runtime (create/logs/ports round-trip) remains the maintainer's manual step.
 
+---
+
+# Phase 2.8 — Smoke-test findings (runtime correctness)
+
+Findings from the first live smoke test (2026-09-22):
+
+1. **No loading indicator** — after TUI start or create, the list stays
+   empty until the first poller fires; nothing says "loading".
+2. **`list_sandboxes` fails for TUI-created sandboxes** —
+   `stored config … invalid type: null, expected a string at column 201`:
+   the SDK stores `"workdir": null` for sandboxed created without a
+   workdir, but our `RuntimeConfig.workdir` DTO is `String`. One broken
+   row fails the whole list, so nothing is displayed.
+3. **Publish-port from the ports view has no form** — `-` (unpublish)
+   works via confirm, but `+` does nothing (documented deviation).
+
+## Task List
+
+### 1. Tolerant config deserialization (fixes the broken list)
+- [x] `RuntimeConfig.workdir: Option<String>` (stored JSON uses `null`
+      for "no workdir"; `entrypoint` stays `Option<Value>`).
+- [x] Audit every strict (non-`default`, non-`Option`) field in
+      `models.rs` against a real stored config; relax where the SDK may
+      emit `null`/absent.
+- [x] `list_sandboxes` degrades per-sandbox: a row whose config can't be
+      parsed still appears (name, state, created_at, image `"?"`) with the
+      parse error surfaced as `AppEvent::Error`, instead of failing the
+      whole list.
+- [x] Unit tests: a stored config with `null` workdir + `entrypoint: []`
+      parses; the "Test2 regression" JSON shape is covered.
+
+### 2. Loading indicators
+- [ ] `App` tracks initial-load state per poller (sandboxes/metrics);
+      dashboard shows `Loading…` in the card area until the first list
+      arrives.
+- [ ] After a create submit, the status line already shows
+      `Creating <name>…`; also show it until the next list refresh.
+
+### 3. Publish-port form on the ports view
+- [ ] `+` opens an inline bind form (target sandbox fixed to selection;
+      host bind default `127.0.0.1`, host port, guest port, protocol
+      toggle tcp/udp), `Enter` confirm → recreate flow with the existing
+      confirm dialog, `Esc` cancel.
+- [ ] Footer hints updated (`[+] Publish`, `[-] Unpublish`).
+
+### 4. Gates
+- [ ] All four gates green; push.
+
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
   iptables messages, per-port traffic counters, security policies, buffer

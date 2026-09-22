@@ -413,6 +413,10 @@ pub struct Resources {
 }
 
 /// Runtime behavior: default command, shell, user, workdir, scripts.
+///
+/// Optional fields (`workdir`, `user`, `hostname`, …) are `Option` because
+/// the SDK stores `null` for "unset" — a bare `String` would reject every
+/// sandbox created without an explicit workdir (smoke-test finding 2.8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     #[serde(default)]
@@ -431,7 +435,7 @@ pub struct RuntimeConfig {
     pub shell: String,
     #[serde(default)]
     pub user: Option<String>,
-    pub workdir: String,
+    pub workdir: Option<String>,
 }
 
 // ---------- msb metrics ----------
@@ -524,6 +528,7 @@ mod tests {
             "sandbox-list" => include_str!("fixtures/sandbox-list.json"),
             "sandbox-status" => include_str!("fixtures/sandbox-status.json"),
             "sandbox-inspect" => include_str!("fixtures/sandbox-inspect.json"),
+            "sandbox-stored-null-workdir" => include_str!("fixtures/sandbox-stored-null-workdir.json"),
             "metrics" => include_str!("fixtures/metrics.json"),
             "volumes" => include_str!("fixtures/volumes.json"),
             "images" => include_str!("fixtures/images.json"),
@@ -704,6 +709,25 @@ mod tests {
     }
 
     #[test]
+    fn stored_config_with_null_workdir_parses() {
+        // Regression (2.8 finding 2): sandboxes created by the TUI store
+        // `"workdir": null` (+ null hostname/user/log_level, `entrypoint: []`,
+        // network tls/dns sub-objects the older fixture lacks). A strict
+        // `workdir: String` made the WHOLE sandbox list fail with
+        // "invalid type: null, expected a string at column 201".
+        let raw = fixture("sandbox-stored-null-workdir");
+        let cfg: SandboxConfig = serde_json::from_str(raw).expect("stored config must parse");
+        assert_eq!(cfg.name, "Test2");
+        assert_eq!(cfg.image.reference(), "debian");
+        assert_eq!(cfg.runtime.workdir, None, "null workdir maps to None");
+        assert_eq!(cfg.runtime.user, None);
+        assert_eq!(cfg.runtime.hostname, None);
+        assert_eq!(cfg.runtime.shell, "/bin/sh");
+        assert_eq!(cfg.runtime.cmd, vec!["bash".to_string()]);
+        assert_eq!(cfg.resources.memory_mib, 512);
+    }
+
+    #[test]
     fn inspect_network_ports() {
         let insp: SandboxInspect = serde_json::from_str(fixture("sandbox-inspect")).unwrap();
         let net = &insp.active_config.network;
@@ -763,7 +787,7 @@ mod tests {
         let rt = &insp.active_config.runtime;
         assert_eq!(rt.cmd, vec!["/bin/sh"]);
         assert_eq!(rt.shell, "/bin/sh");
-        assert_eq!(rt.workdir, "/");
+        assert_eq!(rt.workdir.as_deref(), Some("/"));
         assert_eq!(rt.user, None);
 
         let lc = &insp.active_config.lifecycle;

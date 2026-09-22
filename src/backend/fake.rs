@@ -205,7 +205,7 @@ impl FakeBackend {
                 scripts: HashMap::new(),
                 shell: "/bin/sh".into(),
                 user: None,
-                workdir: "/".into(),
+                workdir: Some("/".into()),
             },
             security_profile: "default".into(),
         };
@@ -316,11 +316,7 @@ pub fn spec_from_config(cfg: &SandboxConfig, ports: Vec<PublishedPort>) -> Creat
         name: Some(cfg.name.clone()),
         cpus: Some(cfg.resources.cpus),
         memory: Some(format!("{}M", cfg.resources.memory_mib)),
-        workdir: if cfg.runtime.workdir.is_empty() {
-            None
-        } else {
-            Some(cfg.runtime.workdir.clone())
-        },
+        workdir: cfg.runtime.workdir.clone().filter(|w| !w.is_empty()),
         ports,
         volumes: cfg
             .mounts
@@ -525,7 +521,7 @@ impl MsbBackend for FakeBackend {
 
         // Apply workdir.
         if let Some(wd) = &spec.workdir {
-            sbx.config.runtime.workdir = wd.clone();
+            sbx.config.runtime.workdir = Some(wd.clone());
         }
 
         sbx.metrics.name = name.clone();

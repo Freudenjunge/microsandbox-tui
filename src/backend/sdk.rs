@@ -371,11 +371,7 @@ fn map_config(spec: &SandboxSpec) -> SandboxConfig {
                 .clone()
                 .unwrap_or_else(|| "/bin/sh".to_string()),
             user: spec.runtime.user.clone(),
-            workdir: spec
-                .runtime
-                .workdir
-                .clone()
-                .unwrap_or_else(|| "/".to_string()),
+            workdir: spec.runtime.workdir.clone(),
         },
         security_profile: format!("{:?}", spec.security_profile),
     }
@@ -535,17 +531,35 @@ impl MsbBackend for SdkBackend {
     async fn list_sandboxes(&self) -> Result<Vec<SandboxSummary>> {
         let page = microsandbox::Sandbox::list().await?;
         let mut out = Vec::with_capacity(page.sandboxes.len());
+        let mut degraded = Vec::new();
         for handle in &page.sandboxes {
             let Some(local) = handle.local() else {
                 continue;
             };
-            let spec = self.sandbox_config_from_json(handle)?;
+            // A sandbox whose stored config can't be parsed still shows up
+            // (name, state, created_at; image "?") instead of failing the
+            // whole list — smoke-test finding 2.8.
+            let image = match self.sandbox_config_from_json(handle) {
+                Ok(cfg) => cfg.image.reference(),
+                Err(e) => {
+                    degraded.push(format!("{}: {e:#}", handle.name()));
+                    "?".to_string()
+                }
+            };
             out.push(SandboxSummary {
                 created_at: local.created_at.unwrap_or_else(Utc::now),
-                image: spec.image.reference(),
+                image,
                 name: handle.name().to_string(),
                 status: map_status(local.status),
             });
+        }
+        if !degraded.is_empty() {
+            // Surface the first parse failure so the user knows why a card
+            // shows incomplete data.
+            return Err(anyhow!(
+                "some sandboxes have unreadable configs: {}",
+                degraded.join("; ")
+            ));
         }
         // SDK lists newest first; the dashboard is not order-sensitive but
         // keep a stable, human-friendly order.
