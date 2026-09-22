@@ -316,14 +316,21 @@ Findings from the first live smoke test (2026-09-22):
       `Creating <name>…`; also show it until the next list refresh.
 
 ### 3. Publish-port form on the ports view
-- [ ] `+` opens an inline bind form (target sandbox fixed to selection;
+- [x] `+` opens an inline bind form (target sandbox fixed to selection;
       host bind default `127.0.0.1`, host port, guest port, protocol
       toggle tcp/udp), `Enter` confirm → recreate flow with the existing
       confirm dialog, `Esc` cancel.
-- [ ] Footer hints updated (`[+] Publish`, `[-] Unpublish`).
+- [x] Footer hints updated (`[+] Publish`, `[-] Unpublish`).
 
 ### 4. Gates
-- [ ] All four gates green; push.
+- [x] All four gates green; push.
+
+**Phase 2.8 complete.** 153 unit tests, all gates green. Fixes verified
+against the real stored-config JSON captured from the user's database
+(`sandbox-stored-null-workdir.json` fixture). Remaining manual step: re-run
+the smoke test — the two existing 'Test'/'Test2' sandboxes should now list
+after restart, and `+` on the ports view should publish through the
+recreate flow.
 
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
