@@ -338,6 +338,58 @@ global": publish/unpublish now target the SELECTED matrix row's sandbox
 on view entry, `r`, and after every recreate op — bindings used to go to
 the view's opening sandbox and the cache never refreshed.
 
+---
+
+# Phase 2.9 — Navigation redesign: sandbox rail + detail tabs
+
+User verdict on 2.6–2.8: the global-tab model (Sandboxes/Logs/Ports as peer
+views + matrix) is confusing; ports belong to ONE sandbox (`sbx <name>
+publish port:port` mental model). New IA, agreed with the maintainer:
+
+- **Left rail (always visible): the sandbox cards, stacked vertically.**
+  ↑/↓ selects; the card IS the list (no extra "Sandboxes" tab).
+- **Right detail pane with per-sandbox tabs**: `[1] OVERVIEW` (live
+  metrics + this sandbox's ports), `[2] LOGS`, `[3] PORTS`
+  (publish/unpublish of THIS sandbox, `sbx`-style), `[4] EXEC`.
+- **Create becomes a modal on `c`** (image picker + name; `Ctrl+A`
+  expands advanced fields inside the modal).
+- **STREAM preview panel is removed** (no clear purpose).
+- **EXEC** like Docker Sandbox: inline captured exec in the tab (current
+  window) + suspend TUI and open an interactive shell in the foreground
+  ("new window" equivalent, `msb ssh <name>` per DESIGN.md §7).
+
+## Task List
+
+### 1. App skeleton: rail + detail tabs
+- [x] Replace the `View` dispatch with: chrome (title/footer) once, then
+      body = rail (cards, vertical, scrollable) + divider + detail pane.
+- [x] `App::detail: DetailTab` (Overview/Logs/Ports/Exec); keys `1-4`
+      switch, `Tab` cycles, `↑↓` always moves the sandbox selection,
+      `Enter` → Overview.
+- [x] Remove the STREAM preview panel and the global Ports view/Inspect
+      placeholder; LOGS/PORTS render chrome-less inside the detail pane,
+      scoped to the selected sandbox.
+
+### 2. EXEC tab
+- [x] `ExecState`: input buffer + history (cmd → captured output) per
+      session; `Enter` runs the parsed command via the SDK captured exec;
+      output appends in-tab.
+- [x] `S` suspends the TUI (leave alternate screen) and runs an
+      interactive shell in the foreground terminal; TUI resumes on exit
+      (DESIGN.md §7 behavior; documented architecture deviation: the
+      interactive path shells out to `msb ssh`, the SDK's 0.7.2 exec has
+      no TTY mode).
+- [x] Unit tests for input parsing / history append.
+
+### 3. Create modal on `c`
+- [ ] `c` opens the existing quick form as a centered modal over the
+      dashboard; `Ctrl+A` expands advanced fields inside the modal;
+      `Esc`/submit behave as before.
+
+### 4. Polish + gates
+- [ ] Help overlay + footer hints updated to the new navigation.
+- [ ] All four gates green; push; smoke-test handoff.
+
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
   iptables messages, per-port traffic counters, security policies, buffer
