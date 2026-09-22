@@ -268,7 +268,14 @@ selected-sandbox log preview, exactly like the mockup's right column.
       selected sandbox's log tail (bounded), hint `l` for the full view.
 
 ### 3. Gates + push
-- [ ] All four gates green; push; smoke-test note.
+- [x] All four gates green; push; smoke-test note.
+
+**Phase 2.7 complete.** 148 unit tests, all gates green. Rendered structure
+verified off-screen (TestBackend test) and on a real pty (render dump).
+Fidelity fixes along the way: tab-rail UTF-8 panic (blank frame), double
+borders in the zoned surface, framed chrome (title/tabs/body/footer inside
+one window), continuous separators. The full TUI smoke test against a live
+runtime (create/logs/ports round-trip) remains the maintainer's manual step.
 
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
