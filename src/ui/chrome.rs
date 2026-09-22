@@ -490,10 +490,7 @@ fn render_tabs_inside(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
     // between the tab band and the area below.
     if area.width as usize > used {
         let pad = area.width as usize - used;
-        spans.push(Span::styled(
-            "─".repeat(pad),
-            Style::default().fg(t.border),
-        ));
+        spans.push(Span::styled("─".repeat(pad), Style::default().fg(t.border)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), rows[1]);
 }
