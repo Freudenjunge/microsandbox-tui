@@ -18,6 +18,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::app::DetailTab;
 use crate::models::{Metrics, PublishedPort, SandboxState, SandboxSummary};
 use crate::ui::chrome::{self, FooterHint, FooterRole, Tab, TitleInfo};
 use crate::ui::theme::THEME;
@@ -47,12 +48,14 @@ pub fn render(
     ports: &HashMap<String, Vec<PublishedPort>>,
     selected: usize,
     status: StatusLines<'_>,
-    quick: Option<&crate::ui::create::CreateForm>,
-    preview: &[crate::backend::LogLine],
+    detail: DetailTab,
+    logs_state: Option<&crate::ui::logs::LogsState>,
+    ports_state: Option<&crate::ui::ports::PortsState>,
+    exec_state: Option<&crate::ui::exec::ExecState>,
+    _preview: &[crate::backend::LogLine],
     initial_loading: bool,
     area: Rect,
 ) {
-    let t = &THEME;
     let runtime_version = match crate::runtime::detect() {
         crate::runtime::RuntimeStatus::Installed { runtime, .. } => {
             runtime.version.as_ref().map(|v| v.to_string())
@@ -68,29 +71,17 @@ pub fn render(
 
     let areas = chrome::chrome_layout(area, status.banner, status.error.or(status.status_text));
 
-    let running = sandboxes.iter().filter(|s| s.status.is_running()).count();
-    let stopped = sandboxes.len() - running;
-    let tabs = vec![
-        Tab {
-            key: '1',
-            label: "SANDBOXES",
-            active: true,
-            count: Some(sandboxes.len()),
-        },
-        Tab {
-            key: '2',
-            label: "LOGS",
-            active: false,
+    // The top tab bar shows the DETAIL tabs of the selected sandbox (2.9:
+    // no global "Sandboxes" tab — the rail IS the sandbox list).
+    let tabs: Vec<Tab> = DetailTab::ALL
+        .iter()
+        .map(|d| Tab {
+            key: t_key(*d),
+            label: d.label(),
+            active: *d == detail,
             count: None,
-        },
-        Tab {
-            key: '3',
-            label: "PORTS",
-            active: false,
-            count: None,
-        },
-    ];
-    let _ = (running, stopped);
+        })
+        .collect();
 
     chrome::render_chrome(frame, &areas, &title, &tabs);
 
@@ -102,33 +93,68 @@ pub fn render(
         chrome::render_chrome_bands(frame, &areas, None, Some((msg, status.error.is_some())));
     }
 
-    // Two-pane body on wide terminals (cards 65% / sidebar 35%) like the
-    // mockup: ONE surface, split by a vertical separator line — not two
-    // separate boxes. The sidebar hides while the full create form is open
-    // (the form covers the frame) and on narrow terminals.
-    if areas.body.width >= 100 && quick.is_none() {
-        // The body is already inside the framed chrome; the zoned surface
-        // shares the chrome frame (no second border).
-        let cols = Layout::horizontal([
-            Constraint::Percentage(65),
-            Constraint::Length(1),
-            Constraint::Percentage(35),
-        ])
-        .split(areas.body);
-        let cards = cols[0];
-        let divider_x = cols[1].x;
-        let sidebar = cols[2];
-        draw_vertical_separator(frame, divider_x, areas.body);
-        if initial_loading {
-            render_loading(frame, cards);
-        } else {
-            render_body(frame, sandboxes, metrics, ports, selected, cards);
-        }
-        render_sidebar(frame, sandboxes, selected, preview, sidebar);
-    } else if initial_loading {
-        render_loading(frame, areas.body);
+    // Body: left rail = sandbox cards stacked vertically (always visible),
+    // divider, right = the detail pane for the selected sandbox.
+    let rail_w = rail_width(areas.body.width);
+    let cols = Layout::horizontal([
+        Constraint::Length(rail_w),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(areas.body);
+    let rail = cols[0];
+    let divider_x = cols[1].x;
+    let detail_area = cols[2];
+    draw_vertical_separator(frame, divider_x, areas.body);
+
+    if initial_loading {
+        render_loading(frame, rail);
+    } else if sandboxes.is_empty() {
+        render_empty(frame, rail);
     } else {
-        render_body(frame, sandboxes, metrics, ports, selected, areas.body);
+        render_rail(frame, sandboxes, metrics, ports, selected, rail);
+    }
+
+    // Detail pane: header (selected sandbox) + tab content.
+    let detail_chunks =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(detail_area);
+    render_detail_header(frame, sandboxes, selected, detail, detail_chunks[0]);
+    match detail {
+        DetailTab::Overview => {
+            render_overview_tab(frame, sandboxes, metrics, ports, selected, detail_chunks[1])
+        }
+        DetailTab::Logs => {
+            if let Some(state) = logs_state {
+                crate::ui::logs::render_logs_body(frame, state, detail_chunks[1]);
+            } else {
+                render_detail_hint(frame, detail_chunks[1], "l", "start the log stream");
+            }
+        }
+        DetailTab::Ports => {
+            if let Some(state) = ports_state {
+                crate::ui::ports::render_ports_body(
+                    frame,
+                    state,
+                    sandboxes,
+                    ports,
+                    detail_chunks[1],
+                );
+            } else {
+                render_detail_hint(
+                    frame,
+                    detail_chunks[1],
+                    "Enter",
+                    "open this sandbox's ports",
+                );
+            }
+        }
+        DetailTab::Exec => {
+            if let Some(state) = exec_state {
+                crate::ui::exec::render_exec_body(frame, state, detail_chunks[1]);
+            } else {
+                render_detail_hint(frame, detail_chunks[1], "e", "open an exec session");
+            }
+        }
     }
 
     let hints = vec![
@@ -153,18 +179,13 @@ pub fn render(
             role: FooterRole::Warn,
         },
         FooterHint {
-            key: "[l]",
-            label: "Logs",
+            key: "[Enter]",
+            label: "Open",
             role: FooterRole::Plain,
         },
         FooterHint {
-            key: "[p]",
-            label: "Ports",
-            role: FooterRole::Plain,
-        },
-        FooterHint {
-            key: "[e]",
-            label: "Exec",
+            key: "[Tab]",
+            label: "Next tab",
             role: FooterRole::Plain,
         },
         FooterHint {
@@ -184,7 +205,20 @@ pub fn render(
         },
     ];
     chrome::render_chrome_footer(frame, &areas, &hints);
-    let _ = t;
+}
+
+/// The `1`-`4` key of a detail tab as a char.
+fn t_key(tab: DetailTab) -> char {
+    tab.key()
+}
+
+/// Rail width for the given body width (cards stay compact).
+fn rail_width(body_w: u16) -> u16 {
+    match body_w {
+        0..=79 => body_w, // no detail pane on narrow terminals
+        80..=119 => 44,
+        _ => 52,
+    }
 }
 
 /// Status/message lines drawn around the card grid.
@@ -198,8 +232,9 @@ pub struct StatusLines<'a> {
     pub status_text: Option<&'a str>,
 }
 
-/// Render the card grid / empty state into the body area.
-fn render_body(
+/// Render the left rail: the sandbox cards stacked vertically (the card
+/// list IS the navigation — 2.9 IA). Scroll keeps the selection visible.
+fn render_rail(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
     metrics: &HashMap<String, Metrics>,
@@ -207,98 +242,40 @@ fn render_body(
     selected: usize,
     area: Rect,
 ) {
-    if sandboxes.is_empty() {
-        render_empty(frame, area);
-    } else {
-        render_grid(frame, sandboxes, metrics, ports, selected, area);
+    // Cards keep their fixed height; scroll so the selected card shows.
+    const CARD_H: u16 = 8;
+    let max_visible = usize::from((area.height / CARD_H).max(1));
+    let sel_row = selected;
+    let start = sel_row.saturating_sub(max_visible.saturating_sub(1));
+    let visible = sandboxes
+        .len()
+        .saturating_sub(start)
+        .min(max_visible)
+        .max(1);
+
+    let rows = Layout::vertical(vec![Constraint::Length(CARD_H); visible]).split(area);
+    for (i, row) in rows.iter().enumerate() {
+        let idx = start + i;
+        let Some(sbx) = sandboxes.get(idx) else {
+            break;
+        };
+        render_card(
+            frame,
+            sbx,
+            metrics.get(&sbx.name),
+            ports.get(&sbx.name),
+            idx == selected,
+            *row,
+        );
     }
 }
 
-/// Render the right sidebar as zones inside the (already bordered) surface:
-/// a horizontal separator line divides the quick-create zone from the
-/// stream zone below — no second border of its own.
-fn render_sidebar(
+/// Header line of the detail pane: the selected sandbox's name + state.
+fn render_detail_header(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
     selected: usize,
-    preview: &[crate::backend::LogLine],
-    area: Rect,
-) {
-    if area.height == 0 {
-        return;
-    }
-    // First `quick_h` rows: quick create; separator; rest: stream preview.
-    let quick_h = area.height.min(4);
-    let sep_y = area.y + quick_h;
-    render_quick_create(frame, Rect::new(area.x, area.y, area.width, quick_h));
-    let stream_h = area.height.saturating_sub(quick_h + 1);
-    if stream_h == 0 {
-        return;
-    }
-    let stream = Rect::new(area.x, sep_y + 1, area.width, stream_h);
-    // Horizontal separator across the sidebar column.
-    let t = &THEME;
-    let sep = Rect::new(area.x, sep_y, area.width, 1);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(sep.width as usize),
-            Style::default().fg(t.border),
-        ))),
-        sep,
-    );
-    render_stream_preview(frame, sandboxes, selected, preview, stream);
-}
-
-/// The mockup's `⚡ QUICK CREATE MICROVM` zone header + collapsed content.
-/// `c`/`Ctrl+A` open the full form.
-fn render_quick_create(frame: &mut Frame, area: Rect) {
-    let t = &THEME;
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" ⚡ ", Style::default().fg(t.warn)),
-        Span::styled(
-            "QUICK CREATE MICROVM",
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled("[Ctrl+A]", Style::default().fg(t.muted)),
-        Span::styled(" Advanced", Style::default().fg(t.muted)),
-    ])];
-    if area.height > 1 {
-        lines.push(Line::from(vec![
-            Span::styled(" Image:  ", Style::default().fg(t.muted)),
-            Span::styled("<pick with c>", Style::default().fg(t.text)),
-        ]));
-    }
-    if area.height > 2 {
-        lines.push(Line::from(vec![
-            Span::styled(" Name:   ", Style::default().fg(t.muted)),
-            Span::styled("(auto)", Style::default().fg(t.text)),
-        ]));
-    }
-    if area.height > 3 {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "[c]",
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" open form   ", Style::default().fg(t.muted)),
-            Span::styled(
-                "[^a]",
-                Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" advanced", Style::default().fg(t.muted)),
-        ]));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// The mockup's `STREAM: <sandbox>` zone: last few log lines of the
-/// selected sandbox, `tail -n 6 -f` style.
-fn render_stream_preview(
-    frame: &mut Frame,
-    sandboxes: &[SandboxSummary],
-    selected: usize,
-    preview: &[crate::backend::LogLine],
+    detail: DetailTab,
     area: Rect,
 ) {
     let t = &THEME;
@@ -306,32 +283,137 @@ fn render_stream_preview(
         .get(selected)
         .map(|s| s.name.as_str())
         .unwrap_or("—");
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" ● ", Style::default().fg(t.accent)),
+    let line = Line::from(vec![
+        Span::styled(" ▶ ", Style::default().fg(t.accent)),
         Span::styled(
-            format!("STREAM: {name}"),
+            name.to_string(),
             Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
-        Span::styled("tail -n 6 -f", Style::default().fg(t.muted)),
-    ])];
-    if preview.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  (no output yet — tail running)",
+        Span::styled(
+            format!("  —  {} ", detail.label()),
+            Style::default().fg(t.muted),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Hint line for a detail tab that needs explicit opening.
+fn render_detail_hint(frame: &mut Frame, area: Rect, key: &str, what: &str) {
+    let t = &THEME;
+    let line = Line::from(vec![
+        Span::raw("  Press "),
+        Span::styled(
+            key.to_string(),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {what}."), Style::default().fg(t.muted)),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// OVERVIEW tab: live metrics block + this sandbox's published ports.
+fn render_overview_tab(
+    frame: &mut Frame,
+    sandboxes: &[SandboxSummary],
+    metrics: &HashMap<String, Metrics>,
+    ports: &HashMap<String, Vec<PublishedPort>>,
+    selected: usize,
+    area: Rect,
+) {
+    let t = &THEME;
+    let Some(sbx) = sandboxes.get(selected) else {
+        return;
+    };
+    let chunks = Layout::vertical([
+        Constraint::Length(5), // metrics zone
+        Constraint::Length(1), // separator
+        Constraint::Min(1),    // ports zone
+    ])
+    .split(area);
+
+    // Metrics zone.
+    let mut metric_lines = vec![Line::from(Span::styled(
+        " METRICS",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    ))];
+    if let Some(m) = metrics.get(&sbx.name) {
+        metric_lines.push(Line::from(vec![
+            Span::styled(" CPU ", Style::default().fg(t.muted)),
+            Span::styled(
+                format!("{:>5.1}%", m.cpu_percent),
+                Style::default().fg(t.text),
+            ),
+            Span::raw(" "),
+            Span::styled(cpu_gauge(m.cpu_percent), Style::default().fg(t.accent)),
+        ]));
+        metric_lines.push(Line::from(vec![
+            Span::styled(" MEM ", Style::default().fg(t.muted)),
+            Span::styled(
+                format!(
+                    "{} / {} ({:.1}%)",
+                    format_bytes(m.memory_bytes),
+                    format_bytes(m.memory_limit_bytes),
+                    mem_percent(m)
+                ),
+                Style::default().fg(t.text),
+            ),
+        ]));
+        metric_lines.push(Line::from(vec![
+            Span::styled(" Net ", Style::default().fg(t.muted)),
+            Span::styled("↓", Style::default().fg(t.ok)),
+            Span::styled(
+                format!("{} ", format_bytes(m.net_rx_bytes)),
+                Style::default().fg(t.text),
+            ),
+            Span::styled("↑", Style::default().fg(t.accent)),
+            Span::styled(format_bytes(m.net_tx_bytes), Style::default().fg(t.text)),
+        ]));
+    } else {
+        metric_lines.push(Line::from(Span::styled(
+            " (waiting for metrics)",
             Style::default().fg(t.muted),
         )));
-    } else {
-        let max = (area.width as usize).saturating_sub(12);
-        for l in preview.iter().take(area.height as usize) {
-            let ts = l.timestamp.format("%H:%M:%S").to_string();
-            let data: String = l.data.chars().take(max).collect();
-            lines.push(Line::from(vec![
-                Span::styled(format!("{ts} "), Style::default().fg(t.muted)),
-                Span::styled(data, Style::default().fg(t.text)),
-            ]));
+    }
+    frame.render_widget(Paragraph::new(metric_lines), chunks[0]);
+
+    // Separator.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(chunks[1].width as usize),
+            Style::default().fg(t.border),
+        ))),
+        chunks[1],
+    );
+
+    // Ports zone: this sandbox's published ports (`sbx publish` model).
+    let mut port_lines = vec![Line::from(Span::styled(
+        " PUBLISHED PORTS",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    ))];
+    match ports.get(&sbx.name) {
+        Some(list) if !list.is_empty() => {
+            for p in list {
+                port_lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("{:>15}:{}", p.host_bind, p.host_port),
+                        Style::default().fg(t.text),
+                    ),
+                    Span::styled(
+                        format!(" → {}/{}", p.guest_port, p.protocol),
+                        Style::default().fg(t.text),
+                    ),
+                ]));
+            }
+        }
+        _ => {
+            port_lines.push(Line::from(Span::styled(
+                "  (none — publish on the PORTS tab)",
+                Style::default().fg(t.muted),
+            )));
         }
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(port_lines), chunks[2]);
 }
 
 /// Loading placeholder shown until the first sandbox-list refresh arrives
@@ -769,6 +851,9 @@ mod tests {
                         error: None,
                         status_text: None,
                     },
+                    DetailTab::Overview,
+                    None,
+                    None,
                     None,
                     &[],
                     false,
@@ -786,10 +871,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("microsandbox"), "title missing:\n{text}");
-        assert!(text.contains("SANDBOXES"), "tabs missing:\n{text}");
+        assert!(text.contains("OVERVIEW"), "detail tabs missing:\n{text}");
         assert!(text.contains("probe"), "card missing:\n{text}");
-        assert!(text.contains("QUICK CREATE"), "sidebar missing:\n{text}");
-        assert!(text.contains("STREAM"), "preview missing:\n{text}");
+        assert!(
+            text.contains("METRICS"),
+            "overview metrics missing:\n{text}"
+        );
         assert!(text.contains("Navigation:"), "nav legend missing:\n{text}");
         assert!(text.contains("press [U]"), "banner missing:\n{text}");
     }

@@ -49,7 +49,11 @@ pub enum AppEvent {
         ports: Vec<PublishedPort>,
     },
     /// Output of a completed exec command.
-    ExecDone { name: String, output: ExecOutput },
+    ExecDone {
+        name: String,
+        args: Vec<String>,
+        res: std::result::Result<ExecOutput, String>,
+    },
 }
 
 /// What the main loop should do after handling an event.

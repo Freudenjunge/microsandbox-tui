@@ -41,6 +41,64 @@ pub enum View {
     Inspect,
 }
 
+/// Detail pane tabs for the sandbox selected in the left rail (2.9 IA:
+/// sandboxes always visible on the left, everything scoped to ONE sandbox
+/// on the right — the `sbx <name> …` mental model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailTab {
+    /// Live metrics + this sandbox's ports.
+    #[default]
+    Overview,
+    /// Log stream of this sandbox.
+    Logs,
+    /// Port publish/unpublish of this sandbox (`sbx publish/unpublish`).
+    Ports,
+    /// Captured exec into this sandbox + interactive shell hand-off.
+    Exec,
+}
+
+impl DetailTab {
+    /// All tabs in number-key order.
+    pub const ALL: [DetailTab; 4] = [
+        DetailTab::Overview,
+        DetailTab::Logs,
+        DetailTab::Ports,
+        DetailTab::Exec,
+    ];
+
+    /// The `1`-`4` number key that selects this tab.
+    pub fn key(self) -> char {
+        match self {
+            Self::Overview => '1',
+            Self::Logs => '2',
+            Self::Ports => '3',
+            Self::Exec => '4',
+        }
+    }
+
+    /// Tab label for the detail bar.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "OVERVIEW",
+            Self::Logs => "LOGS",
+            Self::Ports => "PORTS",
+            Self::Exec => "EXEC",
+        }
+    }
+
+    /// Cycle to the next tab.
+    pub fn next(self) -> Self {
+        let idx = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+
+    /// Cycle to the previous tab.
+    pub fn prev(self) -> Self {
+        let idx = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
 impl View {
     /// Whether this is the default (top-level) view.
     pub fn is_dashboard(self) -> bool {
@@ -154,6 +212,18 @@ pub struct App {
     pub preview_for: Option<String>,
     /// Ports-view state; `Some` while the ports view is open.
     pub ports_state: Option<PortsState>,
+    /// Active detail tab for the rail-selected sandbox.
+    pub detail: DetailTab,
+    /// Per-sandbox exec session state (input + history), keyed by name.
+    pub exec_sessions: HashMap<String, crate::ui::exec::ExecState>,
+    /// True while the exec input has keyboard focus (rail keys are routed
+    /// into the exec input instead).
+    pub exec_focus: bool,
+    /// A submitted exec command awaiting dispatch by the main loop
+    /// (sandbox, argv, raw command line for the history).
+    pub queued_exec: Option<(String, Vec<String>, String)>,
+    /// True while the interactive shell hand-off is running (TUI paused).
+    pub shell_suspended: bool,
     /// Cached image references for the create form autocomplete.
     pub images: Vec<String>,
     /// Published ports per sandbox (dashboard cards + ports view).
@@ -187,6 +257,11 @@ impl App {
             preview_lines: Vec::new(),
             preview_for: None,
             ports_state: None,
+            detail: DetailTab::default(),
+            exec_sessions: HashMap::new(),
+            exec_focus: false,
+            queued_exec: None,
+            shell_suspended: false,
             images: Vec::new(),
             ports: std::collections::HashMap::new(),
             ports_cache_dirty: false,
@@ -273,23 +348,18 @@ impl App {
                     _ => Action::Continue,
                 }
             }
-            AppEvent::ExecDone { name, output } => {
+            AppEvent::ExecDone { name, args, res } => {
                 self.busy = false;
-                let summary = if output.exit_code == 0 {
-                    format!("exec '{name}' ok: {}", output.stdout.trim())
-                } else {
-                    format!(
-                        "exec '{name}' exit {}: {}{}",
-                        output.exit_code,
-                        output.stderr.trim(),
-                        if output.stderr.trim().is_empty() {
-                            output.stdout.trim()
-                        } else {
-                            ""
+                let cmd = args.join(" ");
+                // Record the result in the sandbox's EXEC tab history.
+                if let Some(exec) = self.exec_sessions.get_mut(&name) {
+                    match res {
+                        Ok(output) => {
+                            exec.push_result(cmd, output.stdout, output.stderr, output.exit_code)
                         }
-                    )
-                };
-                self.status = Some(summary);
+                        Err(e) => exec.push_result(cmd, String::new(), e, -1),
+                    }
+                }
                 Action::Render
             }
         }
@@ -349,13 +419,73 @@ impl App {
         }
     }
 
-    /// Keys on the dashboard: selection, view switching, lifecycle ops.
+    /// Keys on the dashboard (2.9 IA): rail selection + detail tabs.
     fn handle_dashboard_key(&mut self, key: KeyEvent) -> Action {
+        // The EXEC tab swallows keys while it is the active tab (free-text
+        // input); `Esc` returns control to the rail.
+        if self.detail == DetailTab::Exec
+            && let Some(name) = self.selected_sandbox().map(|s| s.name.clone())
+            && let Some(exec) = self.exec_sessions.get_mut(&name)
+        {
+            if key.code == KeyCode::Esc {
+                // Hand control back to the rail (keep input buffer).
+                self.exec_focus = false;
+                return Action::Render;
+            }
+            if self.exec_focus {
+                let submit = exec.handle_key(key);
+                if submit && let Some(cmd) = exec.take_command() {
+                    let args = shell_split(&cmd);
+                    self.queued_exec = Some((name, args, cmd));
+                    exec.running = true;
+                }
+                return Action::Render;
+            }
+        }
         match key.code {
-            // Tab-bar number keys (mockup: [1] sandboxes, [2] logs, [3] ports).
-            KeyCode::Char('1') => Action::Render, // already home
-            KeyCode::Char('2') => self.open_logs(),
-            KeyCode::Char('3') => self.open_ports(),
+            // Detail-tab number keys + Tab cycling.
+            KeyCode::Char('1') => {
+                self.detail = DetailTab::Overview;
+                Action::Render
+            }
+            KeyCode::Char('2') => {
+                self.detail = DetailTab::Logs;
+                self.open_logs()
+            }
+            KeyCode::Char('3') => {
+                self.detail = DetailTab::Ports;
+                self.open_ports()
+            }
+            KeyCode::Char('4') | KeyCode::Char('e') => {
+                self.detail = DetailTab::Exec;
+                self.open_exec();
+                Action::Render
+            }
+            // S: interactive shell into the selected sandbox (exec tab only).
+            KeyCode::Char('S') if self.detail == DetailTab::Exec => {
+                if self.selected_sandbox().is_some() {
+                    self.shell_suspended = true;
+                }
+                Action::Render
+            }
+            KeyCode::Tab => {
+                self.detail = self.detail.next();
+                // Ensure tab-scoped state exists (logs tail, ports fetch).
+                match self.detail {
+                    DetailTab::Logs => {
+                        self.open_logs();
+                    }
+                    DetailTab::Ports => {
+                        self.open_ports();
+                    }
+                    _ => {}
+                }
+                Action::Render
+            }
+            KeyCode::BackTab => {
+                self.detail = self.detail.prev();
+                Action::Render
+            }
             KeyCode::Char('q') => {
                 self.quit = true;
                 Action::Quit
@@ -376,26 +506,14 @@ impl App {
                 self.open_create_form();
                 Action::Render
             }
-            KeyCode::Enter => self.open_view(View::Inspect),
-            KeyCode::Char('l') => self.open_logs(),
-            KeyCode::Char('p') => self.open_ports(),
+            KeyCode::Enter => {
+                self.detail = DetailTab::Overview;
+                Action::Render
+            }
             KeyCode::Char('r') => self.confirm_named(Op::Restart),
             KeyCode::Char('x') => self.confirm_named(Op::Stop),
             KeyCode::Char('s') => self.confirm_named(Op::Start),
             KeyCode::Delete => self.confirm_named(Op::Remove),
-            KeyCode::Char('e') => {
-                // Phase 1: exec opens the confirm dialog with a trivial demo
-                // command; free-form command input lands in Phase 2.
-                let Some(sbx) = self.selected_sandbox() else {
-                    return Action::Continue;
-                };
-                let name = sbx.name.clone();
-                self.confirm = Some(Op::Exec {
-                    name,
-                    cmd: vec!["/bin/sh".into(), "-c".into(), "echo exec-ok".into()],
-                });
-                Action::Render
-            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
                 Action::Render
@@ -408,6 +526,15 @@ impl App {
             KeyCode::Esc => Action::Continue,
             _ => Action::Continue,
         }
+    }
+
+    /// Ensure an exec session exists for the selected sandbox and focus it.
+    fn open_exec(&mut self) {
+        let Some(name) = self.selected_sandbox().map(|s| s.name.clone()) else {
+            return;
+        };
+        self.exec_sessions.entry(name).or_default();
+        self.exec_focus = true;
     }
 
     /// Keys on the create form.
@@ -583,17 +710,17 @@ impl App {
             return Action::Continue;
         };
         self.logs_state = Some(LogsState::new(&sbx.name));
-        self.view = View::Logs;
+        self.view = View::Dashboard;
         Action::Render
     }
 
-    /// Open the ports view for the selected sandbox.
+    /// Open the ports detail for the selected sandbox.
     fn open_ports(&mut self) -> Action {
         let Some(sbx) = self.selected_sandbox() else {
             return Action::Continue;
         };
         self.ports_state = Some(PortsState::new(&sbx.name));
-        self.view = View::Ports;
+        self.view = View::Dashboard;
         // Always refetch on entry: the recreate flow may have changed ports
         // since the last visit.
         self.ports_cache_dirty = true;
@@ -681,6 +808,16 @@ impl App {
         self.metrics = samples.into_iter().map(|m| (m.name.clone(), m)).collect();
     }
 
+    /// Take a queued exec command from the EXEC tab, if any.
+    pub fn take_exec(&mut self) -> Option<(String, Vec<String>, String)> {
+        self.queued_exec.take()
+    }
+
+    /// Take the pending interactive-shell request, if any.
+    pub fn take_shell_request(&mut self) -> bool {
+        std::mem::take(&mut self.shell_suspended)
+    }
+
     /// The currently highlighted sandbox, if any.
     pub fn selected_sandbox(&self) -> Option<&SandboxSummary> {
         self.sandboxes.get(self.selected)
@@ -697,6 +834,12 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Split a command line into argv on whitespace (no quoting support yet —
+/// documented; the SDK exec takes argv, not a shell line).
+pub(crate) fn shell_split(line: &str) -> Vec<String> {
+    line.split_whitespace().map(str::to_string).collect()
 }
 
 #[cfg(test)]
@@ -819,27 +962,16 @@ mod tests {
     }
 
     #[test]
-    fn per_sandbox_views_require_a_selection() {
+    fn detail_tabs_need_a_selection_but_overview_is_free() {
         let mut app = App::new();
 
-        // Empty list: Enter/l/p stay put.
-        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Continue);
+        // Empty list: Enter switches to Overview (always allowed).
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        assert_eq!(app.detail, DetailTab::Overview);
+        // l/p with no sandbox fall through to open_logs/open_ports → Continue.
         assert_eq!(app.handle_event(key(KeyCode::Char('l'))), Action::Continue);
         assert_eq!(app.handle_event(key(KeyCode::Char('p'))), Action::Continue);
         assert_eq!(app.view, View::Dashboard);
-
-        // With a sandbox present they open.
-        app.update_sandboxes(vec![summary("a")]);
-        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
-        assert_eq!(app.view, View::Inspect);
-
-        app.view = View::Dashboard;
-        assert_eq!(app.handle_event(key(KeyCode::Char('l'))), Action::Render);
-        assert_eq!(app.view, View::Logs);
-
-        app.view = View::Dashboard;
-        assert_eq!(app.handle_event(key(KeyCode::Char('p'))), Action::Render);
-        assert_eq!(app.view, View::Ports);
     }
 
     #[test]
@@ -961,42 +1093,46 @@ mod tests {
     }
 
     #[test]
-    fn exec_key_queues_after_confirm_and_completes() {
+    fn exec_tab_routes_input_and_records_output() {
         let mut app = App::new();
         app.update_sandboxes(vec![summary("api")]);
         app.handle_event(key(KeyCode::Char('e')));
 
-        let queued = app.confirm.take().expect("exec opens confirm");
-        let Op::Exec { name, cmd } = queued else {
-            panic!("expected Exec op");
-        };
-        assert_eq!(name, "api");
-        assert!(cmd.contains(&"echo exec-ok".to_string()));
+        assert_eq!(app.detail, DetailTab::Exec);
+        assert!(app.exec_focus, "e focuses the exec input");
+        assert!(app.exec_sessions.contains_key("api"));
 
-        // ExecDone clears busy and reports the output.
-        app.busy = true;
+        // Typing goes into the input (focus is on exec).
+        for c in "echo exec-ok".chars() {
+            app.handle_event(key(KeyCode::Char(c)));
+        }
+        app.handle_event(key(KeyCode::Enter));
+        let (name, args, raw) = app.take_exec().expect("command queued");
+        assert_eq!(name, "api");
+        assert_eq!(args, vec!["echo", "exec-ok"]);
+        assert_eq!(raw, "echo exec-ok");
+
+        // ExecDone records the result in the session history.
         let action = app.handle_event(AppEvent::ExecDone {
             name: "api".into(),
-            output: crate::backend::ExecOutput {
+            args,
+            res: Ok(crate::backend::ExecOutput {
                 stdout: "exec-ok\n".into(),
                 stderr: String::new(),
                 exit_code: 0,
-            },
+            }),
         });
         assert_eq!(action, Action::Render);
-        assert!(!app.busy);
-        assert!(
-            app.status
-                .as_deref()
-                .unwrap_or_default()
-                .contains("exec-ok")
-        );
+        let hist = &app.exec_sessions["api"].history;
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].exit_code, 0);
+        assert!(hist[0].stdout.contains("exec-ok"));
     }
 
     #[test]
     fn lifecycle_keys_require_a_selection() {
         let mut app = App::new();
-        for k in ['r', 'x', 's', 'e'] {
+        for k in ['r', 'x', 's'] {
             app.view = View::Dashboard;
             assert_eq!(app.handle_event(key(KeyCode::Char(k))), Action::Continue);
             assert!(
@@ -1004,6 +1140,9 @@ mod tests {
                 "key {k} must not open confirm on empty list"
             );
         }
+        // `e` (exec) also no-ops on an empty list: no session is created.
+        app.handle_event(key(KeyCode::Char('e')));
+        assert!(app.exec_sessions.is_empty());
         // Delete on an empty list is also a no-op.
         assert_eq!(app.handle_event(key(KeyCode::Delete)), Action::Continue);
 

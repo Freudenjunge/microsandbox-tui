@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::backend::LogLine;
-use crate::ui::chrome;
+
 use crate::ui::theme::THEME;
 
 /// Maximum number of log lines retained in memory.
@@ -222,47 +222,11 @@ impl LogsState {
 
 // ---------- rendering ----------
 
-/// Render the logs view into `area` (full frame; chrome bands included).
-pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
-    let t = &THEME;
-    let runtime_version = match crate::runtime::detect() {
-        crate::runtime::RuntimeStatus::Installed { runtime, .. } => {
-            runtime.version.as_ref().map(|v| v.to_string())
-        }
-        crate::runtime::RuntimeStatus::Missing => None,
-    };
-    let title = chrome::TitleInfo {
-        runtime_version,
-        size: format!("{}x{}", area.width, area.height),
-        pid: std::process::id(),
-        live: true,
-    };
+/// Render just the logs body (toolbar, inspector, lines, metrics bar)
+/// into the dashboard's detail pane — no chrome, the dashboard owns the
+/// frame (2.9 IA).
+pub fn render_logs_body(frame: &mut Frame, state: &LogsState, area: Rect) {
     let grep_active = state.grep.is_some() || state.grep_mode;
-
-    let areas = chrome::chrome_layout(area, None, None);
-
-    let tabs = vec![
-        chrome::Tab {
-            key: '1',
-            label: "SANDBOXES",
-            active: false,
-            count: None,
-        },
-        chrome::Tab {
-            key: '2',
-            label: "LOGS",
-            active: true,
-            count: None,
-        },
-        chrome::Tab {
-            key: '3',
-            label: "PORTS",
-            active: false,
-            count: None,
-        },
-    ];
-    chrome::render_chrome(frame, &areas, &title, &tabs);
-
     // Body: toolbar (target+grep / follow+source), inspector line, log area.
     let toolbar_h = 1 + u16::from(grep_active);
     let chunks = Layout::vertical([
@@ -271,7 +235,7 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
         Constraint::Min(1),            // log lines
         Constraint::Length(1),         // buffer metrics bar
     ])
-    .split(areas.body);
+    .split(area);
 
     render_toolbar(frame, state, chunks[0]);
     if grep_active {
@@ -284,41 +248,6 @@ pub fn render_logs(frame: &mut Frame, state: &LogsState, area: Rect) {
     render_inspector_header(frame, state, chunks[1]);
     render_log_area(frame, state, chunks[2]);
     render_buffer_metrics(frame, state, chunks[3]);
-
-    let hints = vec![
-        chrome::FooterHint {
-            key: "[f]",
-            label: "Follow",
-            role: chrome::FooterRole::Accent,
-        },
-        chrome::FooterHint {
-            key: "[/]",
-            label: "Grep",
-            role: chrome::FooterRole::Accent,
-        },
-        chrome::FooterHint {
-            key: "[s]",
-            label: "Source",
-            role: chrome::FooterRole::Plain,
-        },
-        chrome::FooterHint {
-            key: "[p]",
-            label: "Pause",
-            role: chrome::FooterRole::Plain,
-        },
-        chrome::FooterHint {
-            key: "[Esc/1]",
-            label: "Sandboxes",
-            role: chrome::FooterRole::Warn,
-        },
-        chrome::FooterHint {
-            key: "[q]",
-            label: "Quit",
-            role: chrome::FooterRole::Err,
-        },
-    ];
-    chrome::render_chrome_footer(frame, &areas, &hints);
-    let _ = t;
 }
 
 /// Toolbar row: target pill + grep indicator + follow/source pills.

@@ -17,7 +17,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 
 use crate::models::{PublishedPort, SandboxSummary};
-use crate::ui::chrome::{self, FooterHint, FooterRole, Tab, TitleInfo};
 use crate::ui::theme::THEME;
 
 /// State for the ports view.
@@ -246,94 +245,42 @@ pub fn matrix_rows<'a>(
     rows
 }
 
-/// Render the ports view into `area` (full frame; chrome bands included).
-pub fn render_ports(
+/// Render this sandbox's ports body into the detail pane (2.9 IA): the
+/// sandbox's bindings + publish form / binding inspector. No chrome — the
+/// dashboard owns the frame.
+pub fn render_ports_body(
     frame: &mut Frame,
     state: &PortsState,
     sandboxes: &[SandboxSummary],
     port_cache: &std::collections::HashMap<String, Vec<PublishedPort>>,
     area: Rect,
 ) {
-    let runtime_version = match crate::runtime::detect() {
-        crate::runtime::RuntimeStatus::Installed { runtime, .. } => {
-            runtime.version.as_ref().map(|v| v.to_string())
-        }
-        crate::runtime::RuntimeStatus::Missing => None,
-    };
-    let title = TitleInfo {
-        runtime_version,
-        size: format!("{}x{}", area.width, area.height),
-        pid: std::process::id(),
-        live: true,
-    };
-
-    let areas = chrome::chrome_layout(area, None, None);
-
-    let tabs = vec![
-        Tab {
-            key: '1',
-            label: "SANDBOXES",
-            active: false,
-            count: None,
-        },
-        Tab {
-            key: '2',
-            label: "LOGS",
-            active: false,
-            count: None,
-        },
-        Tab {
-            key: '3',
-            label: "PORTS",
-            active: true,
-            count: None,
-        },
-    ];
-    chrome::render_chrome(frame, &areas, &title, &tabs);
-
-    // Body: matrix table (70%) + inspector sidebar (30%).
-    let cols = Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(areas.body);
-    render_matrix(frame, sandboxes, port_cache, cols[0]);
+    let t = &THEME;
+    // Header row (the sandbox scope) + matrix.
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
+    let name = &state.sandbox_name;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ⚡ ", Style::default().fg(t.warn)),
+            Span::styled(
+                format!("PORTS — {name}"),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                "[+] publish  [-] unpublish  [r] refresh",
+                Style::default().fg(t.muted),
+            ),
+        ])),
+        chunks[0],
+    );
+    render_matrix(frame, sandboxes, port_cache, chunks[1]);
+    // Publish form replaces the inspector area via a bottom overlay strip.
     if state.publish_form.is_some() {
-        render_publish_form(frame, state, sandboxes, port_cache, cols[1]);
-    } else {
-        render_inspector(frame, state, sandboxes, port_cache, cols[1]);
+        let split = Layout::vertical([Constraint::Min(3), Constraint::Length(12)]).split(chunks[1]);
+        render_matrix(frame, sandboxes, port_cache, split[0]);
+        render_publish_form(frame, state, sandboxes, port_cache, split[1]);
     }
-
-    let hints = vec![
-        FooterHint {
-            key: "[+]",
-            label: "Publish (selected)",
-            role: FooterRole::Accent,
-        },
-        FooterHint {
-            key: "[-]",
-            label: "Unpublish (selected)",
-            role: FooterRole::Err,
-        },
-        FooterHint {
-            key: "[↑↓]",
-            label: "Select binding",
-            role: FooterRole::Plain,
-        },
-        FooterHint {
-            key: "[r]",
-            label: "Refresh",
-            role: FooterRole::Plain,
-        },
-        FooterHint {
-            key: "[Esc/1]",
-            label: "Sandboxes",
-            role: FooterRole::Warn,
-        },
-        FooterHint {
-            key: "[q]",
-            label: "Quit",
-            role: FooterRole::Plain,
-        },
-    ];
-    chrome::render_chrome_footer(frame, &areas, &hints);
 }
 
 /// The ports of the sandbox that owns the currently highlighted matrix row.

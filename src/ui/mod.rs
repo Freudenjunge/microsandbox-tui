@@ -11,6 +11,7 @@
 pub mod chrome;
 pub mod create;
 pub mod dashboard;
+pub mod exec;
 pub mod help;
 pub mod logs;
 pub mod ports;
@@ -27,7 +28,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::models::{Metrics, PublishedPort, SandboxSummary};
 use crate::ui::theme::THEME;
 
-/// Render the dashboard view (header + cards + footer).
+/// Render the dashboard view (rail + detail tabs; chrome included).
 #[allow(clippy::too_many_arguments)]
 pub fn render_dashboard(
     frame: &mut Frame,
@@ -35,18 +36,15 @@ pub fn render_dashboard(
     metrics: &HashMap<String, Metrics>,
     ports: &HashMap<String, Vec<PublishedPort>>,
     selected: usize,
-    error: Option<&str>,
-    quick: Option<&create::CreateForm>,
+    status: dashboard::StatusLines<'_>,
+    detail: crate::app::DetailTab,
+    logs_state: Option<&logs::LogsState>,
+    ports_state: Option<&ports::PortsState>,
+    exec_state: Option<&exec::ExecState>,
     preview: &[crate::backend::LogLine],
     initial_loading: bool,
     area: Rect,
 ) {
-    let banner = crate::runtime::banner_text();
-    let status = dashboard::StatusLines {
-        banner: banner.as_deref(),
-        error,
-        status_text: None,
-    };
     dashboard::render(
         frame,
         sandboxes,
@@ -54,7 +52,10 @@ pub fn render_dashboard(
         ports,
         selected,
         status,
-        quick,
+        detail,
+        logs_state,
+        ports_state,
+        exec_state,
         preview,
         initial_loading,
         area,
@@ -64,22 +65,6 @@ pub fn render_dashboard(
 /// Render the help overlay (centered keybinding table).
 pub fn render_help(frame: &mut Frame, area: Rect) {
     help::render(frame, area);
-}
-
-/// Render the port-forwards view for a sandbox.
-pub fn render_ports(
-    frame: &mut Frame,
-    state: &ports::PortsState,
-    sandboxes: &[SandboxSummary],
-    port_cache: &HashMap<String, Vec<PublishedPort>>,
-    area: Rect,
-) {
-    ports::render_ports(frame, state, sandboxes, port_cache, area);
-}
-
-/// Render the logs panel for a sandbox.
-pub fn render_logs_panel(frame: &mut Frame, state: &logs::LogsState, area: Rect) {
-    logs::render_logs(frame, state, area);
 }
 
 /// Render a modal confirmation dialog for a pending operation.

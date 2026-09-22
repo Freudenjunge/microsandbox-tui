@@ -37,7 +37,7 @@ mod models;
 mod runtime;
 mod ui;
 
-use app::{App, Op, View};
+use app::{App, DetailTab, Op, View};
 use backend::MsbBackend;
 use backend::sdk::SdkBackend;
 use event::{Action, AppEvent, poll_events};
@@ -179,6 +179,30 @@ async fn run(cli: Cli) -> Result<()> {
         }
         if let Some(spec) = app.take_create_spec() {
             run_create(spec, &backend, event_tx.clone());
+        }
+        // A submitted exec command from the EXEC detail tab.
+        if let Some((name, args, _raw)) = app.take_exec() {
+            run_exec_captured(name, args, &backend, event_tx.clone());
+        }
+        // Interactive shell hand-off: tear the TUI down, run the sandbox
+        // shell in the foreground, restore the TUI afterwards.
+        if app.view == View::Dashboard && app.detail == DetailTab::Exec && app.take_shell_request()
+        {
+            let Some(sbx) = app.selected_sandbox().map(|s| s.name.clone()) else {
+                continue;
+            };
+            drop(guard); // leave alternate screen + raw mode
+            let res = std::process::Command::new("msb")
+                .args(["ssh", &sbx])
+                .status();
+            guard = TerminalGuard::enter()?;
+            app.shell_suspended = false;
+            app.status = Some(match res {
+                Ok(code) if code.success() => format!("shell to {sbx} closed"),
+                Ok(code) => format!("shell exited with {}", code.code().unwrap_or(-1)),
+                Err(e) => format!("shell failed: {e}"),
+            });
+            render(&mut guard.terminal, &app)?;
         }
 
         // Log tail task: runs for the Logs view AND for the dashboard's
@@ -323,12 +347,22 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                     let _ = tx
                         .send(AppEvent::ExecDone {
                             name: name.clone(),
-                            output,
+                            args: cmd.clone(),
+                            res: Ok(output),
                         })
                         .await;
                     return;
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    let _ = tx
+                        .send(AppEvent::ExecDone {
+                            name: name.clone(),
+                            args: cmd.clone(),
+                            res: Err(format!("{e:#}")),
+                        })
+                        .await;
+                    return;
+                }
             },
             Op::PublishPort { name, port } => {
                 actions::publish_port(backend.as_ref(), name, port.clone())
@@ -382,6 +416,26 @@ fn run_create(
     });
 }
 
+/// Run a captured exec from the EXEC tab and report the output.
+fn run_exec_captured(
+    name: String,
+    args: Vec<String>,
+    backend: &Arc<SdkBackend>,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    let backend = backend.clone();
+    tokio::spawn(async move {
+        let res = backend.exec(&name, &args).await;
+        let _ = tx
+            .send(AppEvent::ExecDone {
+                name,
+                args,
+                res: res.map_err(|e| format!("{e:#}")),
+            })
+            .await;
+    });
+}
+
 /// Future returned by a poller closure.
 type PollFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppEvent>> + Send>>;
 /// Poller closure: takes the backend and produces an event future.
@@ -424,6 +478,7 @@ fn spawn_poller(
 fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
+        let banner = crate::runtime::banner_text();
         // Opaque base layer: without it, transparent terminal themes
         // (e.g. milky fish/zsh setups) bleed through ratatui's Reset
         // background. Widgets only patch cells they touch, so this solid
@@ -434,16 +489,24 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
         );
         match app.view {
             View::Dashboard => {
-                // The quick-create sidebar panel hides itself while the
-                // full create form is open (form replaces the frame).
+                let exec_state = app
+                    .selected_sandbox()
+                    .and_then(|s| app.exec_sessions.get(&s.name));
                 ui::render_dashboard(
                     frame,
                     &app.sandboxes,
                     &app.metrics,
                     &app.ports,
                     app.selected,
-                    app.error.as_deref(),
-                    None,
+                    ui::dashboard::StatusLines {
+                        banner: banner.as_deref(),
+                        error: app.error.as_deref(),
+                        status_text: app.status.as_deref(),
+                    },
+                    app.detail,
+                    app.logs_state.as_ref(),
+                    app.ports_state.as_ref(),
+                    exec_state,
                     &app.preview_lines,
                     !app.initial_list_loaded,
                     area,
@@ -456,22 +519,29 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                 Some(form) => ui::create::render_create_form(frame, form, area),
                 None => ui::render_placeholder(frame, "Create", area),
             },
-            View::Logs => match &app.logs_state {
-                Some(state) => ui::logs::render_logs(frame, state, area),
-                None => ui::render_placeholder(frame, "Logs", area),
-            },
-            View::Ports => match &app.ports_state {
-                Some(state) => {
-                    ui::ports::render_ports(frame, state, &app.sandboxes, &app.ports, area)
-                }
-                None => ui::render_placeholder(frame, "Ports", area),
-            },
-            View::Inspect => {
-                let title = match app.selected_sandbox() {
-                    Some(sbx) => format!("Inspect: {}", sbx.name),
-                    None => "Inspect".to_string(),
-                };
-                ui::render_placeholder(frame, &title, area);
+            View::Logs | View::Ports | View::Inspect => {
+                // 2.9 IA: logs/ports/inspect are detail tabs of the selected
+                // sandbox, rendered inside the dashboard; these arms only
+                // fire during transition frames.
+                ui::render_dashboard(
+                    frame,
+                    &app.sandboxes,
+                    &app.metrics,
+                    &app.ports,
+                    app.selected,
+                    ui::dashboard::StatusLines {
+                        banner: banner.as_deref(),
+                        error: app.error.as_deref(),
+                        status_text: app.status.as_deref(),
+                    },
+                    app.detail,
+                    app.logs_state.as_ref(),
+                    app.ports_state.as_ref(),
+                    None,
+                    &app.preview_lines,
+                    !app.initial_list_loaded,
+                    area,
+                );
             }
         }
 
