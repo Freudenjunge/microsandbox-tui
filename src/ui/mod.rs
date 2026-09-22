@@ -11,7 +11,6 @@
 pub mod chrome;
 pub mod create;
 pub mod dashboard;
-pub mod exec;
 pub mod help;
 pub mod logs;
 pub mod ports;
@@ -40,7 +39,6 @@ pub fn render_dashboard(
     detail: crate::app::DetailTab,
     logs_state: Option<&logs::LogsState>,
     ports_state: Option<&ports::PortsState>,
-    exec_state: Option<&exec::ExecState>,
     preview: &[crate::backend::LogLine],
     initial_loading: bool,
     area: Rect,
@@ -55,7 +53,6 @@ pub fn render_dashboard(
         detail,
         logs_state,
         ports_state,
-        exec_state,
         preview,
         initial_loading,
         area,

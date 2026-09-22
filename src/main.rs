@@ -37,7 +37,7 @@ mod models;
 mod runtime;
 mod ui;
 
-use app::{App, DetailTab, Op, View};
+use app::{App, Op, View};
 use backend::MsbBackend;
 use backend::sdk::SdkBackend;
 use event::{Action, AppEvent, poll_events};
@@ -180,14 +180,11 @@ async fn run(cli: Cli) -> Result<()> {
         if let Some(spec) = app.take_create_spec() {
             run_create(spec, &backend, event_tx.clone());
         }
-        // A submitted exec command from the EXEC detail tab.
-        if let Some((name, args, _raw)) = app.take_exec() {
-            run_exec_captured(name, args, &backend, event_tx.clone());
-        }
-        // Interactive shell hand-off: tear the TUI down, run the sandbox
-        // shell in the foreground, restore the TUI afterwards.
-        if app.view == View::Dashboard && app.detail == DetailTab::Exec && app.take_shell_request()
-        {
+        // (The captured-exec path from the removed EXEC tab is gone; `e`
+        // now opens the interactive shell window below.)
+        // Interactive shell hand-off (`e`): tear the TUI down, run the
+        // sandbox shell in the foreground, restore the TUI afterwards.
+        if app.view == View::Dashboard && app.take_shell_request() {
             let Some(sbx) = app.selected_sandbox().map(|s| s.name.clone()) else {
                 continue;
             };
@@ -416,26 +413,6 @@ fn run_create(
     });
 }
 
-/// Run a captured exec from the EXEC tab and report the output.
-fn run_exec_captured(
-    name: String,
-    args: Vec<String>,
-    backend: &Arc<SdkBackend>,
-    tx: mpsc::Sender<AppEvent>,
-) {
-    let backend = backend.clone();
-    tokio::spawn(async move {
-        let res = backend.exec(&name, &args).await;
-        let _ = tx
-            .send(AppEvent::ExecDone {
-                name,
-                args,
-                res: res.map_err(|e| format!("{e:#}")),
-            })
-            .await;
-    });
-}
-
 /// Future returned by a poller closure.
 type PollFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppEvent>> + Send>>;
 /// Poller closure: takes the backend and produces an event future.
@@ -489,9 +466,6 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
         );
         match app.view {
             View::Dashboard => {
-                let exec_state = app
-                    .selected_sandbox()
-                    .and_then(|s| app.exec_sessions.get(&s.name));
                 ui::render_dashboard(
                     frame,
                     &app.sandboxes,
@@ -506,7 +480,6 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                     app.detail,
                     app.logs_state.as_ref(),
                     app.ports_state.as_ref(),
-                    exec_state,
                     &app.preview_lines,
                     !app.initial_list_loaded,
                     area,
@@ -537,7 +510,6 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                     app.detail,
                     app.logs_state.as_ref(),
                     app.ports_state.as_ref(),
-                    None,
                     &app.preview_lines,
                     !app.initial_list_loaded,
                     area,

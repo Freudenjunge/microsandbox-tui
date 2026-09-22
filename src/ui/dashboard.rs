@@ -51,7 +51,6 @@ pub fn render(
     detail: DetailTab,
     logs_state: Option<&crate::ui::logs::LogsState>,
     ports_state: Option<&crate::ui::ports::PortsState>,
-    exec_state: Option<&crate::ui::exec::ExecState>,
     _preview: &[crate::backend::LogLine],
     initial_loading: bool,
     area: Rect,
@@ -148,13 +147,6 @@ pub fn render(
                 );
             }
         }
-        DetailTab::Exec => {
-            if let Some(state) = exec_state {
-                crate::ui::exec::render_exec_body(frame, state, detail_chunks[1]);
-            } else {
-                render_detail_hint(frame, detail_chunks[1], "e", "open an exec session");
-            }
-        }
     }
 
     let hints = vec![
@@ -179,8 +171,8 @@ pub fn render(
             role: FooterRole::Warn,
         },
         FooterHint {
-            key: "[Enter]",
-            label: "Open",
+            key: "[e]",
+            label: "Shell",
             role: FooterRole::Plain,
         },
         FooterHint {
@@ -493,7 +485,7 @@ fn render_card(
     frame: &mut Frame,
     sbx: &SandboxSummary,
     metrics: Option<&Metrics>,
-    ports: Option<&Vec<PublishedPort>>,
+    _ports: Option<&Vec<PublishedPort>>,
     selected: bool,
     area: Rect,
 ) {
@@ -585,8 +577,11 @@ fn render_card(
         }
     }
     lines.push(Line::from(vec![
-        Span::styled("Ports ", Style::default().fg(t.muted)),
-        Span::styled(ports_short(ports), Style::default().fg(t.text)),
+        Span::styled("Workdir ", Style::default().fg(t.muted)),
+        Span::styled(
+            sbx.workdir.clone().unwrap_or_else(|| "/".to_string()),
+            Style::default().fg(t.text),
+        ),
     ]));
     let uptime = metrics
         .map(|m| format_duration(m.uptime_secs))
@@ -837,6 +832,7 @@ mod tests {
             image: "alpine".into(),
             name: "probe".into(),
             status: SandboxState::Running,
+            workdir: Some("/app".into()),
         }];
         terminal
             .draw(|f| {
@@ -852,7 +848,6 @@ mod tests {
                         status_text: None,
                     },
                     DetailTab::Overview,
-                    None,
                     None,
                     None,
                     &[],

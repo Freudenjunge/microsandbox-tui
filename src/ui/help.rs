@@ -26,10 +26,6 @@ struct KeyGroup {
 
 static GLOBAL_KEYS: &[KeyRow] = &[
     KeyRow {
-        keys: "1 / 2 / 3",
-        action: "tab bar: sandboxes / logs / ports",
-    },
-    KeyRow {
         keys: "q",
         action: "quit",
     },
@@ -42,35 +38,27 @@ static GLOBAL_KEYS: &[KeyRow] = &[
 static DASHBOARD_KEYS: &[KeyRow] = &[
     KeyRow {
         keys: "↑ ↓",
-        action: "select sandbox card",
+        action: "select sandbox card (left rail)",
     },
     KeyRow {
-        keys: "Enter",
-        action: "inspect selected sandbox",
+        keys: "1 / 2 / 3",
+        action: "detail tabs: overview / logs / ports",
+    },
+    KeyRow {
+        keys: "Tab",
+        action: "cycle detail tabs",
     },
     KeyRow {
         keys: "c",
-        action: "create sandbox form",
+        action: "create sandbox (form)",
     },
     KeyRow {
         keys: "e",
-        action: "exec command in sandbox",
-    },
-    KeyRow {
-        keys: "l",
-        action: "logs panel",
+        action: "interactive shell into the sandbox (new window)",
     },
     KeyRow {
         keys: "s",
         action: "start sandbox",
-    },
-    KeyRow {
-        keys: "p",
-        action: "port forwards view",
-    },
-    KeyRow {
-        keys: "n",
-        action: "network rules editor",
     },
     KeyRow {
         keys: "r",
@@ -107,24 +95,24 @@ static LOGS_KEYS: &[KeyRow] = &[
         keys: "↑ ↓ / PgUp PgDn",
         action: "scroll buffer",
     },
-    KeyRow {
-        keys: "Esc",
-        action: "back to dashboard",
-    },
 ];
 
 static PORTS_KEYS: &[KeyRow] = &[
     KeyRow {
-        keys: "↑ ↓",
-        action: "select binding in the matrix",
+        keys: "+",
+        action: "publish a port on THIS sandbox (confirm; recreates)",
     },
     KeyRow {
         keys: "-",
         action: "unpublish selected binding (confirm; recreates)",
     },
     KeyRow {
-        keys: "Esc",
-        action: "back to dashboard",
+        keys: "↑ ↓",
+        action: "select binding",
+    },
+    KeyRow {
+        keys: "r",
+        action: "refresh bindings from inspect",
     },
 ];
 

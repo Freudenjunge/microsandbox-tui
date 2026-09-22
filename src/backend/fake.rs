@@ -264,6 +264,7 @@ fn summary_from(sbx: &FakeSandbox) -> SandboxSummary {
         image: sbx.config.image.reference(),
         name: sbx.name.clone(),
         status: sbx.state.clone(),
+        workdir: sbx.config.runtime.workdir.clone(),
     }
 }
 

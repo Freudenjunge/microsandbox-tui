@@ -184,6 +184,9 @@ pub struct SandboxSummary {
     pub image: String,
     pub name: String,
     pub status: SandboxState,
+    /// Working directory inside the sandbox (runtime default when `None`).
+    #[serde(default)]
+    pub workdir: Option<String>,
 }
 
 // ---------- msb ps ----------

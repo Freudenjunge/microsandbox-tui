@@ -603,6 +603,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             image: "alpine".into(),
             name: name.into(),
+            workdir: None,
             status: if running {
                 crate::models::SandboxState::Running
             } else {

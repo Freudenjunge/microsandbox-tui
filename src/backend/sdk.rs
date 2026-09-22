@@ -539,11 +539,12 @@ impl MsbBackend for SdkBackend {
             // A sandbox whose stored config can't be parsed still shows up
             // (name, state, created_at; image "?") instead of failing the
             // whole list — smoke-test finding 2.8.
-            let image = match self.sandbox_config_from_json(handle) {
-                Ok(cfg) => cfg.image.reference(),
+            let parsed = self.sandbox_config_from_json(handle);
+            let (image, workdir) = match &parsed {
+                Ok(cfg) => (cfg.image.reference(), cfg.runtime.workdir.clone()),
                 Err(e) => {
                     degraded.push(format!("{}: {e:#}", handle.name()));
-                    "?".to_string()
+                    ("?".to_string(), None)
                 }
             };
             out.push(SandboxSummary {
@@ -551,6 +552,7 @@ impl MsbBackend for SdkBackend {
                 image,
                 name: handle.name().to_string(),
                 status: map_status(local.status),
+                workdir,
             });
         }
         if !degraded.is_empty() {
