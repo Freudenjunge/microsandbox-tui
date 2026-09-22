@@ -390,10 +390,13 @@ publish port:port` mental model). New IA, agreed with the maintainer:
 - [x] Help overlay + footer hints updated to the new navigation.
 - [x] All four gates green; push; smoke-test handoff.
 
-**Phase 2.9 complete.** 154 unit tests, all gates green. Follow-up fixes
+**Phase 2.9 complete.** 155 unit tests, all gates green. Follow-up fixes
 from the next smoke round: workdir on cards (Ports line removed), the
 PORTS detail tab's keys were dead until the dispatch was rerouted, `e` =
-interactive shell window (EXEC tab removed entirely), `s`/`S` = start.
+interactive shell — refined to a PARALLEL window (maintainer): `e` spawns
+a new terminal (konsole/gnome-terminal/alacritty/foot fallback chain)
+with `msb ssh <name>` while the dashboard keeps running; EXEC tab removed
+entirely; `s`/`S` = start.
 
 **Deviations from the mockups (deliberate):**
 - All invented telemetry is omitted: ENGINE/DAEMON strings, eBPF/cgroupv2/
