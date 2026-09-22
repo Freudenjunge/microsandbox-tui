@@ -457,10 +457,9 @@ pub fn render_chrome(frame: &mut Frame, areas: &ChromeAreas, info: &TitleInfo, t
     render_tabs_inside(frame, tabs, areas.tabs);
 }
 
-/// Draw the tab row + full-width underline rail that closes the tabs band.
-/// The rail spans the entire interior width: the active tab's segment glows
-/// accent, inactive tabs and the remaining width render as the border-tone
-/// separator toward the body below (the mockup's nav `border-b`).
+/// Draw the tab row + a **continuous** separator line below it. No
+/// per-tab underline highlighting — the active tab is already marked by
+/// its filled pill; the separator spans the full width edge to edge.
 fn render_tabs_inside(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
     if area.height == 0 {
         return;
@@ -469,30 +468,14 @@ fn render_tabs_inside(frame: &mut Frame, tabs: &[Tab<'_>], area: Rect) {
     frame.render_widget(tab_bar_line(tabs), rows[0]);
 
     let t = &THEME;
-    let mut spans = Vec::new();
-    let mut used = 0usize;
-    for tab in tabs {
-        let count = tab.count.map(|c| format!(" ({c})")).unwrap_or_default();
-        let width = 2 + tab.key.len_utf8() + 1 + tab.label.len() + count.len() + 1;
-        let seg: String = std::iter::repeat_n('─', width).collect();
-        spans.push(Span::styled(
-            seg,
-            if tab.active {
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.border)
-            },
-        ));
-        spans.push(Span::raw(" "));
-        used += width + 1;
-    }
-    // Fill the rest of the width so the rail doubles as the full separator
-    // between the tab band and the area below.
-    if area.width as usize > used {
-        let pad = area.width as usize - used;
-        spans.push(Span::styled("─".repeat(pad), Style::default().fg(t.border)));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), rows[1]);
+    let width = rows[1].width as usize;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(width),
+            Style::default().fg(t.border),
+        ))),
+        rows[1],
+    );
 }
 
 /// Render banner/status bands inside the framed chrome (after
