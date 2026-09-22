@@ -9,6 +9,7 @@
 //! Mockup-only telemetry (per-port traffic counters, eBPF/iptables policy
 //! strings) is deliberately not rendered — the SDK provides none of it.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -28,6 +29,159 @@ pub struct PortsState {
     pub ports: Vec<PublishedPort>,
     /// Index into [`PortsState::rows`] of the highlighted binding.
     pub selected: usize,
+    /// Inline publish-port form; `Some` while `+` opened it.
+    pub publish_form: Option<PublishForm>,
+}
+
+/// Inline "bind new port" form (smoke-test finding 2.8: `+` did nothing).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishForm {
+    /// Host bind address (`127.0.0.1` or `0.0.0.0`).
+    pub host_bind: String,
+    /// Host port as text (validated on submit).
+    pub host_port: String,
+    /// Guest port as text (validated on submit).
+    pub guest_port: String,
+    /// Protocol: `tcp` or `udp`.
+    pub protocol: String,
+    /// Active cursor field in the form.
+    pub field: PublishField,
+    /// Validation error shown in the form.
+    pub error: Option<String>,
+}
+
+/// Fields of the publish form in Tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishField {
+    /// Host bind address.
+    HostBind,
+    /// Host port number.
+    HostPort,
+    /// Guest port number.
+    GuestPort,
+    /// Protocol toggle.
+    Protocol,
+}
+
+impl PublishField {
+    /// Next field in Tab order (wraps).
+    fn next(self) -> Self {
+        match self {
+            Self::HostBind => Self::HostPort,
+            Self::HostPort => Self::GuestPort,
+            Self::GuestPort => Self::Protocol,
+            Self::Protocol => Self::HostBind,
+        }
+    }
+}
+
+impl PublishForm {
+    /// Initialize with the mockup defaults (loopback bind, tcp).
+    pub fn new() -> Self {
+        Self {
+            host_bind: "127.0.0.1".into(),
+            host_port: String::new(),
+            guest_port: String::new(),
+            protocol: "tcp".into(),
+            field: PublishField::HostBind,
+            error: None,
+        }
+    }
+
+    /// Validate and build the port spec.
+    pub fn to_port(&self) -> Result<PublishedPort, String> {
+        let host_port: u16 = self
+            .host_port
+            .trim()
+            .parse()
+            .map_err(|_| "Host port must be 1-65535".to_string())?;
+        let guest_port: u16 = self
+            .guest_port
+            .trim()
+            .parse()
+            .map_err(|_| "Guest port must be 1-65535".to_string())?;
+        if host_port == 0 || guest_port == 0 {
+            return Err("Ports must be 1-65535".to_string());
+        }
+        let bind = self.host_bind.trim().to_string();
+        if bind.is_empty() {
+            return Err("Host bind is required".to_string());
+        }
+        Ok(PublishedPort {
+            host_bind: bind,
+            host_port,
+            guest_port,
+            protocol: self.protocol.clone(),
+        })
+    }
+
+    /// Route a key into the form. Returns `Some(port)` on Enter-submit
+    /// (already validated), `None` while editing, and flips `cancelled`
+    /// (via [`PublishForm::cancel`]) on Esc.
+    pub fn handle_key(&mut self, key: KeyEvent) -> PublishFormAction {
+        match key.code {
+            KeyCode::Esc => {
+                return PublishFormAction::Cancel;
+            }
+            KeyCode::Tab => {
+                self.field = self.field.next();
+                return PublishFormAction::Continue;
+            }
+            KeyCode::Up if self.field == PublishField::Protocol => {
+                self.protocol = "udp".into();
+                return PublishFormAction::Continue;
+            }
+            KeyCode::Down if self.field == PublishField::Protocol => {
+                self.protocol = "tcp".into();
+                return PublishFormAction::Continue;
+            }
+            KeyCode::Enter => {
+                return match self.to_port() {
+                    Ok(port) => PublishFormAction::Submit(port),
+                    Err(e) => {
+                        self.error = Some(e);
+                        PublishFormAction::Continue
+                    }
+                };
+            }
+            _ => {}
+        }
+        // Text input for the active text field.
+        let buf = match self.field {
+            PublishField::HostBind => &mut self.host_bind,
+            PublishField::HostPort => &mut self.host_port,
+            PublishField::GuestPort => &mut self.guest_port,
+            PublishField::Protocol => return PublishFormAction::Continue,
+        };
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                buf.push(c);
+                self.error = None;
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            _ => {}
+        }
+        PublishFormAction::Continue
+    }
+}
+
+/// Result of a key routed into the publish form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PublishFormAction {
+    /// Keep editing.
+    Continue,
+    /// Validated port ready for the recreate flow.
+    Submit(PublishedPort),
+    /// User cancelled the form.
+    Cancel,
+}
+
+impl Default for PublishForm {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PortsState {
@@ -37,6 +191,7 @@ impl PortsState {
             sandbox_name: sandbox_name.to_string(),
             ports: Vec::new(),
             selected: 0,
+            publish_form: None,
         }
     }
 
@@ -140,7 +295,11 @@ pub fn render_ports(
     let cols = Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(areas.body);
     render_matrix(frame, sandboxes, port_cache, cols[0]);
-    render_inspector(frame, state, sandboxes, port_cache, cols[1]);
+    if state.publish_form.is_some() {
+        render_publish_form(frame, state, cols[1]);
+    } else {
+        render_inspector(frame, state, sandboxes, port_cache, cols[1]);
+    }
 
     let hints = vec![
         FooterHint {
@@ -272,6 +431,107 @@ fn render_matrix(
 // in tests; the real call passes `state.selected`.
 fn state_selected_snapshot() -> usize {
     0
+}
+
+/// Render the inline publish-port form (replaces the inspector while open).
+fn render_publish_form(frame: &mut Frame, state: &PortsState, area: Rect) {
+    let t = &THEME;
+    let Some(form) = &state.publish_form else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent))
+        .style(Style::default().bg(t.panel))
+        .title(Span::styled(
+            format!(" [+] BIND NEW PORT — {} ", state.sandbox_name),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let field_line = |label: &str, value: &str, active: bool| -> Line<'static> {
+        let style = if active {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.muted)
+        };
+        let cursor = if active { "█" } else { "" };
+        Line::from(vec![
+            Span::styled(format!(" {label:<12}"), style),
+            Span::styled(format!("{value}{cursor}"), Style::default().fg(t.fg)),
+        ])
+    };
+    let proto = |p: &str| -> Span<'static> {
+        let marker = if form.protocol == p { "(•)" } else { "( )" };
+        let style = if form.protocol == p && form.field == PublishField::Protocol {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else if form.protocol == p {
+            Style::default().fg(t.accent)
+        } else {
+            Style::default().fg(t.muted)
+        };
+        Span::styled(format!("{marker} {p} "), style)
+    };
+
+    let mut lines = vec![
+        field_line(
+            "Host bind:",
+            &form.host_bind,
+            form.field == PublishField::HostBind,
+        ),
+        field_line(
+            "Host port:",
+            &form.host_port,
+            form.field == PublishField::HostPort,
+        ),
+        field_line(
+            "Guest port:",
+            &form.guest_port,
+            form.field == PublishField::GuestPort,
+        ),
+        Line::from(vec![
+            Span::styled(
+                " Protocol:  ",
+                if form.field == PublishField::Protocol {
+                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.muted)
+                },
+            ),
+            proto("tcp"),
+            proto("udp"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[Enter]",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" bind (recreate)  ", Style::default().fg(t.muted)),
+            Span::styled(
+                "[Tab]",
+                Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" field  ", Style::default().fg(t.muted)),
+            Span::styled(
+                "[Esc]",
+                Style::default().fg(t.err).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cancel", Style::default().fg(t.muted)),
+        ]),
+    ];
+    if let Some(err) = &form.error {
+        lines.push(Line::from(vec![
+            Span::styled(" ✗ ", Style::default().fg(t.err)),
+            Span::styled(err.clone(), Style::default().fg(t.err)),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        " ⚠ Recreates the sandbox (rootfs resets)",
+        Style::default().fg(t.warn),
+    )));
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Render the inspector sidebar for the selected binding.
@@ -413,6 +673,64 @@ mod tests {
         assert_eq!(st.ports.len(), 1);
         st.update_ports(Vec::new());
         assert!(st.ports.is_empty());
+    }
+
+    #[test]
+    fn publish_form_validates_and_builds() {
+        let mut form = PublishForm::new();
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        // Start field is HostBind (pre-filled 127.0.0.1); jump to host port.
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for c in "3000".chars() {
+            form.handle_key(key(c));
+        }
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for c in "3000".chars() {
+            form.handle_key(key(c));
+        }
+        let action = form.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match action {
+            PublishFormAction::Submit(p) => {
+                assert_eq!(p.host_bind, "127.0.0.1");
+                assert_eq!(p.host_port, 3000);
+                assert_eq!(p.guest_port, 3000);
+                assert_eq!(p.protocol, "tcp");
+            }
+            other => panic!("expected submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn publish_form_rejects_bad_ports() {
+        let mut form = PublishForm::new();
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for c in "abc".chars() {
+            form.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let action = form.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(action, PublishFormAction::Continue);
+        assert!(form.error.is_some(), "invalid input must set an error");
+    }
+
+    #[test]
+    fn publish_form_esc_cancels() {
+        let mut form = PublishForm::new();
+        let action = form.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, PublishFormAction::Cancel);
+    }
+
+    #[test]
+    fn publish_form_protocol_toggle() {
+        let mut form = PublishForm::new();
+        // Tab thrice: bind -> host -> guest -> protocol.
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(form.field, PublishField::Protocol);
+        form.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(form.protocol, "udp");
+        form.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(form.protocol, "tcp");
     }
 
     #[test]

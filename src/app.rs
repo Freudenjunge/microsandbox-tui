@@ -453,6 +453,37 @@ impl App {
 
     /// Keys on the ports view: binding selection, publish/unpublish, back.
     fn handle_ports_key(&mut self, key: KeyEvent) -> Action {
+        // The inline publish form swallows all keys while open.
+        if let Some(form) = self
+            .ports_state
+            .as_mut()
+            .and_then(|s| s.publish_form.as_mut())
+        {
+            match form.handle_key(key) {
+                crate::ui::ports::PublishFormAction::Submit(port) => {
+                    let name = self
+                        .ports_state
+                        .as_ref()
+                        .map(|s| s.sandbox_name.clone())
+                        .unwrap_or_default();
+                    if let Some(state) = self.ports_state.as_mut() {
+                        state.publish_form = None;
+                    }
+                    self.confirm = Some(Op::PublishPort {
+                        name,
+                        port: port.clone(),
+                    });
+                    return Action::Render;
+                }
+                crate::ui::ports::PublishFormAction::Cancel => {
+                    if let Some(state) = self.ports_state.as_mut() {
+                        state.publish_form = None;
+                    }
+                    return Action::Render;
+                }
+                crate::ui::ports::PublishFormAction::Continue => return Action::Render,
+            }
+        }
         // Publish/unpublish target the currently focused matrix binding.
         if let Some(op) = self.pending_port_op(key) {
             self.confirm = Some(op);
@@ -471,6 +502,10 @@ impl App {
             KeyCode::Char('1') => {
                 self.ports_state = None;
                 self.view = View::Dashboard;
+                Action::Render
+            }
+            KeyCode::Char('+') | KeyCode::Char('p') => {
+                state.publish_form = Some(crate::ui::ports::PublishForm::new());
                 Action::Render
             }
             KeyCode::Up => {

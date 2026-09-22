@@ -528,7 +528,9 @@ mod tests {
             "sandbox-list" => include_str!("fixtures/sandbox-list.json"),
             "sandbox-status" => include_str!("fixtures/sandbox-status.json"),
             "sandbox-inspect" => include_str!("fixtures/sandbox-inspect.json"),
-            "sandbox-stored-null-workdir" => include_str!("fixtures/sandbox-stored-null-workdir.json"),
+            "sandbox-stored-null-workdir" => {
+                include_str!("fixtures/sandbox-stored-null-workdir.json")
+            }
             "metrics" => include_str!("fixtures/metrics.json"),
             "volumes" => include_str!("fixtures/volumes.json"),
             "images" => include_str!("fixtures/images.json"),
