@@ -266,6 +266,7 @@ fn summary_from(sbx: &FakeSandbox) -> SandboxSummary {
         status: sbx.state.clone(),
         workdir: sbx.config.runtime.workdir.clone(),
         mounts: crate::backend::sdk::map_mounts(&sbx.config),
+        shell: Some(sbx.config.runtime.shell.clone()).filter(|s| !s.is_empty()),
     }
 }
 
@@ -319,6 +320,11 @@ pub fn spec_from_config(cfg: &SandboxConfig, ports: Vec<PublishedPort>) -> Creat
         cpus: Some(cfg.resources.cpus),
         memory: Some(format!("{}M", cfg.resources.memory_mib)),
         workdir: cfg.runtime.workdir.clone().filter(|w| !w.is_empty()),
+        shell: {
+            let s = cfg.runtime.shell.trim();
+            let s = if s == "/bin/sh" { "" } else { s };
+            (!s.is_empty()).then(|| s.to_string())
+        },
         ports,
         volumes: cfg
             .mounts
@@ -524,6 +530,10 @@ impl MsbBackend for FakeBackend {
         // Apply workdir.
         if let Some(wd) = &spec.workdir {
             sbx.config.runtime.workdir = Some(wd.clone());
+        }
+        // Apply the interactive shell.
+        if let Some(sh) = &spec.shell {
+            sbx.config.runtime.shell = sh.clone();
         }
 
         sbx.metrics.name = name.clone();

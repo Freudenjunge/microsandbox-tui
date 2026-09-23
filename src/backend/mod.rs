@@ -109,6 +109,9 @@ pub struct CreateSpec {
     pub memory: Option<String>,
     /// Working directory inside the sandbox.
     pub workdir: Option<String>,
+    /// Interactive shell for `msb ssh` sessions (e.g. `bash`); `None` =
+    /// runtime default (`/bin/sh`). Also drives the shell-window command.
+    pub shell: Option<String>,
     /// Published ports.
     pub ports: Vec<PublishedPort>,
     /// Volume mounts, in `SOURCE:DEST[:OPTIONS]` form.

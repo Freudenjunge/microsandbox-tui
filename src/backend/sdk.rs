@@ -558,11 +558,15 @@ impl MsbBackend for SdkBackend {
             };
             out.push(SandboxSummary {
                 created_at: local.created_at.unwrap_or_else(Utc::now),
-                image,
+                image: image.clone(),
                 name: handle.name().to_string(),
                 status: map_status(local.status),
-                workdir,
+                workdir: workdir.clone(),
                 mounts: parsed.as_ref().ok().map(map_mounts).unwrap_or_default(),
+                shell: parsed.as_ref().ok().and_then(|c| {
+                    let s = c.runtime.shell.trim();
+                    (!s.is_empty()).then(|| s.to_string())
+                }),
             });
         }
         if !degraded.is_empty() {

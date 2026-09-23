@@ -840,6 +840,7 @@ mod tests {
             status: SandboxState::Running,
             workdir: Some("/app".into()),
             mounts: Vec::new(),
+            shell: None,
         }];
         terminal
             .draw(|f| {

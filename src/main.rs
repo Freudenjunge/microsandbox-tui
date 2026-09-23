@@ -187,11 +187,16 @@ async fn run(cli: Cli) -> Result<()> {
         // sandbox shell — the dashboard keeps running in parallel
         // (maintainer: parallel use, no TUI suspension).
         if app.view == View::Dashboard && app.take_shell_request() {
-            let Some(sbx) = app.selected_sandbox().map(|s| s.name.clone()) else {
+            let Some(sbx) = app.selected_sandbox() else {
                 continue;
             };
-            app.status = Some(match crate::shell_window::spawn_shell_window(&sbx) {
-                Ok(()) => format!("shell window opened for {sbx}"),
+            let name = sbx.name.clone();
+            // Option C: a sandbox created with the bash toggle runs
+            // `msb ssh <name>` (its stored shell is already bash); all
+            // others get the `-- bash -l` login-shell wrapper.
+            let argv = crate::shell_window::shell_command_for(&name, sbx.shell.as_deref());
+            app.status = Some(match crate::shell_window::spawn_window_argv(&argv) {
+                Ok(()) => format!("shell window opened for {name}"),
                 Err(e) => format!("shell window failed: {e}"),
             });
             render(&mut guard.terminal, &app)?;
