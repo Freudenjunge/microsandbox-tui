@@ -108,7 +108,6 @@ pub enum FormField {
     Cpus,
     Memory,
     Workdir,
-    Shell,
     NetProfile,
     Ports,
     Volumes,
@@ -118,14 +117,13 @@ pub enum FormField {
 
 impl FormField {
     /// All advanced fields in Tab order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::Image,
         Self::Name,
         Self::MountCwd,
         Self::Cpus,
         Self::Memory,
         Self::Workdir,
-        Self::Shell,
         Self::NetProfile,
         Self::Ports,
         Self::Volumes,
@@ -161,7 +159,6 @@ impl FormField {
             Self::Cpus => "CPUs",
             Self::Memory => "Memory",
             Self::Workdir => "Workdir",
-            Self::Shell => "Shell",
             Self::NetProfile => "Profile",
             Self::Ports => "Ports",
             Self::Volumes => "Volumes",
@@ -218,11 +215,6 @@ pub struct CreateForm {
     /// Host path captured when the form opened; the mount source for
     /// [`Self::mount_cwd`] and the default value of the workdir field.
     pub cwd: String,
-    /// Whether the sandbox's interactive shell should be `bash` (login).
-    /// Off = runtime default `/bin/sh`. On, the `e`-window gets a full
-    /// shell with tab completion + PS1 (plain OCI images lack those in
-    /// `/bin/sh`).
-    pub bash_login: bool,
     /// Selected network profile (advanced only).
     pub net_profile: NetProfile,
     /// Published port specs (e.g. `8080:80`, `0.0.0.0:9090:90/udp`).
@@ -268,7 +260,6 @@ impl CreateForm {
             workdir: cwd.clone(),
             mount_cwd: true,
             cwd,
-            bash_login: false,
             net_profile: NetProfile::Public,
             ports: Vec::new(),
             volumes: Vec::new(),
@@ -282,11 +273,6 @@ impl CreateForm {
             list_input: String::new(),
             list_selected: 0,
         }
-    }
-
-    /// Flip the bash-login toggle for the sandbox's interactive shell.
-    pub fn toggle_bash_login(&mut self) {
-        self.bash_login = !self.bash_login;
     }
 
     /// Toggle the current-dir workspace mount and keep the workdir field
@@ -384,7 +370,7 @@ impl CreateForm {
         }
 
         // Field-specific dispatch.
-        if matches!(self.active_field, FormField::MountCwd | FormField::Shell) {
+        if self.active_field == FormField::MountCwd {
             self.handle_mount_cwd_key(key)
         } else if self.active_field.is_list() {
             self.handle_list_key(key)
@@ -511,16 +497,11 @@ impl CreateForm {
 
     // -- workspace mount toggle handling --
 
-    /// Space toggles the active checkbox field (mount / shell); Enter
-    /// advances like a text field.
+    /// Space toggles the current-dir mount; Enter advances like a text field.
     fn handle_mount_cwd_key(&mut self, key: KeyEvent) -> FormAction {
         match key.code {
             KeyCode::Char(' ') => {
-                if self.active_field == FormField::MountCwd {
-                    self.toggle_mount_cwd();
-                } else {
-                    self.toggle_bash_login();
-                }
+                self.toggle_mount_cwd();
                 FormAction::Continue
             }
             KeyCode::Enter => {
@@ -681,9 +662,6 @@ impl CreateForm {
         if !self.workdir.trim().is_empty() && self.workdir.trim() != self.auto_workdir() {
             parts.push(format!("wd {}", self.workdir.trim()));
         }
-        if self.bash_login {
-            parts.push("bash".to_string());
-        }
         if !self.mount_cwd {
             parts.push("no mount".to_string());
         }
@@ -787,10 +765,6 @@ impl CreateForm {
             }
         };
 
-        // Interactive shell: the bash-login toggle maps to `runtime.shell =
-        // bash` so `msb ssh` requests already run a full-featured shell.
-        let shell = self.bash_login.then(|| "bash".to_string());
-
         // Filter empty entries from string lists.
         let mut volumes = trim_filter(&self.volumes);
         if let Some(cwd) = workspace_mount {
@@ -818,7 +792,6 @@ impl CreateForm {
             cpus,
             memory,
             workdir,
-            shell,
             ports,
             volumes,
             env,
@@ -1097,32 +1070,6 @@ fn advanced_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         &form.workdir,
         form.active_field == FormField::Workdir,
     ));
-
-    // Interactive shell toggle: bash-login checkbox like the mount toggle.
-    let t = &THEME;
-    let shell_active = form.active_field == FormField::Shell;
-    let (shell_marker, shell_marker_color) = if form.bash_login {
-        ("[x]", t.ok)
-    } else {
-        ("[ ]", t.muted)
-    };
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(shell_marker, Style::default().fg(shell_marker_color)),
-        Span::raw(" "),
-        Span::styled(
-            "Bash login shell",
-            if shell_active {
-                Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.text)
-            },
-        ),
-        Span::styled(
-            "  (tab completion + PS1, space toggles)",
-            Style::default().fg(t.muted),
-        ),
-    ]));
 
     // -- network section --
     lines.push(Line::raw(""));
@@ -1672,44 +1619,6 @@ mod tests {
         form.cwd = "/nonexistent-tui-cwd-probe-9x".into();
         let err = form.to_create_spec().unwrap_err();
         assert!(err.to_string().contains("does not exist"));
-    }
-
-    // -- interactive shell (Option C) --
-
-    #[test]
-    fn shell_field_toggles_bash_login() {
-        let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
-        form.active_field = FormField::Shell;
-        assert!(!form.bash_login);
-        form.handle_key(key(KeyCode::Char(' '))); // space toggles
-        assert!(form.bash_login);
-        form.handle_key(key(KeyCode::Char(' ')));
-        assert!(!form.bash_login);
-        // Enter advances (or submits on the last field) without toggling.
-        form.handle_key(key(KeyCode::Char(' ')));
-        assert!(form.bash_login);
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
-        assert!(form.bash_login, "Enter must not toggle");
-    }
-
-    #[test]
-    fn bash_login_sets_shell_in_spec() {
-        let mut form = CreateForm::new(Vec::new());
-        form.image = "alpine".into();
-        form.bash_login = true;
-        let spec = form.to_create_spec().unwrap();
-        assert_eq!(spec.shell.as_deref(), Some("bash"));
-        // The shell lands in runtime.shell, so `msb ssh -- bash -l` gives a
-        // full-featured interactive shell with tab completion + PS1.
-    }
-
-    #[test]
-    fn shell_defaults_to_none() {
-        let mut form = CreateForm::new(Vec::new());
-        form.image = "alpine".into();
-        let spec = form.to_create_spec().unwrap();
-        assert_eq!(spec.shell, None, "no shell override by default");
     }
 
     // -- memory validation --

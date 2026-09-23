@@ -6,27 +6,11 @@
 //! wins. Spawned windows are detached — their lifetime is independent of
 //! the TUI process.
 
-/// Build the `msb ssh` argv for the sandbox's interactive shell.
-///
-/// Option C: if the sandbox's `runtime.shell` is `bash` (the create-form
-/// toggle sets it), a plain shell request already runs a full-featured
-/// shell. Otherwise the window wraps the request as `-- bash -l` (login
-/// shell → `/etc/profile` + `~/.bashrc` → PS1 + tab completion), falling
-/// back to bash being absent only at the guest level (`msb` exits with an
-/// error in the window — visible, non-fatal).
-pub fn shell_command_for(sandbox: &str, shell: Option<&str>) -> Vec<String> {
-    let mut out = vec!["msb".to_string(), "ssh".to_string(), sandbox.to_string()];
-    if shell.map(str::trim) != Some("bash") {
-        out.extend(["--".to_string(), "bash".to_string(), "-l".to_string()]);
-    }
-    out
-}
-
-/// Spawn a terminal window running the given argv (terminal-emulator
-/// launcher chain; the first launcher present on the machine wins).
-pub fn spawn_window_argv(argv_inner: &[String]) -> Result<(), String> {
-    let mut inner = argv_inner.join(" ");
-    inner = format!("exec {inner}"); // replace sh so the window dies with the ssh session
+/// Spawn a terminal window running an interactive shell into `sandbox`.
+pub fn spawn_shell_window(sandbox: &str) -> Result<(), String> {
+    // The command inside the new window: the runtime's ssh bridge into the
+    // sandbox (`msb ssh` never touches the TUI's own stdio).
+    let inner = format!("msb ssh {sandbox}");
 
     let candidates: Vec<Vec<String>> = vec![
         // KDE (maintainer desktop): konsole -e <cmd…>.
@@ -95,55 +79,6 @@ fn which_exists(program: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- shell window command ----
-
-    #[test]
-    fn shell_window_command_uses_bash_login() {
-        // Option C: the spawned window runs `msb ssh <name> -- bash -l`
-        // (login shell → /etc/profile + ~/.bashrc → PS1 + tab completion).
-        assert_eq!(
-            shell_command_for("web", None),
-            vec![
-                "msb".to_string(),
-                "ssh".to_string(),
-                "web".to_string(),
-                "--".to_string(),
-                "bash".to_string(),
-                "-l".to_string()
-            ]
-        );
-        // Shell override from the create form (`runtime.shell = bash`) makes
-        // the plain shell request already full-featured: `msb ssh <name>`.
-        assert_eq!(
-            shell_command_for("web", Some("bash")),
-            vec!["msb".to_string(), "ssh".to_string(), "web".to_string()]
-        );
-        // No shell override → login-shell wrapper.
-        assert_eq!(
-            shell_command_for("web", None),
-            vec![
-                "msb".to_string(),
-                "ssh".to_string(),
-                "web".to_string(),
-                "--".to_string(),
-                "bash".to_string(),
-                "-l".to_string()
-            ]
-        );
-        // Empty/blank shell string counts as "not set".
-        assert_eq!(
-            shell_command_for("web", Some("  ")),
-            vec![
-                "msb".to_string(),
-                "ssh".to_string(),
-                "web".to_string(),
-                "--".to_string(),
-                "bash".to_string(),
-                "-l".to_string()
-            ]
-        );
-    }
 
     #[test]
     fn which_exists_finds_sh() {

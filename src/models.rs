@@ -198,11 +198,6 @@ pub struct SandboxSummary {
     /// (`SOURCE:GUEST:ro` when read-only); empty for mountless sandboxes.
     #[serde(default)]
     pub mounts: Vec<String>,
-    /// Interactive shell from the stored config (`runtime.shell`); `None`
-    /// means the runtime default (`/bin/sh`). Used to pick the shell-window
-    /// command (`msb ssh` plain vs `-- bash -l` wrapper).
-    #[serde(default)]
-    pub shell: Option<String>,
 }
 
 impl SandboxSummary {
@@ -704,7 +699,6 @@ pub(crate) mod tests {
             status: SandboxState::Running,
             workdir: None,
             mounts: Vec::new(),
-            shell: None,
         }
     }
 
@@ -723,16 +717,6 @@ pub(crate) mod tests {
     }
 
     // ---- mount display (dashboard card) ----
-
-    #[test]
-    fn summary_shell_field_maps() {
-        // The `shell` field rides on the summary (Option C: shell-window
-        // decision). serde default keeps old JSON parsing.
-        let mut s = summary_shape();
-        assert_eq!(s.shell.as_deref(), None);
-        s.shell = Some("bash".into());
-        assert_eq!(s.shell.as_deref(), Some("bash"));
-    }
 
     #[test]
     fn mount_display_forms() {

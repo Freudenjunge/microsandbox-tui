@@ -471,38 +471,3 @@ machinery is implied; the checkbox only manipulates `CreateSpec.volumes` and
       sandboxes); the `/home/agent/workspace` fallback const is removed.
       `toggle_mount_cwd` clears the auto-filled workdir on un-check and
       restores it on re-check; tests updated (166 green).
-
----
-
-# Phase 2.11 — Interactive shell quality (Option C: both layers)
-
-User finding: the `e` shell window felt "fake" — no tab completion. Root
-cause: `msb ssh` starts the sandbox's `runtime.shell` (`/bin/sh`, busybox
-ash on alpine) as a bare exec; no PS1, minimal completion, no profile
-files. Docker sbx template images bake a full agent shell; plain OCI
-images don't.
-
-## Task List
-
-### 1. Shell toggle in the create form (stored layer)
-- [x] `CreateForm.bash_login` + `FormField::Shell` checkbox (Space toggles,
-      Enter advances), rendered after Workdir in the advanced section;
-      quick-mode summary shows `bash` when set.
-- [x] `CreateSpec.shell: Option<String>` → SDK `builder.shell("bash")`;
-      FakeBackend applies it; `spec_from_config` carries it back through
-      the recreate flow (`/bin/sh` treated as "no override").
-
-### 2. Login-shell wrapper in the shell window (spawn layer)
-- [x] `shell_window::shell_command_for(name, shell)`: stored shell `bash` →
-      plain `msb ssh <name>`; otherwise `msb ssh <name> -- bash -l` (login
-      shell → /etc/profile + ~/.bashrc → PS1 + tab completion).
-- [x] `SandboxSummary.shell` (serde default) so main.rs can pick per
-      sandbox; spawned windows use `exec` so they close with the session.
-
-### 3. Gates
-- [x] All four gates green (171 unit tests).
-
-**Phase 2.11 complete.** Deviation: the login-bash wrapper assumes bash
-exists in the image; if not, the window shows msb's error (visible, not
-silent). Alpine users should tick the toggle only on images that ship
-bash or install it first.

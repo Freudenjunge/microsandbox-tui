@@ -605,7 +605,6 @@ mod tests {
             name: name.into(),
             workdir: None,
             mounts: Vec::new(),
-            shell: None,
             status: if running {
                 crate::models::SandboxState::Running
             } else {

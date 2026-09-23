@@ -161,12 +161,6 @@ none of it; panels show only real backend data.
 - **Quick mode (default)**: image picker + name + the mount toggle — everything
   else takes runtime defaults (no cpus/memory limit, `public` network profile,
   no ports/volumes/env). `Ctrl+A` expands the advanced fields.
-- **Bash login shell toggle (advanced)**: checked → `runtime.shell = bash`,
-  so `msb ssh` requests (the `e` shell window) run a full-featured bash with
-  tab completion and PS1. Unchecked → runtime default `/bin/sh` (busybox ash
-  on alpine-style images); the `e` window then wraps the request as
-  `msb ssh <name> -- bash -l` (login shell → `/etc/profile` + `~/.bashrc`),
-  falling back visibly if the image has no bash.
 - Named by default (persistent) — ephemeral is an advanced toggle
 - Image field: an always-visible picker lists pulled images first, then
   curated suggestions; typing filters, `↑↓`+`Enter` adopts
