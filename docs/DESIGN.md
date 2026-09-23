@@ -152,8 +152,11 @@ none of it; panels show only real backend data.
   into the sandbox **at the same absolute path** (sbx mounts workspaces at
   their host path so stack traces line up). While checked it also sets the
   default workdir to that path; a deliberately typed Workdir overrides it.
-  Unchecked, the workdir falls back to `/home/agent/workspace` (the Docker
-  sbx template default) and no mount is added. Validation: the captured CWD
+  **Unchecked → no explicit workdir**: the SDK validates the workdir with
+  `stat` inside the guest rootfs at create time, and plain OCI images don't
+  contain `/home/agent/workspace` (it is baked into sbx template images
+  only) — mountless sandboxes start in the image's own working directory,
+  exactly like `sbx run` without a workspace. Validation: the captured CWD
   must be absolute and still exist at submit time.
 - **Quick mode (default)**: image picker + name + the mount toggle — everything
   else takes runtime defaults (no cpus/memory limit, `public` network profile,

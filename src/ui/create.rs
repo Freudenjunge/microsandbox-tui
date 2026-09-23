@@ -41,11 +41,6 @@ pub const SUGGESTED_IMAGES: &[&str] = &[
     "postgres",
 ];
 
-/// Workdir default when the current-dir mount is disabled — Docker's sbx
-/// template images use `/home/agent/workspace` as the in-guest home of the
-/// agent, so a mountless sandbox starts there.
-pub const DEFAULT_WORKDIR: &str = "/home/agent/workspace";
-
 // ---------------------------------------------------------------------------
 // NetProfile
 // ---------------------------------------------------------------------------
@@ -251,11 +246,12 @@ impl CreateForm {
     ///
     /// The workspace mount defaults to **on** (Docker-sbx behavior): the TUI's
     /// current directory is mounted at the same absolute path and becomes the
-    /// workdir. Unchecking falls back to [`DEFAULT_WORKDIR`].
+    /// workdir. Unchecking clears the auto-filled workdir (empty = image
+    /// default — see `toggle_mount_cwd`).
     pub fn new(images: Vec<String>) -> Self {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| DEFAULT_WORKDIR.to_string());
+            .unwrap_or_default();
         Self {
             image: String::new(),
             name: String::new(),
@@ -281,19 +277,20 @@ impl CreateForm {
 
     /// Toggle the current-dir workspace mount and keep the workdir field
     /// coherent: checked → workdir becomes the mount path (unless the user
-    /// typed their own), unchecked → workdir falls back to the sbx-style
-    /// default when it was auto-filled.
+    /// typed their own), unchecked → the auto-filled mount path is cleared
+    /// (empty = image default; the SDK stats explicit workdirs in the guest,
+    /// and plain OCI images lack the sbx template's `/home/agent/workspace`).
     pub fn toggle_mount_cwd(&mut self) {
         self.mount_cwd = !self.mount_cwd;
         if self.mount_cwd {
             // Restore the mount default unless the user chose a custom dir.
-            if self.workdir.trim().is_empty() || self.workdir == DEFAULT_WORKDIR {
+            if self.workdir.trim().is_empty() {
                 self.workdir = self.cwd.clone();
             }
         } else {
             // Drop the auto-filled value; an explicitly typed one survives.
             if self.workdir == self.cwd {
-                self.workdir = DEFAULT_WORKDIR.to_string();
+                self.workdir.clear();
             }
         }
     }
@@ -641,14 +638,14 @@ impl CreateForm {
         }
     }
 
-    /// The workdir value the form state implies by itself (mount path when
-    /// checked, sbx default when not) — used to detect *deliberately* typed
+    /// The workdir value the form state implies by itself (the mount path
+    /// when checked, nothing when not) — used to detect *deliberately* typed
     /// workdirs for the quick-mode summary.
     fn auto_workdir(&self) -> String {
         if self.mount_cwd {
             self.cwd.clone()
         } else {
-            DEFAULT_WORKDIR.to_string()
+            String::new()
         }
     }
 
@@ -742,8 +739,12 @@ impl CreateForm {
 
         // Workdir: explicit input wins; with the workspace mount on (and no
         // explicit entry) the mounted path is the default — sbx starts the
-        // sandbox in its primary workspace. Unchecked falls back to
-        // [`DEFAULT_WORKDIR`]; empty input never blocks creation.
+        // sandbox in its primary workspace. Unchecked means NO explicit
+        // workdir: the SDK stats the workdir inside the guest rootfs at
+        // create time, and plain OCI images don't contain
+        // `/home/agent/workspace` (it's baked into sbx template images only)
+        // — mountless sandboxes start in the image's own working directory,
+        // exactly like `sbx run` without a workspace.
         let mut workspace_mount: Option<String> = None;
         if self.mount_cwd {
             let cwd = self.cwd.trim();
@@ -760,9 +761,7 @@ impl CreateForm {
             if !w.is_empty() {
                 Some(w.to_string())
             } else {
-                workspace_mount
-                    .clone()
-                    .or_else(|| Some(DEFAULT_WORKDIR.to_string()))
+                workspace_mount.clone()
             }
         };
 
@@ -1272,10 +1271,12 @@ mod tests {
         assert_eq!(spec.volumes, vec![format!("{}:{}", form.cwd, form.cwd)]);
         assert!(spec.name.is_none());
 
-        // Unchecked, the form is back to pure runtime defaults.
+        // Unchecked, the form is back to pure runtime defaults — and NO
+        // explicit workdir (the SDK stats workdirs in the guest rootfs;
+        // plain images don't have the sbx template's /home/agent/workspace).
         form.toggle_mount_cwd();
         let spec = form.to_create_spec().unwrap();
-        assert_eq!(spec.workdir.as_deref(), Some(DEFAULT_WORKDIR));
+        assert_eq!(spec.workdir, None);
         assert!(spec.volumes.is_empty());
     }
 
@@ -1571,14 +1572,17 @@ mod tests {
     }
 
     #[test]
-    fn unchecking_mount_cwd_falls_back_to_default_workdir() {
+    fn unchecking_mount_cwd_clears_workdir() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.toggle_mount_cwd();
         let spec = form.to_create_spec().unwrap();
-        // No mount; workdir falls back to the sbx-style template default.
+        // No mount AND no explicit workdir: the SDK stats the workdir inside
+        // the guest rootfs (create failed with `stat: No such file` for
+        // /home/agent/workspace on plain OCI images), so mountless sandboxes
+        // start in the image's own working directory — like `sbx run`.
         assert!(spec.volumes.is_empty());
-        assert_eq!(spec.workdir.as_deref(), Some(DEFAULT_WORKDIR));
+        assert_eq!(spec.workdir, None);
     }
 
     #[test]
@@ -1597,8 +1601,8 @@ mod tests {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.toggle_mount_cwd();
-        // The auto-filled workdir from the checked state is gone (falls back
-        // to the default, tested above); unchecking again restores it.
+        // The auto-filled workdir from the checked state is gone (empty =
+        // image default, tested above); re-checking restores it.
         form.toggle_mount_cwd();
         let spec = form.to_create_spec().unwrap();
         assert_eq!(spec.workdir.as_deref(), Some(form.cwd.as_str()));

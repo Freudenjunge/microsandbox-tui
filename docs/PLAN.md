@@ -460,3 +460,14 @@ Docker `sbx` parity for workspaces, agreed with the maintainer:
 a plain bind mount + workdir in microsandbox terms — no template/agent
 machinery is implied; the checkbox only manipulates `CreateSpec.volumes` and
 `CreateSpec.workdir`, keeping the SDK the single source of truth.
+
+### 4. Smoke-test fix: mountless create failed (2026-09-23)
+- [x] `✗ create failed: … could not validate workdir in guest
+      "/home/agent/workspace": stat: No such file` — the SDK **stats** the
+      workdir inside the guest rootfs at create time; `/home/agent/workspace`
+      exists only in Docker sbx **template** images, not in plain OCI images.
+      Fix: unchecking the mount removes the auto workdir entirely
+      (`None` = image default, sbx `sbx run` behavior for mountless
+      sandboxes); the `/home/agent/workspace` fallback const is removed.
+      `toggle_mount_cwd` clears the auto-filled workdir on un-check and
+      restores it on re-check; tests updated (166 green).
