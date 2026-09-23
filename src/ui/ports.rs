@@ -604,6 +604,7 @@ mod tests {
             image: "alpine".into(),
             name: name.into(),
             workdir: None,
+            mounts: Vec::new(),
             status: if running {
                 crate::models::SandboxState::Running
             } else {

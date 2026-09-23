@@ -792,6 +792,7 @@ mod tests {
             name: name.into(),
             status: SandboxState::Running,
             workdir: Some("/app".into()),
+            mounts: Vec::new(),
         }
     }
 

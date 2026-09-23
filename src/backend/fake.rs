@@ -265,6 +265,7 @@ fn summary_from(sbx: &FakeSandbox) -> SandboxSummary {
         name: sbx.name.clone(),
         status: sbx.state.clone(),
         workdir: sbx.config.runtime.workdir.clone(),
+        mounts: crate::backend::sdk::map_mounts(&sbx.config),
     }
 }
 
@@ -594,6 +595,41 @@ mod tests {
         let calls = b.calls().await;
         assert_eq!(calls.len(), 1);
         assert!(matches!(&calls[0], Call::Create(s) if s.name == Some("test-sbx".into())));
+    }
+
+    #[tokio::test]
+    async fn fake_backend_create_applies_workdir_and_mounts() {
+        let b = FakeBackend::new();
+        // sbx-style spec: same-path workspace bind + workdir.
+        let spec = CreateSpec {
+            image: "alpine".into(),
+            workdir: Some("/home/me/proj".into()),
+            volumes: vec!["/home/me/proj:/home/me/proj".into(), "data:/data".into()],
+            ..Default::default()
+        };
+        let name = b.create(&spec).await.unwrap();
+        let insp = b.inspect(&name).await.unwrap();
+        // Workdir applied verbatim.
+        assert_eq!(
+            insp.active_config.runtime.workdir.as_deref(),
+            Some("/home/me/proj")
+        );
+        // Both mounts reconstructed: the workspace bind + the named volume.
+        let mounts = &insp.active_config.mounts;
+        assert_eq!(mounts.len(), 2);
+        let bind = mounts.iter().find(|m| m.kind == "Bind").unwrap();
+        assert_eq!(bind.host.as_deref(), Some("/home/me/proj"));
+        assert_eq!(bind.guest, "/home/me/proj");
+        let named = mounts.iter().find(|m| m.kind == "Named").unwrap();
+        assert_eq!(named.name.as_deref(), Some("data"));
+        assert_eq!(named.guest, "/data");
+        // The card display shows the mounts (map_mounts via summary).
+        let rows = b.list_sandboxes().await.unwrap();
+        let row = rows.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(
+            row.mounts,
+            vec!["/home/me/proj⇄/home/me/proj", "data:/data"]
+        );
     }
 
     #[tokio::test]

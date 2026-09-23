@@ -175,6 +175,13 @@ impl PublishedPort {
     }
 }
 
+/// Fixture JSON for cross-module tests. Lives in `models::tests` because
+/// fixtures are `include_str!`-loaded there.
+#[cfg(test)]
+pub(crate) fn test_fixture(name: &str) -> &'static str {
+    crate::models::tests::fixture(name)
+}
+
 // ---------- msb ls ----------
 
 /// One row of `msb ls --format json`.
@@ -187,6 +194,39 @@ pub struct SandboxSummary {
     /// Working directory inside the sandbox (runtime default when `None`).
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Mounted filesystems, compact `SOURCE:GUEST` display form
+    /// (`SOURCE:GUEST:ro` when read-only); empty for mountless sandboxes.
+    #[serde(default)]
+    pub mounts: Vec<String>,
+}
+
+impl SandboxSummary {
+    /// Compact display of the mounts for a dashboard card: the guest paths
+    /// with a `←`-style source annotation only for bind mounts (named
+    /// volumes read by their name). Empty → `—`.
+    pub fn mounts_display(&self) -> String {
+        if self.mounts.is_empty() {
+            return "—".to_string();
+        }
+        self.mounts.join(" ")
+    }
+}
+
+/// Compact one-token display of a mount for dashboard cards.
+///
+/// - Bind: `HOST⇄GUEST` (writable) / `HOST⇢GUEST` (read-only) — the arrows
+///   distinguish the sbx workspace bind (same path both sides) at a glance.
+/// - Named volume: `name:GUEST`.
+/// - Other kinds (Disk/Tmpfs/…): the guest path only.
+pub fn mount_display(kind: &str, source: &str, guest: &str, readonly: bool) -> String {
+    match kind {
+        "Bind" => {
+            let arrow = if readonly { "⇢" } else { "⇄" };
+            format!("{source}{arrow}{guest}")
+        }
+        "Named" => format!("{source}:{guest}"),
+        _ => guest.to_string(),
+    }
 }
 
 // ---------- msb ps ----------
@@ -523,10 +563,11 @@ pub struct Image {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn fixture(name: &str) -> &'static str {
+    /// Fixture access for cross-module tests (`pub(crate)` in test builds).
+    pub(crate) fn fixture(name: &str) -> &'static str {
         match name {
             "sandbox-list" => include_str!("fixtures/sandbox-list.json"),
             "sandbox-status" => include_str!("fixtures/sandbox-status.json"),
@@ -649,6 +690,18 @@ mod tests {
 
     // ---- fixtures: msb ls ----
 
+    /// Minimal SandboxSummary for display-helper tests.
+    fn summary_shape() -> SandboxSummary {
+        SandboxSummary {
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+            image: "alpine".into(),
+            name: "probe".into(),
+            status: SandboxState::Running,
+            workdir: None,
+            mounts: Vec::new(),
+        }
+    }
+
     #[test]
     fn parse_sandbox_list_fixture() {
         let rows: Vec<SandboxSummary> = serde_json::from_str(fixture("sandbox-list")).unwrap();
@@ -658,6 +711,43 @@ mod tests {
         assert_eq!(s.image, "alpine");
         assert_eq!(s.status, SandboxState::Running);
         assert_eq!(s.created_at.format("%Y-%m-%d").to_string(), "2026-09-20");
+        // `mounts` is not part of the ls JSON — defaults to empty.
+        assert!(s.mounts.is_empty());
+        assert_eq!(s.mounts_display(), "—");
+    }
+
+    // ---- mount display (dashboard card) ----
+
+    #[test]
+    fn mount_display_forms() {
+        // Bind: ⇄ writable, ⇢ read-only (sbx workspace is a same-path bind).
+        assert_eq!(
+            mount_display("Bind", "/home/user/proj", "/home/user/proj", false),
+            "/home/user/proj⇄/home/user/proj"
+        );
+        assert_eq!(
+            mount_display("Bind", "/tmp/x", "/data", true),
+            "/tmp/x⇢/data"
+        );
+        // Named volume: name:guest.
+        assert_eq!(
+            mount_display("Named", "tui-data", "/data", false),
+            "tui-data:/data"
+        );
+        // Other kinds (Disk/Tmpfs/…): guest path only.
+        assert_eq!(mount_display("Tmpfs", "", "/cache", false), "/cache");
+    }
+
+    #[test]
+    fn mounts_display_joins_and_defaults() {
+        let mut s = summary_shape();
+        s.mounts = vec!["/home/u/proj⇄/home/u/proj".into(), "tui-data:/data".into()];
+        assert_eq!(
+            s.mounts_display(),
+            "/home/u/proj⇄/home/u/proj tui-data:/data"
+        );
+        s.mounts.clear();
+        assert_eq!(s.mounts_display(), "—");
     }
 
     // ---- fixtures: msb ps ----

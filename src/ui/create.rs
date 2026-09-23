@@ -41,6 +41,11 @@ pub const SUGGESTED_IMAGES: &[&str] = &[
     "postgres",
 ];
 
+/// Workdir default when the current-dir mount is disabled — Docker's sbx
+/// template images use `/home/agent/workspace` as the in-guest home of the
+/// agent, so a mountless sandbox starts there.
+pub const DEFAULT_WORKDIR: &str = "/home/agent/workspace";
+
 // ---------------------------------------------------------------------------
 // NetProfile
 // ---------------------------------------------------------------------------
@@ -104,6 +109,7 @@ impl NetProfile {
 pub enum FormField {
     Image,
     Name,
+    MountCwd,
     Cpus,
     Memory,
     Workdir,
@@ -116,9 +122,10 @@ pub enum FormField {
 
 impl FormField {
     /// All advanced fields in Tab order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Image,
         Self::Name,
+        Self::MountCwd,
         Self::Cpus,
         Self::Memory,
         Self::Workdir,
@@ -130,7 +137,7 @@ impl FormField {
     ];
 
     /// Quick-mode fields in Tab order.
-    pub const QUICK: [Self; 2] = [Self::Image, Self::Name];
+    pub const QUICK: [Self; 3] = [Self::Image, Self::Name, Self::MountCwd];
 
     /// Whether this field is a list-type (items + input buffer).
     pub fn is_list(&self) -> bool {
@@ -140,11 +147,20 @@ impl FormField {
         )
     }
 
+    /// Whether this field edits a plain text buffer.
+    fn is_text(&self) -> bool {
+        matches!(
+            self,
+            Self::Image | Self::Name | Self::Cpus | Self::Memory | Self::Workdir
+        )
+    }
+
     /// Human-readable label.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Image => "Image",
             Self::Name => "Name",
+            Self::MountCwd => "Mount current dir",
             Self::Cpus => "CPUs",
             Self::Memory => "Memory",
             Self::Workdir => "Workdir",
@@ -197,6 +213,13 @@ pub struct CreateForm {
     pub memory: String,
     /// Working directory inside the sandbox.
     pub workdir: String,
+    /// Whether to bind-mount the TUI's current working directory into the
+    /// sandbox at the same absolute path (Docker-sbx workspace behavior).
+    /// Defaults to `true` — sbx mounts the current dir on every run.
+    pub mount_cwd: bool,
+    /// Host path captured when the form opened; the mount source for
+    /// [`Self::mount_cwd`] and the default value of the workdir field.
+    pub cwd: String,
     /// Selected network profile (advanced only).
     pub net_profile: NetProfile,
     /// Published port specs (e.g. `8080:80`, `0.0.0.0:9090:90/udp`).
@@ -225,13 +248,22 @@ pub struct CreateForm {
 
 impl CreateForm {
     /// Initialize a quick form with runtime defaults and no images yet.
+    ///
+    /// The workspace mount defaults to **on** (Docker-sbx behavior): the TUI's
+    /// current directory is mounted at the same absolute path and becomes the
+    /// workdir. Unchecking falls back to [`DEFAULT_WORKDIR`].
     pub fn new(images: Vec<String>) -> Self {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| DEFAULT_WORKDIR.to_string());
         Self {
             image: String::new(),
             name: String::new(),
             cpus: String::new(),
             memory: String::new(),
-            workdir: String::new(),
+            workdir: cwd.clone(),
+            mount_cwd: true,
+            cwd,
             net_profile: NetProfile::Public,
             ports: Vec::new(),
             volumes: Vec::new(),
@@ -247,6 +279,25 @@ impl CreateForm {
         }
     }
 
+    /// Toggle the current-dir workspace mount and keep the workdir field
+    /// coherent: checked → workdir becomes the mount path (unless the user
+    /// typed their own), unchecked → workdir falls back to the sbx-style
+    /// default when it was auto-filled.
+    pub fn toggle_mount_cwd(&mut self) {
+        self.mount_cwd = !self.mount_cwd;
+        if self.mount_cwd {
+            // Restore the mount default unless the user chose a custom dir.
+            if self.workdir.trim().is_empty() || self.workdir == DEFAULT_WORKDIR {
+                self.workdir = self.cwd.clone();
+            }
+        } else {
+            // Drop the auto-filled value; an explicitly typed one survives.
+            if self.workdir == self.cwd {
+                self.workdir = DEFAULT_WORKDIR.to_string();
+            }
+        }
+    }
+
     /// Index of the active field within the visible field list.
     pub fn active_field_index(&self) -> usize {
         self.visible_fields()
@@ -255,7 +306,7 @@ impl CreateForm {
             .unwrap_or(0)
     }
 
-    /// Number of visible fields (quick: 2, advanced: 10).
+    /// Number of visible fields (quick: 3, advanced: 11).
     pub fn field_count(&self) -> usize {
         self.visible_fields().len()
     }
@@ -322,7 +373,9 @@ impl CreateForm {
         }
 
         // Field-specific dispatch.
-        if self.active_field.is_list() {
+        if self.active_field == FormField::MountCwd {
+            self.handle_mount_cwd_key(key)
+        } else if self.active_field.is_list() {
             self.handle_list_key(key)
         } else if self.active_field == FormField::NetProfile {
             self.handle_net_profile_key(key)
@@ -442,6 +495,27 @@ impl CreateForm {
             FormField::Memory => &mut self.memory,
             FormField::Workdir => &mut self.workdir,
             _ => unreachable!("active_text_buf on non-text field"),
+        }
+    }
+
+    // -- workspace mount toggle handling --
+
+    /// Space toggles the current-dir mount; Enter advances like a text field.
+    fn handle_mount_cwd_key(&mut self, key: KeyEvent) -> FormAction {
+        match key.code {
+            KeyCode::Char(' ') => {
+                self.toggle_mount_cwd();
+                FormAction::Continue
+            }
+            KeyCode::Enter => {
+                if self.active_field_index() + 1 >= self.field_count() {
+                    FormAction::Submit
+                } else {
+                    self.next_field();
+                    FormAction::NextField
+                }
+            }
+            _ => FormAction::Continue,
         }
     }
 
@@ -567,6 +641,17 @@ impl CreateForm {
         }
     }
 
+    /// The workdir value the form state implies by itself (mount path when
+    /// checked, sbx default when not) — used to detect *deliberately* typed
+    /// workdirs for the quick-mode summary.
+    fn auto_workdir(&self) -> String {
+        if self.mount_cwd {
+            self.cwd.clone()
+        } else {
+            DEFAULT_WORKDIR.to_string()
+        }
+    }
+
     /// One-line summary of the set advanced fields (shown in quick mode so
     /// deliberately-set values stay visible).
     pub fn advanced_summary(&self) -> Option<String> {
@@ -577,8 +662,11 @@ impl CreateForm {
         if !self.memory.trim().is_empty() {
             parts.push(self.memory.trim().to_string());
         }
-        if !self.workdir.trim().is_empty() {
+        if !self.workdir.trim().is_empty() && self.workdir.trim() != self.auto_workdir() {
             parts.push(format!("wd {}", self.workdir.trim()));
+        }
+        if !self.mount_cwd {
+            parts.push("no mount".to_string());
         }
         if self.net_profile != NetProfile::Public {
             parts.push(self.net_profile.as_str().to_string());
@@ -652,18 +740,42 @@ impl CreateForm {
             }
         };
 
-        // Workdir (optional).
+        // Workdir: explicit input wins; with the workspace mount on (and no
+        // explicit entry) the mounted path is the default — sbx starts the
+        // sandbox in its primary workspace. Unchecked falls back to
+        // [`DEFAULT_WORKDIR`]; empty input never blocks creation.
+        let mut workspace_mount: Option<String> = None;
+        if self.mount_cwd {
+            let cwd = self.cwd.trim();
+            if !cwd.starts_with('/') {
+                bail!("Workspace mount: {cwd} is not an absolute path");
+            }
+            if !std::path::Path::new(cwd).exists() {
+                bail!("Workspace mount: {cwd} does not exist (deleted after open?)");
+            }
+            workspace_mount = Some(cwd.to_string());
+        }
         let workdir = {
             let w = self.workdir.trim();
-            if w.is_empty() {
-                None
-            } else {
+            if !w.is_empty() {
                 Some(w.to_string())
+            } else {
+                workspace_mount
+                    .clone()
+                    .or_else(|| Some(DEFAULT_WORKDIR.to_string()))
             }
         };
 
         // Filter empty entries from string lists.
-        let volumes = trim_filter(&self.volumes);
+        let mut volumes = trim_filter(&self.volumes);
+        if let Some(cwd) = workspace_mount {
+            // Bind-mount the current dir at the same absolute path (sbx:
+            // paths match between host and guest so stack traces line up).
+            let spec = format!("{cwd}:{cwd}");
+            if !volumes.contains(&spec) {
+                volumes.insert(0, spec);
+            }
+        }
         let env = trim_filter(&self.env_vars);
         let net_rules = trim_filter(&self.net_rules);
 
@@ -822,6 +934,32 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
             Style::default().fg(t.muted),
         )));
     }
+
+    // Workspace mount toggle (Docker-sbx style): Space toggles, Enter moves
+    // on. Shows the exact host path being mounted.
+    let mount_active = form.active_field == FormField::MountCwd;
+    let (marker, marker_color) = if form.mount_cwd {
+        ("[x]", t.ok)
+    } else {
+        ("[ ]", t.muted)
+    };
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(marker, Style::default().fg(marker_color)),
+        Span::raw(" "),
+        Span::styled(
+            "Mount current dir",
+            if mount_active {
+                Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            },
+        ),
+        Span::styled(
+            format!("  → {} (space toggles)", form.cwd),
+            Style::default().fg(t.muted),
+        ),
+    ]));
 
     // Quick mode: summarize advanced values the user set earlier.
     if let Some(summary) = form.advanced_summary() {
@@ -1114,7 +1252,7 @@ mod tests {
         let form = CreateForm::new(Vec::new());
         assert!(!form.advanced);
         assert_eq!(form.active_field, FormField::Image);
-        assert_eq!(form.field_count(), 2);
+        assert_eq!(form.field_count(), 3);
         assert!(form.error.is_none());
     }
 
@@ -1122,15 +1260,23 @@ mod tests {
     fn quick_spec_uses_runtime_defaults() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
+        // The sbx-style workspace mount is on by default; everything else
+        // stays at runtime defaults.
         let spec = form.to_create_spec().unwrap();
         assert_eq!(spec.image, "alpine");
         assert_eq!(spec.cpus, None);
         assert_eq!(spec.memory, None);
-        assert_eq!(spec.workdir, None);
+        assert_eq!(spec.workdir.as_deref(), Some(form.cwd.as_str()));
         assert_eq!(spec.net_profile, None);
         assert!(spec.ports.is_empty());
-        assert!(spec.volumes.is_empty());
+        assert_eq!(spec.volumes, vec![format!("{}:{}", form.cwd, form.cwd)]);
         assert!(spec.name.is_none());
+
+        // Unchecked, the form is back to pure runtime defaults.
+        form.toggle_mount_cwd();
+        let spec = form.to_create_spec().unwrap();
+        assert_eq!(spec.workdir.as_deref(), Some(DEFAULT_WORKDIR));
+        assert!(spec.volumes.is_empty());
     }
 
     #[test]
@@ -1222,20 +1368,31 @@ mod tests {
     }
 
     #[test]
-    fn quick_tab_cycles_two_fields() {
+    fn quick_tab_cycles_three_fields() {
         let mut form = CreateForm::new(Vec::new());
         form.handle_key(key(KeyCode::Tab));
         assert_eq!(form.active_field, FormField::Name);
+        form.handle_key(key(KeyCode::Tab));
+        assert_eq!(form.active_field, FormField::MountCwd);
         form.handle_key(key(KeyCode::Tab));
         assert_eq!(form.active_field, FormField::Image);
     }
 
     #[test]
-    fn quick_enter_on_name_submits() {
+    fn quick_enter_on_name_moves_to_mount_toggle() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::Name;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::MountCwd);
+        // Enter on the toggle (last quick field) submits.
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+        // Space flips the checkbox without moving.
+        assert_eq!(
+            form.handle_key(key(KeyCode::Char(' '))),
+            FormAction::Continue
+        );
+        assert!(!form.mount_cwd);
     }
 
     // -- advanced toggle --
@@ -1299,12 +1456,16 @@ mod tests {
     #[test]
     fn advanced_summary_lists_set_fields() {
         let mut form = CreateForm::new(Vec::new());
+        // The default state (mount cwd on, nothing else) is not "set" — the
+        // summary exists to surface *deliberate* choices only.
         assert_eq!(form.advanced_summary(), None);
         form.cpus = "2".into();
         form.ports.push("8080:80".into());
         let summary = form.advanced_summary().unwrap();
         assert!(summary.contains("2 cpus"));
         assert!(summary.contains("1 ports"));
+        form.toggle_mount_cwd();
+        assert!(form.advanced_summary().unwrap().contains("no mount"));
     }
 
     // -- advanced field behavior (unchanged semantics) --
@@ -1365,6 +1526,7 @@ mod tests {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        form.toggle_mount_cwd(); // keep volumes purely what the user typed
         form.volumes = vec!["  ".into(), "./src:/app".into()];
         let spec = form.to_create_spec().unwrap();
         assert_eq!(spec.volumes, vec!["./src:/app".to_string()]);
@@ -1379,6 +1541,80 @@ mod tests {
         let spec = form.to_create_spec().unwrap();
         assert_eq!(spec.workdir.as_deref(), Some("/app"));
         assert_eq!(spec.name, None);
+    }
+
+    // -- workspace mount (Docker-sbx style) --
+
+    #[test]
+    fn mount_cwd_defaults_on_with_captured_cwd() {
+        let form = CreateForm::new(Vec::new());
+        // sbx parity: the checkbox starts checked, workspace = TUI's CWD.
+        assert!(form.mount_cwd);
+        assert!(!form.cwd.trim().is_empty());
+        assert_eq!(form.workdir, form.cwd);
+        assert_eq!(form.cwd, std::env::current_dir().unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn mount_cwd_quick_mode_produces_bind_and_workdir() {
+        // Quick mode (no advanced fields touched): checked box mounts the
+        // current dir at the same absolute path and starts the sandbox there.
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        let spec = form.to_create_spec().unwrap();
+        assert_eq!(
+            spec.volumes,
+            vec![format!("{}:{}", form.cwd, form.cwd)],
+            "bind mount at the same absolute path (sbx behavior)"
+        );
+        assert_eq!(spec.workdir.as_deref(), Some(form.cwd.as_str()));
+    }
+
+    #[test]
+    fn unchecking_mount_cwd_falls_back_to_default_workdir() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.toggle_mount_cwd();
+        let spec = form.to_create_spec().unwrap();
+        // No mount; workdir falls back to the sbx-style template default.
+        assert!(spec.volumes.is_empty());
+        assert_eq!(spec.workdir.as_deref(), Some(DEFAULT_WORKDIR));
+    }
+
+    #[test]
+    fn explicit_workdir_overrides_mount_default() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.workdir = "/custom".into();
+        let spec = form.to_create_spec().unwrap();
+        // A deliberately typed workdir wins over the mount-derived one.
+        assert_eq!(spec.workdir.as_deref(), Some("/custom"));
+        assert_eq!(spec.volumes.len(), 1, "mount still happens");
+    }
+
+    #[test]
+    fn unchecking_mount_cwd_clears_its_auto_workdir() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.toggle_mount_cwd();
+        // The auto-filled workdir from the checked state is gone (falls back
+        // to the default, tested above); unchecking again restores it.
+        form.toggle_mount_cwd();
+        let spec = form.to_create_spec().unwrap();
+        assert_eq!(spec.workdir.as_deref(), Some(form.cwd.as_str()));
+        assert_eq!(spec.volumes.len(), 1);
+    }
+
+    #[test]
+    fn mount_cwd_rejects_non_absolute_or_missing_dir() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.cwd = "relative/path".into();
+        let err = form.to_create_spec().unwrap_err();
+        assert!(err.to_string().contains("absolute"));
+        form.cwd = "/nonexistent-tui-cwd-probe-9x".into();
+        let err = form.to_create_spec().unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
     }
 
     // -- memory validation --

@@ -583,6 +583,12 @@ fn render_card(
             Style::default().fg(t.text),
         ),
     ]));
+    // Mounted dirs (sbx WORKSPACE column): the same-path workspace bind is
+    // the most common entry, so show it compactly; `—` when mountless.
+    lines.push(Line::from(vec![
+        Span::styled("Mounts ", Style::default().fg(t.muted)),
+        Span::styled(sbx.mounts_display(), Style::default().fg(t.text)),
+    ]));
     let uptime = metrics
         .map(|m| format_duration(m.uptime_secs))
         .unwrap_or_else(|| "--".into());
@@ -833,6 +839,7 @@ mod tests {
             name: "probe".into(),
             status: SandboxState::Running,
             workdir: Some("/app".into()),
+            mounts: Vec::new(),
         }];
         terminal
             .draw(|f| {

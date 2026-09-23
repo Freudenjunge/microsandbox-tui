@@ -412,3 +412,51 @@ entirely; `s`/`S` = start.
   nothing; a form is future work).
 - Level badges in logs are heuristic (keyword scan), since LogLine carries
   no structured level field.
+
+---
+
+# Phase 2.10 — sbx-style workspace: default workdir + mount-current-dir toggle
+
+Docker `sbx` parity for workspaces, agreed with the maintainer:
+- `Mount current dir` checkbox in the create form, **checked by default**
+  (sbx mounts the current directory on every run).
+- Checked → the TUI's CWD (captured at form open) is bind-mounted **at the
+  same absolute path** inside the guest and becomes the default workdir; a
+  deliberately typed Workdir overrides the auto value.
+- Unchecked → workdir default is `/home/agent/workspace` (the Docker sbx
+  template default for mountless sandboxes); no mount added.
+- Dashboard cards show the mounted dirs (sbx `WORKSPACE` column): binds as
+  `HOST⇄GUEST` (`⇢` when read-only), named volumes as `name:GUEST`, `—` when
+  mountless.
+
+## Task List
+
+### 1. Create form
+- [x] `CreateForm` gains `mount_cwd: bool` (default `true`) + `cwd: String`
+      captured at form open; `toggle_mount_cwd()` keeps the workdir field
+      coherent (restore mount path on re-check, drop auto-fill on un-check).
+- [x] `FormField::MountCwd` toggle in QUICK (3 fields) + ALL (11 fields) Tab
+      order; `Space` toggles, `Enter` advances; checkbox rendered with the
+      exact mount path next to it.
+- [x] `to_create_spec()`: prepends the `CWD:CWD` bind, sets workdir
+      (explicit input > mount path > `/home/agent/workspace`), validates the
+      captured CWD (absolute + still exists), quick-mode summary shows
+      `no mount` only when deviating from the default.
+
+### 2. Backend + models
+- [x] `SandboxSummary.mounts: Vec<String>` (compact display tokens) +
+      `mount_display()` (⇄/⇢ bind arrows, `name:GUEST`, guest-path fallback);
+      `map_mounts()` in `sdk.rs` shared by SdkBackend + FakeBackend.
+- [x] Unit tests: form state (5 new), mount display shapes, fixture-driven
+      `map_mounts`, FakeBackend create→inspect→summary roundtrip
+      (workdir verbatim, bind + named mounts, card display).
+
+### 3. Docs + gates
+- [x] `docs/DESIGN.md`: create-form mockup + workspace rules, card line
+      (Ports → Workdir/Mounts).
+- [x] All four gates green (166 unit tests).
+
+**Phase 2.10 complete.** Deviation note: the sbx "workspace" concept maps to
+a plain bind mount + workdir in microsandbox terms — no template/agent
+machinery is implied; the checkbox only manipulates `CreateSpec.volumes` and
+`CreateSpec.workdir`, keeping the SDK the single source of truth.

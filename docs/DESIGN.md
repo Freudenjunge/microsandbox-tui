@@ -98,7 +98,8 @@ none of it; panels show only real backend data.
 ││ python:3.12         │ │ ubuntu              │ │ alpine              ││
 ││ CPU 12%  MEM 240M   │ │ CPU --   MEM --     │ │ CPU 3%   MEM 56M    ││
 ││ Net ↓0  ↑1.2K       │ │                     │ │ Net ↓0   ↑0         ││
-││ Ports 8080→80       │ │                     │ │ Ports —             ││
+││ Workdir /app        │ │                     │ │ Workdir /           ││
+││ Mounts /a⇄/a —      │ │                     │ │ Mounts —            ││
 ││ Uptime 5m 32s       │ │                     │ │ Uptime 12s          ││
 │└─────────────────────┘ └─────────────────────┘ └─────────────────────┘│
 │  [enter] inspect  [e] exec  [l] logs  [s] ssh  [p] ports  [n] network  │
@@ -110,7 +111,9 @@ none of it; panels show only real backend data.
 - Each card: name, image chip, right-aligned uppercase status pill
   (● RUNNING / ○ STOPPED / ⏸ PAUSED / ✗ EXITED, colored per state), live CPU%
   with a `[■■■□□□□□□□]` gauge, memory used / limit with percent, net I/O with
-  ↓/↑ arrows, published ports, uptime
+  ↓/↑ arrows, workdir, mounted dirs (`HOST⇄GUEST` for writable binds — the
+  sbx workspace shows as `PATH⇄PATH`; `name:GUEST` for named volumes; `—`
+  when mountless), uptime
 - Polls the SDK sandbox list every 5s
 - Polls fleet metric reports every 1s for live stats
 - Selected card highlighted with the accent border; actions operate on selection
@@ -122,8 +125,9 @@ none of it; panels show only real backend data.
 │                                                                       │
 │  Image:   [python___________]  (autocomplete from image list)         │
 │  Name:    [my-sandbox_______]  (auto-generated if empty)              │
+│  [x] Mount current dir  → /home/user/proj (space toggles)             │
 │  CPUs:    [1___]   Memory:    [512M____]                              │
-│  Workdir: [/app______________]                                        │
+│  Workdir: [/home/user/proj___]                                        │
 │                                                                       │
 │  ── Network ──                                                        │
 │  Profile: ( ) public  (•) private  ( ) host  ( ) none  ( ) custom     │
@@ -139,12 +143,20 @@ none of it; panels show only real backend data.
 │  ── Environment ──                                                    │
 │  [DEBUG=true_______________]  [+ Add]                                 │
 │                                                                       │
-│  [Tab] next field  [Enter] create  [Esc] cancel                       │
+│  [Tab] next field  [Space] toggle mount  [Enter] create  [Esc] cancel │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Quick mode (default)**: image picker + optional name — everything else
-  takes runtime defaults (no cpus/memory limit, `public` network profile,
+- **Workspace mount (Docker-sbx parity)**: the `Mount current dir` checkbox
+  defaults to **checked** and bind-mounts the TUI's current working directory
+  into the sandbox **at the same absolute path** (sbx mounts workspaces at
+  their host path so stack traces line up). While checked it also sets the
+  default workdir to that path; a deliberately typed Workdir overrides it.
+  Unchecked, the workdir falls back to `/home/agent/workspace` (the Docker
+  sbx template default) and no mount is added. Validation: the captured CWD
+  must be absolute and still exist at submit time.
+- **Quick mode (default)**: image picker + name + the mount toggle — everything
+  else takes runtime defaults (no cpus/memory limit, `public` network profile,
   no ports/volumes/env). `Ctrl+A` expands the advanced fields.
 - Named by default (persistent) — ephemeral is an advanced toggle
 - Image field: an always-visible picker lists pulled images first, then

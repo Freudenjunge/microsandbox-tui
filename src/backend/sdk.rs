@@ -269,6 +269,15 @@ fn map_mount(m: &VolumeMount) -> Mount {
     }
 }
 
+/// Compact `SOURCE:GUEST[:ro]`-style display strings for a config's mounts,
+/// rendered on dashboard cards (`mount_display` gives the exact token shape).
+pub(crate) fn map_mounts(cfg: &SandboxConfig) -> Vec<String> {
+    cfg.mounts
+        .iter()
+        .map(|m| crate::models::mount_display(&m.kind, m.source(), &m.guest, m.is_readonly()))
+        .collect()
+}
+
 /// Convert the network portion of a stored spec into our DTO.
 ///
 /// Note: `NetworkSpec.ports` are `PublishedPortSpec` (types crate, `String`
@@ -553,6 +562,7 @@ impl MsbBackend for SdkBackend {
                 name: handle.name().to_string(),
                 status: map_status(local.status),
                 workdir,
+                mounts: parsed.as_ref().ok().map(map_mounts).unwrap_or_default(),
             });
         }
         if !degraded.is_empty() {
@@ -882,6 +892,31 @@ mod tests {
         assert!(matches!(tmpfs.kind, ParsedMountKind::Tmpfs));
 
         assert!(parse_volume_string("no-colon").is_none());
+    }
+
+    // ---- mounts → card display ----
+
+    #[test]
+    fn map_mounts_renders_fixture_shapes() {
+        let insp: SandboxInspect =
+            serde_json::from_str(crate::models::test_fixture("sandbox-inspect")).unwrap();
+        let mounts = map_mounts(&insp.active_config);
+        // Bind (read-only in the fixture) + Named.
+        assert_eq!(
+            mounts,
+            vec![
+                "tui-data:/data".to_string(),
+                "/tmp/opencode/probe-src⇢/mnt/src".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn map_mounts_empty_for_mountless() {
+        let cfg: SandboxConfig =
+            serde_json::from_str(crate::models::test_fixture("sandbox-stored-null-workdir"))
+                .unwrap();
+        assert!(map_mounts(&cfg).is_empty());
     }
 
     // ---- config mapping (uses the captured inspect fixture's spec shape) ----
