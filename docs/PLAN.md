@@ -589,3 +589,14 @@ sets an explanatory status line instead of opening a dialog.
   restores surface auto-named images in the image list; the picker has
   no scrolling yet. Both are part of the planned template/create-form
   pass.
+
+### 9. Image picker: scrolling window + sizes (2026-09-25)
+- [x] The picker hard-capped suggestions at 8 with no scrolling — local
+      images beyond the cap were unreachable, and snapshot restores'
+      digest-pinned image variants crowded the short names. Fix:
+      `suggestions()` returns the full filtered list (safety cap 50);
+      `picker_lines()` renders a sliding 5-row window that follows
+      `picker_selected` (same rule as the card rail).
+- [x] The picker shows each cached image's size next to the reference
+      (`alpine  3.7M`) — `ImagesUpdated` now carries full `Image`s
+      (event, App, CreateForm, main.rs fetch) instead of bare strings.

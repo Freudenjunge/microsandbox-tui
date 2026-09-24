@@ -22,8 +22,10 @@ use crate::backend::CreateSpec;
 use crate::models::PublishedPort;
 use crate::ui::theme::THEME;
 
-/// Number of suggestions shown in the image picker at once.
-const PICKER_MAX: usize = 8;
+/// Rows visible in the image picker (it scrolls beyond this).
+const PICKER_VISIBLE: usize = 5;
+/// Safety cap for the full suggestion list (the picker scrolls through it).
+const PICKER_WINDOW_MAX: usize = 50;
 
 /// Curated image suggestions shown when the local image list is empty or
 /// as stable defaults above it.
@@ -231,8 +233,8 @@ pub struct CreateForm {
     pub active_field: FormField,
     /// Validation error to display (red line).
     pub error: Option<String>,
-    /// Cached image references (from `list_images`), shown in the picker.
-    pub images: Vec<String>,
+    /// Cached images (from `list_images`), shown in the picker with size.
+    pub images: Vec<crate::models::Image>,
     /// Highlighted index within the current image suggestions.
     pub picker_selected: usize,
     /// Input buffer for the active list field.
@@ -248,7 +250,7 @@ impl CreateForm {
     /// current directory is mounted at the same absolute path and becomes the
     /// workdir. Unchecking clears the auto-filled workdir (empty = image
     /// default — see `toggle_mount_cwd`).
-    pub fn new(images: Vec<String>) -> Self {
+    pub fn new(images: Vec<crate::models::Image>) -> Self {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -319,13 +321,14 @@ impl CreateForm {
 
     /// Image suggestions for the picker: locally pulled images first (they
     /// exist on this machine), then curated defaults, filtered by the
-    /// current image buffer (case-insensitive substring) and capped at
-    /// [`PICKER_MAX`].
+    /// current image buffer (case-insensitive substring). The list is NOT
+    /// truncated to the visible window — the picker scrolls instead
+    /// ([`PICKER_VISIBLE`] rows, [`PICKER_WINDOW_MAX`] safety cap).
     pub fn suggestions(&self) -> Vec<String> {
         let mut all: Vec<String> = Vec::with_capacity(SUGGESTED_IMAGES.len() + self.images.len());
         for img in &self.images {
-            if !all.contains(img) {
-                all.push(img.clone());
+            if !all.contains(&img.reference) {
+                all.push(img.reference.clone());
             }
         }
         for s in SUGGESTED_IMAGES {
@@ -336,13 +339,22 @@ impl CreateForm {
         }
         let filter = self.image.trim().to_lowercase();
         if filter.is_empty() {
-            all.truncate(PICKER_MAX);
+            all.truncate(PICKER_WINDOW_MAX);
             return all;
         }
         all.into_iter()
             .filter(|img| img.to_lowercase().contains(&filter))
-            .take(PICKER_MAX)
+            .take(PICKER_WINDOW_MAX)
             .collect()
+    }
+
+    /// The size of a cached image by reference, if known (shown in the
+    /// picker next to the reference).
+    pub fn image_size(&self, reference: &str) -> Option<u64> {
+        self.images
+            .iter()
+            .find(|i| i.reference == reference)
+            .map(|i| i.size_bytes)
     }
 
     /// Process a key and return what the caller should do.
@@ -1025,7 +1037,23 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
     crate::ui::chrome::render_chrome_footer(frame, &areas, &hints);
 }
 
-/// The image suggestion picker: filtered list with a highlighted row.
+/// The sliding window of picker rows: as many as [`PICKER_VISIBLE`] fit,
+/// scrolled so `selected` stays visible (same rule as the card rail).
+/// Returns `(start, count)`.
+fn picker_window(total: usize, selected: usize) -> (usize, usize) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let visible = total.min(PICKER_VISIBLE);
+    let start = selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(total.saturating_sub(visible));
+    (start, visible)
+}
+
+/// The picker's suggestion rows for the sliding window around
+/// `picker_selected`, with the cached image size (when known) next to the
+/// reference and the highlighted row marked.
 fn picker_lines(form: &CreateForm) -> Vec<Line<'static>> {
     let t = &THEME;
     let suggestions = form.suggestions();
@@ -1033,10 +1061,12 @@ fn picker_lines(form: &CreateForm) -> Vec<Line<'static>> {
         return Vec::new();
     }
     let active = form.active_field == FormField::Image;
-    suggestions
+    let (start, count) = picker_window(suggestions.len(), form.picker_selected);
+    suggestions[start..start + count]
         .iter()
         .enumerate()
-        .map(|(idx, img)| {
+        .map(|(i, img)| {
+            let idx = start + i;
             let selected = active && idx == form.picker_selected;
             let marker = if selected { "▶ " } else { "  " };
             let style = if selected {
@@ -1044,9 +1074,16 @@ fn picker_lines(form: &CreateForm) -> Vec<Line<'static>> {
             } else {
                 Style::default().fg(t.text)
             };
+            // Cached image size next to the reference (curated suggestions
+            // without a cached image show none).
+            let size = form
+                .image_size(img)
+                .map(|b| format!("  {}", crate::ui::dashboard::format_bytes(b)))
+                .unwrap_or_default();
             Line::from(vec![
                 Span::raw("  └ "),
                 Span::styled(format!("{marker}{img}"), style),
+                Span::styled(size, Style::default().fg(t.muted)),
             ])
         })
         .collect()
@@ -1244,6 +1281,92 @@ mod tests {
         KeyEvent::new(code, mods)
     }
 
+    fn img(reference: &str) -> crate::models::Image {
+        crate::models::Image {
+            architecture: "amd64".into(),
+            created_at: chrono::Utc::now(),
+            digest: format!("sha256:{reference}"),
+            layer_count: 1,
+            os: "linux".into(),
+            reference: reference.into(),
+            size_bytes: 1024,
+        }
+    }
+
+    fn flatten(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // -- image picker: scrolling window (smoke finding: list was capped at
+    //    8 with no scrolling, snapshot digest variants crowded it out) --
+
+    #[test]
+    fn suggestions_include_all_local_images() {
+        // 12 local images: the list must NOT be hard-truncated at 8 —
+        // the picker scrolls instead, so nothing is unreachable.
+        let images: Vec<crate::models::Image> = (0..12).map(|i| img(&format!("img{i}"))).collect();
+        let form = CreateForm::new(images);
+        let s = form.suggestions();
+        for i in 0..12 {
+            assert!(s.contains(&format!("img{i}")), "img{i} missing from {s:?}");
+        }
+    }
+
+    #[test]
+    fn picker_window_slides_with_selection() {
+        // Same rule as the card rail: the window slides once the selection
+        // passes the bottom row.
+        assert_eq!(picker_window(10, 0), (0, 5));
+        assert_eq!(picker_window(10, 4), (0, 5));
+        assert_eq!(picker_window(10, 5), (1, 5));
+        assert_eq!(picker_window(10, 9), (5, 5));
+        // Fewer suggestions than the window: show them all.
+        assert_eq!(picker_window(3, 2), (0, 3));
+        assert_eq!(picker_window(0, 0), (0, 0));
+    }
+
+    #[test]
+    fn picker_lines_render_scrolling_window() {
+        let images: Vec<crate::models::Image> = (0..10).map(|i| img(&format!("img{i}"))).collect();
+        let mut form = CreateForm::new(images);
+        form.picker_selected = 7;
+        let lines = picker_lines(&form);
+        assert_eq!(lines.len(), 5, "visible window, not the full list");
+        let text = flatten(&lines);
+        assert!(text.contains("img7"), "selection inside the window: {text}");
+        assert!(
+            !text.contains("img0 "),
+            "entries above the window are hidden: {text}"
+        );
+
+        // Selection at the top shows the first window.
+        form.picker_selected = 0;
+        let text = flatten(&picker_lines(&form));
+        assert!(text.contains("img0"));
+        assert!(!text.contains("img5 "));
+    }
+
+    #[test]
+    fn picker_lines_show_image_size() {
+        let mut alpine = img("alpine");
+        alpine.size_bytes = 3_849_738;
+        let form = CreateForm::new(vec![alpine]);
+        let text = flatten(&picker_lines(&form));
+        assert!(
+            text.contains("3.7M"),
+            "image size shown next to the reference: {text}"
+        );
+    }
+
     // -- quick mode --
 
     #[test]
@@ -1289,19 +1412,19 @@ mod tests {
 
     #[test]
     fn suggestions_put_local_images_first() {
-        let form = CreateForm::new(vec!["python:3.12".into(), "alpine".into()]);
+        let form = CreateForm::new(vec![img("python:3.12"), img("alpine")]);
         let s = form.suggestions();
         // Local images come first (they exist on this machine).
         assert_eq!(s.first().unwrap(), "python:3.12");
         // Curated suggestions fill the rest; "alpine" is deduped.
         assert!(s.contains(&"alpine".to_string()));
         assert_eq!(s.iter().filter(|i| i.as_str() == "alpine").count(), 1);
-        assert!(s.len() <= PICKER_MAX);
+        assert!(s.len() <= PICKER_WINDOW_MAX);
     }
 
     #[test]
     fn suggestions_filter_by_typed_text() {
-        let mut form = CreateForm::new(vec!["python:3.12".into()]);
+        let mut form = CreateForm::new(vec![img("python:3.12")]);
         form.image = "py".into();
         // Local images surface first, curated fill afterwards.
         let s = form.suggestions();

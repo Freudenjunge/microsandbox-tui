@@ -236,8 +236,8 @@ pub struct App {
     pub detail: DetailTab,
     /// True while the interactive shell hand-off is running (TUI paused).
     pub shell_suspended: bool,
-    /// Cached image references for the create form autocomplete.
-    pub images: Vec<String>,
+    /// Cached images for the create form picker (with sizes).
+    pub images: Vec<crate::models::Image>,
     /// Published ports per sandbox (dashboard cards + ports view).
     pub ports: std::collections::HashMap<String, Vec<crate::models::PublishedPort>>,
     /// True when the port cache should be refetched (view entered, `r`

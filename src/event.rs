@@ -42,7 +42,7 @@ pub enum AppEvent {
     /// The log stream ended (child exited).
     LogsEnded,
     /// Images list was refreshed (used by the create form autocomplete).
-    ImagesUpdated(Vec<String>),
+    ImagesUpdated(Vec<crate::models::Image>),
     /// Ports for a sandbox were refreshed (used by the ports view).
     PortsUpdated {
         name: String,

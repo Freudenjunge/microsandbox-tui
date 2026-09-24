@@ -259,9 +259,7 @@ async fn run(cli: Cli) -> Result<()> {
             tokio::spawn(async move {
                 match backend.list_images().await {
                     Ok(list) => {
-                        let names: Vec<String> =
-                            list.into_iter().map(|img| img.reference).collect();
-                        let _ = tx.send(AppEvent::ImagesUpdated(names)).await;
+                        let _ = tx.send(AppEvent::ImagesUpdated(list)).await;
                     }
                     Err(e) => {
                         let _ = tx.send(AppEvent::Error(format!("images: {e:#}"))).await;
