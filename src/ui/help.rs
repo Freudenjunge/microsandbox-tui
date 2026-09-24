@@ -53,23 +53,19 @@ static DASHBOARD_KEYS: &[KeyRow] = &[
         action: "create sandbox (form)",
     },
     KeyRow {
-        keys: "e",
-        action: "interactive shell into the sandbox (new window)",
+        keys: "x",
+        action: "exec: interactive shell into the sandbox (new window)",
     },
     KeyRow {
         keys: "s",
-        action: "start sandbox",
+        action: "start/stop the selected sandbox (state-dependent)",
     },
     KeyRow {
         keys: "r",
         action: "restart sandbox",
     },
     KeyRow {
-        keys: "x",
-        action: "stop sandbox",
-    },
-    KeyRow {
-        keys: "Delete",
+        keys: "Del",
         action: "remove sandbox (confirm)",
     },
     KeyRow {

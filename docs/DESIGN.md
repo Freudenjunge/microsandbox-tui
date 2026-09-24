@@ -102,21 +102,25 @@ none of it; panels show only real backend data.
 ││ Mounts /a⇄/a —      │ │                     │ │ Mounts —            ││
 ││ Uptime 5m 32s       │ │                     │ │ Uptime 12s          ││
 │└─────────────────────┘ └─────────────────────┘ └─────────────────────┘│
-│  [enter] inspect  [e] exec  [l] logs  [s] ssh  [p] ports  [n] network  │
-│  [r] restart  [x] stop  [del] rm  [↑↓] select                         │
-└────────────────────────────────────────────────────────────────────────┘
+│  [c] Create  [Tab] Next tab  [?] Help  [q] Quit                       │
+│  Navigation: Tab / ↑↓←→                                               │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-- Sandbox cards laid out in a responsive grid (1–3 columns depending on width)
+- Sandbox cards laid out in the left rail (stacked vertically, scrollable)
 - Each card: name, image chip, right-aligned uppercase status pill
   (● RUNNING / ○ STOPPED / ⏸ PAUSED / ✗ EXITED, colored per state), live CPU%
   with a `[■■■□□□□□□□]` gauge, memory used / limit with percent, net I/O with
   ↓/↑ arrows, workdir, mounted dirs (`HOST⇄GUEST` for writable binds — the
   sbx workspace shows as `PATH⇄PATH`; `name:GUEST` for named volumes; `—`
   when mountless), uptime
+- The selected card is one row taller and ends in a state-gated action row
+  showing only the currently available actions as words with the key letter
+  highlighted: e.g. `Stop  Restart  Exec  Delete` for a running sandbox,
+  `Start  Delete` for a stopped one (Docker-sbx parity)
+- Selected card highlighted with the accent border; actions operate on selection
 - Polls the SDK sandbox list every 5s
 - Polls fleet metric reports every 1s for live stats
-- Selected card highlighted with the accent border; actions operate on selection
 
 ### 2. Create Sandbox form
 
@@ -397,18 +401,15 @@ struct Image {
 | Key | Context | Action |
 |-----|---------|--------|
 | `q` | global | quit |
-| `1` / `2` / `3` | global | tab bar: sandboxes / logs / ports |
+| `1` / `2` / `3` | global | detail tabs: overview / logs / ports |
 | `?` | global | help overlay |
 | `↑↓` | dashboard | select sandbox card |
 | `Enter` | dashboard | inspect selected sandbox |
 | `c` | dashboard | create sandbox form |
-| `e` | dashboard | exec command in sandbox |
-| `l` | dashboard | logs panel |
-| `s` | dashboard | start sandbox |
-| `p` | dashboard | port forwards view (matrix) |
-| `r` | dashboard | restart sandbox |
-| `x` | dashboard | stop sandbox |
-| `Delete` | dashboard | remove sandbox (confirm) |
+| `x` | dashboard | exec: interactive shell (running sandboxes only) |
+| `s` | dashboard | start/stop toggle for the selected sandbox (state-dependent) |
+| `r` | dashboard | restart sandbox (running/stalled) |
+| `Del` | dashboard | remove sandbox (confirm) |
 | `U` | dashboard | install/update runtime (confirm) |
 | `f` | logs | toggle follow |
 | `g` / `/` | logs | grep filter |
@@ -417,6 +418,12 @@ struct Image {
 | `↑↓` | ports | select binding in matrix |
 | `-` | ports | unpublish selected binding (confirm) |
 | `Esc` | any sub-view | back to dashboard |
+
+The selected card shows its currently available actions as words with the
+key letter highlighted inside (Docker-sbx parity): `S`tart / `S`top /
+`R`estart / E`x`ec / `Del`ete. Actions that don't apply to the sandbox's
+current state (e.g. Start while running) are not offered; pressing their
+key shows an explanatory status line instead.
 
 ## Port Publish/Unpublish — Implementation Detail
 

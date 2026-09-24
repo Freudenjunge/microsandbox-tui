@@ -17,9 +17,10 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::actions::CardAction;
 use crate::event::Action;
 use crate::event::AppEvent;
-use crate::models::{Metrics, PublishedPort, SandboxSummary};
+use crate::models::{Metrics, PublishedPort, SandboxState, SandboxSummary};
 use crate::ui::create::CreateForm;
 use crate::ui::logs::LogsState;
 use crate::ui::ports::PortsState;
@@ -446,18 +447,33 @@ impl App {
                 self.detail = DetailTab::Overview;
                 Action::Render
             }
-            // e: open an INTERACTIVE SHELL in a new window (leave the TUI,
-            // run the sandbox shell in the foreground, restore on exit).
-            KeyCode::Char('e') => {
-                if self.selected_sandbox().is_some() {
-                    self.shell_suspended = true;
+            // Docker-sbx parity: `s` toggles start/stop by state.
+            KeyCode::Char('s') | KeyCode::Char('S') => match self.gated_state_toggle() {
+                Some(crate::actions::CardAction::Start) => {
+                    self.confirm_gated(CardAction::Start, Op::Start)
                 }
-                Action::Render
+                Some(crate::actions::CardAction::Stop) => {
+                    self.confirm_gated(CardAction::Stop, Op::Stop)
+                }
+                _ => self.reject_unavailable(CardAction::Start),
+            },
+            // Docker-sbx parity: `x` = E**x**ec (interactive shell in a new
+            // window — leave the TUI, run the sandbox shell, restore on exit).
+            KeyCode::Char('x') => {
+                match self.gated_state(CardAction::Shell) {
+                    Some(_) => {
+                        self.shell_suspended = true;
+                        Action::Render
+                    }
+                    // Unavailable for this sandbox's state: explain, no dialog.
+                    None if self.selected_sandbox().is_some() => {
+                        self.reject_unavailable(CardAction::Shell)
+                    }
+                    // Empty list: previous no-op behavior (render, nothing else).
+                    None => Action::Render,
+                }
             }
-            KeyCode::Char('r') => self.confirm_named(Op::Restart),
-            KeyCode::Char('x') => self.confirm_named(Op::Stop),
-            // s / S both start a stopped sandbox.
-            KeyCode::Char('s') | KeyCode::Char('S') => self.confirm_named(Op::Start),
+            KeyCode::Char('r') => self.confirm_gated(CardAction::Restart, Op::Restart),
             KeyCode::Delete => self.confirm_named(Op::Remove),
             KeyCode::Char('?') => {
                 self.view = View::Help;
@@ -677,6 +693,54 @@ impl App {
         Action::Render
     }
 
+    /// Begin confirming `op` for the selected sandbox, but only if the
+    /// sandbox's current state offers `action` (see
+    /// [`crate::actions::available_actions`]). Unavailable actions get a
+    /// status message instead of a dialog.
+    fn confirm_gated(&mut self, action: CardAction, make_op: impl FnOnce(String) -> Op) -> Action {
+        match self.gated_state(action) {
+            Some(_) => self.confirm_named(make_op),
+            None => self.reject_unavailable(action),
+        }
+    }
+
+    /// The selected sandbox's state if `action` is currently available for
+    /// it, `None` otherwise (also `None` when nothing is selected).
+    fn gated_state(&self, action: CardAction) -> Option<&SandboxState> {
+        let sbx = self.selected_sandbox()?;
+        crate::actions::available_actions(&sbx.status)
+            .contains(&action)
+            .then_some(&sbx.status)
+    }
+
+    /// The `s` start/stop toggle applied to the selected sandbox's state:
+    /// startable → [`CardAction::Start`], stoppable → [`CardAction::Stop`],
+    /// `None` when nothing is selected (Docker-sbx parity).
+    fn gated_state_toggle(&self) -> Option<crate::actions::CardAction> {
+        let sbx = self.selected_sandbox()?;
+        crate::actions::toggle_action(&sbx.status)
+    }
+
+    /// Reject a key press for an unavailable action: no dialog, a short
+    /// status message explaining the current state instead.
+    fn reject_unavailable(&mut self, action: CardAction) -> Action {
+        let Some(sbx) = self.selected_sandbox() else {
+            return Action::Continue;
+        };
+        let verb = match action {
+            CardAction::Start => "start",
+            CardAction::Stop => "stop",
+            CardAction::Restart => "restart",
+            CardAction::Shell => "shell",
+            CardAction::Destroy => "destroy", // unreachable: always available
+        };
+        self.status = Some(format!(
+            "'{}' is {} — cannot {}",
+            sbx.name, sbx.status, verb
+        ));
+        Action::Render
+    }
+
     /// Switch to `view` only when there is a selected sandbox to act on.
     ///
     /// Inspect/logs/ports are all per-sandbox views, so with an empty list we
@@ -786,11 +850,15 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     fn summary(name: &str) -> SandboxSummary {
+        summary_state(name, SandboxState::Running)
+    }
+
+    fn summary_state(name: &str, state: SandboxState) -> SandboxSummary {
         SandboxSummary {
             created_at: DateTime::<Utc>::UNIX_EPOCH,
             image: "alpine".into(),
             name: name.into(),
-            status: SandboxState::Running,
+            status: state,
             workdir: Some("/app".into()),
             mounts: Vec::new(),
         }
@@ -995,8 +1063,9 @@ mod tests {
         let mut app = App::new();
         app.update_sandboxes(vec![summary("web")]);
 
-        // `x` opens the confirm dialog; the op is not queued yet.
-        assert_eq!(app.handle_event(key(KeyCode::Char('x'))), Action::Render);
+        // `s` (the sbx start/stop toggle) opens the confirm dialog for a
+        // running sandbox; the op is not queued yet.
+        assert_eq!(app.handle_event(key(KeyCode::Char('s'))), Action::Render);
         assert_eq!(app.confirm, Some(Op::Stop("web".into())));
         assert!(app.take_op().is_none());
 
@@ -1027,15 +1096,15 @@ mod tests {
     }
 
     #[test]
-    fn e_requests_interactive_shell_with_selection() {
+    fn x_requests_interactive_shell_with_selection() {
         let mut app = App::new();
-        // Empty list: e is a no-op.
-        assert_eq!(app.handle_event(key(KeyCode::Char('e'))), Action::Render);
+        // Empty list: x is a no-op.
+        assert_eq!(app.handle_event(key(KeyCode::Char('x'))), Action::Render);
         assert!(!app.shell_suspended);
 
         app.update_sandboxes(vec![summary("api")]);
-        assert_eq!(app.handle_event(key(KeyCode::Char('e'))), Action::Render);
-        assert!(app.shell_suspended, "e requests the shell window");
+        assert_eq!(app.handle_event(key(KeyCode::Char('x'))), Action::Render);
+        assert!(app.shell_suspended, "x requests the shell window");
         assert!(app.take_shell_request(), "request consumed once");
         assert!(!app.shell_suspended);
     }
@@ -1043,7 +1112,7 @@ mod tests {
     #[test]
     fn s_and_s_both_start_a_stopped_sandbox() {
         let mut app = App::new();
-        app.update_sandboxes(vec![summary("api")]);
+        app.update_sandboxes(vec![summary_state("api", SandboxState::Stopped)]);
         for k in ['s', 'S'] {
             app.handle_event(key(KeyCode::Char(k)));
             let op = app.confirm.take().expect("s opens the start confirm");
@@ -1051,10 +1120,91 @@ mod tests {
         }
     }
 
+    // ---- state-gated lifecycle keys (Docker-sbx parity) ----
+
+    #[test]
+    fn s_toggle_rejects_unavailable_start_on_unknown_state() {
+        let mut app = App::new();
+        // Unknown state: neither start nor stop applies.
+        app.update_sandboxes(vec![summary_state(
+            "web",
+            SandboxState::Unknown("weird".into()),
+        )]);
+        assert_eq!(app.handle_event(key(KeyCode::Char('s'))), Action::Render);
+        assert!(app.confirm.is_none(), "no confirm for unknown state");
+        assert!(
+            app.status.as_deref().unwrap_or_default().contains("weird"),
+            "status explains why: {status:?}",
+            status = app.status
+        );
+    }
+
+    #[test]
+    fn s_toggle_stops_stoppable_states() {
+        // Paused/Running/Stalled: `s` toggles to Stop confirm.
+        for state in [
+            SandboxState::Running,
+            SandboxState::Paused,
+            SandboxState::Stalled,
+        ] {
+            let mut app = App::new();
+            app.update_sandboxes(vec![summary_state("db", state.clone())]);
+            app.handle_event(key(KeyCode::Char('s')));
+            assert_eq!(app.confirm, Some(Op::Stop("db".into())), "state: {state}");
+        }
+    }
+
+    #[test]
+    fn restart_key_is_gated_to_running_and_stalled() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary_state("web", SandboxState::Stopped)]);
+        app.handle_event(key(KeyCode::Char('r')));
+        assert!(app.confirm.is_none(), "no restart confirm for stopped");
+
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary_state("web", SandboxState::Running)]);
+        app.handle_event(key(KeyCode::Char('r')));
+        assert_eq!(app.confirm, Some(Op::Restart("web".into())));
+    }
+
+    #[test]
+    fn shell_key_is_gated_to_running() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary_state("api", SandboxState::Stopped)]);
+        assert_eq!(app.handle_event(key(KeyCode::Char('x'))), Action::Render);
+        assert!(!app.shell_suspended, "no shell request for stopped sandbox");
+
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary_state("api", SandboxState::Running)]);
+        app.handle_event(key(KeyCode::Char('x')));
+        assert!(app.shell_suspended);
+    }
+
+    #[test]
+    fn destroy_key_is_always_available() {
+        for state in [
+            SandboxState::Running,
+            SandboxState::Stopped,
+            SandboxState::Paused,
+            SandboxState::Stalled,
+            SandboxState::Unknown("weird".into()),
+        ] {
+            let mut app = App::new();
+            app.update_sandboxes(vec![summary_state("old", state.clone())]);
+            app.handle_event(key(KeyCode::Delete));
+            assert_eq!(
+                app.confirm,
+                Some(Op::Remove("old".into())),
+                "state: {state}"
+            );
+        }
+    }
+
     #[test]
     fn lifecycle_keys_require_a_selection() {
         let mut app = App::new();
-        for k in ['r', 'x', 's'] {
+        // `r` and `s` are no-ops (Continue) on an empty list.
+        for k in ['r', 's'] {
             app.view = View::Dashboard;
             assert_eq!(app.handle_event(key(KeyCode::Char(k))), Action::Continue);
             assert!(
@@ -1062,8 +1212,8 @@ mod tests {
                 "key {k} must not open confirm on empty list"
             );
         }
-        // `e` (shell) also no-ops on an empty list: no request is queued.
-        app.handle_event(key(KeyCode::Char('e')));
+        // `x` (shell) renders but queues nothing on an empty list.
+        assert_eq!(app.handle_event(key(KeyCode::Char('x'))), Action::Render);
         assert!(!app.shell_suspended);
         // Delete on an empty list is also a no-op.
         assert_eq!(app.handle_event(key(KeyCode::Delete)), Action::Continue);

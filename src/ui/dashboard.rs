@@ -36,8 +36,44 @@ fn draw_vertical_separator(frame: &mut Frame, x: u16, row: Rect) {
     }
 }
 
-/// Height in rows of a single card (including its border).
-const CARD_HEIGHT: u16 = 8;
+/// Height in rows of a sandbox card in the rail (including its border):
+/// 7 content rows (title, CPU, MEM, Net, Workdir, Mounts, Uptime) + 2 border.
+pub const SELECTED_CARD_HEIGHT: u16 = 10;
+
+/// Height of an unselected card: one row less than the selected one, which
+/// adds a state-gated action row (Docker-sbx parity).
+pub fn unselected_card_height() -> u16 {
+    SELECTED_CARD_HEIGHT - 1
+}
+
+/// Per-card row heights for a rail of `total` cards with `selected` marked:
+/// every card is [`SELECTED_CARD_HEIGHT`] tall, the selected one one row
+/// taller (it carries the action row).
+pub fn rail_card_heights(total: usize, selected: usize) -> Vec<u16> {
+    (0..total)
+        .map(|i| {
+            if i == selected {
+                SELECTED_CARD_HEIGHT
+            } else {
+                unselected_card_height()
+            }
+        })
+        .collect()
+}
+
+/// Which slice of the rail is visible: as many cards as fit at base height
+/// (reserving the selected card's extra action row), scrolled so the
+/// selected card stays in the window. Returns `(start, visible_count)`.
+pub fn rail_visible_slice(total: usize, selected: usize, area_height: u16) -> (usize, usize) {
+    // The window always contains the selected card, which is one row taller
+    // than base height — reserve that row in the budget.
+    let max_visible = usize::from(area_height.saturating_sub(1) / unselected_card_height()).max(1);
+    let start = selected
+        .saturating_sub(max_visible.saturating_sub(1))
+        .min(total);
+    let visible = total.saturating_sub(start).min(max_visible).max(1);
+    (start, visible)
+}
 
 /// Render the dashboard into `area` (the full frame; chrome bands included).
 #[allow(clippy::too_many_arguments)]
@@ -156,34 +192,9 @@ pub fn render(
             role: FooterRole::Accent,
         },
         FooterHint {
-            key: "[s]",
-            label: "Start",
-            role: FooterRole::Plain,
-        },
-        FooterHint {
-            key: "[x]",
-            label: "Stop",
-            role: FooterRole::Plain,
-        },
-        FooterHint {
-            key: "[r]",
-            label: "Restart",
-            role: FooterRole::Warn,
-        },
-        FooterHint {
-            key: "[e]",
-            label: "Shell",
-            role: FooterRole::Plain,
-        },
-        FooterHint {
             key: "[Tab]",
             label: "Next tab",
             role: FooterRole::Plain,
-        },
-        FooterHint {
-            key: "[Del]",
-            label: "Destroy",
-            role: FooterRole::Err,
         },
         FooterHint {
             key: "[?]",
@@ -226,6 +237,8 @@ pub struct StatusLines<'a> {
 
 /// Render the left rail: the sandbox cards stacked vertically (the card
 /// list IS the navigation — 2.9 IA). Scroll keeps the selection visible.
+/// The selected card is one row taller (it carries the action row), so
+/// heights are computed per card.
 fn render_rail(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
@@ -234,18 +247,13 @@ fn render_rail(
     selected: usize,
     area: Rect,
 ) {
-    // Cards keep their fixed height; scroll so the selected card shows.
-    const CARD_H: u16 = 8;
-    let max_visible = usize::from((area.height / CARD_H).max(1));
-    let sel_row = selected;
-    let start = sel_row.saturating_sub(max_visible.saturating_sub(1));
-    let visible = sandboxes
-        .len()
-        .saturating_sub(start)
-        .min(max_visible)
-        .max(1);
-
-    let rows = Layout::vertical(vec![Constraint::Length(CARD_H); visible]).split(area);
+    let (start, visible) = rail_visible_slice(sandboxes.len(), selected, area.height);
+    let heights = rail_card_heights(sandboxes.len(), selected);
+    let visible_heights: Vec<Constraint> = heights[start..start + visible]
+        .iter()
+        .map(|h| Constraint::Length(*h))
+        .collect();
+    let rows = Layout::vertical(visible_heights).split(area);
     for (i, row) in rows.iter().enumerate() {
         let idx = start + i;
         let Some(sbx) = sandboxes.get(idx) else {
@@ -438,46 +446,44 @@ fn render_empty(frame: &mut Frame, area: Rect) {
     frame.render_widget(para, area);
 }
 
-/// Lay out cards in a responsive grid and render each one.
-fn render_grid(
-    frame: &mut Frame,
-    sandboxes: &[SandboxSummary],
-    metrics: &HashMap<String, Metrics>,
-    ports: &HashMap<String, Vec<PublishedPort>>,
-    selected: usize,
-    area: Rect,
-) {
-    let cols = card_columns(area.width);
-    let total_rows = sandboxes.len().div_ceil(cols);
-    // How many rows fit, and which slice to show so the selection is visible.
-    let max_rows = usize::from((area.height / CARD_HEIGHT).max(1));
-    let sel_row = selected / cols;
-    let start_row = sel_row.saturating_sub(max_rows.saturating_sub(1));
-    let visible_rows = total_rows.saturating_sub(start_row).min(max_rows).max(1);
-
-    let row_constraints = vec![Constraint::Length(CARD_HEIGHT); visible_rows];
-    let row_areas = Layout::vertical(row_constraints).split(area);
-
-    let col_constraints = vec![Constraint::Ratio(1, u32::try_from(cols).unwrap_or(1)); cols];
-
-    for vis in 0..visible_rows {
-        let row = start_row + vis;
-        let col_areas = Layout::horizontal(col_constraints.clone()).split(row_areas[vis]);
-        for col in 0..cols {
-            let idx = row * cols + col;
-            let Some(sbx) = sandboxes.get(idx) else {
-                continue;
-            };
-            render_card(
-                frame,
-                sbx,
-                metrics.get(&sbx.name),
-                ports.get(&sbx.name),
-                idx == selected,
-                col_areas[col],
-            );
+/// Build the state-gated action row for a selected card: one `[key] Label`
+/// hint per currently available action (Docker-sbx parity — the card shows
+/// only what the sandbox's state allows).
+fn card_action_line(state: &SandboxState) -> Line<'static> {
+    let t = &THEME;
+    let mut spans = Vec::new();
+    for (i, action) in crate::actions::available_actions(state).iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        // Docker-sbx style: the action word with the key substring highlighted
+        // inside it, e.g. E**x**ec, **S**top.
+        let label = action.label();
+        let hl = action.highlight();
+        let role = match action {
+            crate::actions::CardAction::Destroy => FooterRole::Err,
+            crate::actions::CardAction::Restart => FooterRole::Warn,
+            _ => FooterRole::Accent,
+        };
+        let key_style = match role {
+            FooterRole::Accent => Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            FooterRole::Err => Style::default().fg(t.err).add_modifier(Modifier::BOLD),
+            FooterRole::Warn => Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+            FooterRole::Plain => Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        };
+        match label.split_once(hl) {
+            Some((before, after)) => {
+                spans.push(Span::styled(
+                    before.to_string(),
+                    Style::default().fg(t.text),
+                ));
+                spans.push(Span::styled(hl.to_string(), key_style));
+                spans.push(Span::styled(after.to_string(), Style::default().fg(t.text)));
+            }
+            None => spans.push(Span::styled(label.to_string(), key_style)),
         }
     }
+    Line::from(spans)
 }
 
 /// Render a single sandbox card (Stitch style: pill badge, image chip, gauge).
@@ -596,6 +602,12 @@ fn render_card(
         Span::styled("Uptime ", Style::default().fg(t.muted)),
         Span::styled(uptime, Style::default().fg(t.text)),
     ]));
+
+    // State-gated action row: only the selected card carries it (Docker-sbx
+    // parity — one row taller, showing only currently available actions).
+    if selected {
+        lines.push(card_action_line(&sbx.status));
+    }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -881,5 +893,168 @@ mod tests {
         );
         assert!(text.contains("Navigation:"), "nav legend missing:\n{text}");
         assert!(text.contains("press [U]"), "banner missing:\n{text}");
+    }
+
+    // ---- state-gated card actions (Docker-sbx parity) ----
+
+    #[test]
+    fn selected_card_is_one_row_taller_than_unselected() {
+        assert_eq!(unselected_card_height(), SELECTED_CARD_HEIGHT - 1);
+        assert_eq!(unselected_card_height(), 9);
+    }
+
+    #[test]
+    fn rail_heights_use_variable_card_rows() {
+        // Cards of unequal height: selected is one row taller. The rail must
+        // lay out per-card heights, not a fixed 8-row stride.
+        let heights = rail_card_heights(4, 2);
+        assert_eq!(
+            heights,
+            vec![9, 9, 10, 9],
+            "selected card at index 2 is taller"
+        );
+    }
+
+    #[test]
+    fn rail_visible_slice_keeps_selection_visible() {
+        // Area fits 4 cards at base height 9 + 1 extra for the selected →
+        // 10 cards of 9 = 90 rows for 36 base-height cards... keep it simple:
+        // with room for exactly 3 unselected cards (27 rows of 28), the
+        // selected card (10 rows) still fits in the same window when the
+        // selection is the 3rd card.
+        let (start, visible) = rail_visible_slice(10, 2, 28);
+        assert_eq!((start, visible), (0, 3));
+        // Selection near the bottom: window slides to keep it visible.
+        let (start, visible) = rail_visible_slice(10, 9, 28);
+        assert_eq!(start, 7);
+        assert_eq!(visible, 3);
+    }
+
+    #[test]
+    fn card_action_line_shows_only_available_actions() {
+        for state in [
+            SandboxState::Running,
+            SandboxState::Stopped,
+            SandboxState::Paused,
+            SandboxState::Stalled,
+            SandboxState::Unknown("weird".into()),
+        ] {
+            let line = card_action_line(&state);
+            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+            let expected = crate::actions::available_actions(&state);
+            // Every available action's word appears...
+            for action in &expected {
+                assert!(
+                    text.contains(action.label()),
+                    "state {state}: label {} missing from {text:?}",
+                    action.label()
+                );
+            }
+            // ...and nothing else does (no leftovers from other states).
+            for action in [
+                crate::actions::CardAction::Start,
+                crate::actions::CardAction::Stop,
+                crate::actions::CardAction::Restart,
+                crate::actions::CardAction::Shell,
+                crate::actions::CardAction::Destroy,
+            ] {
+                let offered = expected.contains(&action);
+                assert_eq!(
+                    text.contains(action.label()),
+                    offered,
+                    "state {state}: {} unexpectedly {}",
+                    action.label(),
+                    if offered { "missing" } else { "present" }
+                );
+            }
+            // The key substring is a highlighted span (bold), the rest is not.
+            for action in &expected {
+                assert!(
+                    line.spans.iter().any(|s| s.content == action.highlight()
+                        && s.style.add_modifier.contains(Modifier::BOLD)),
+                    "state {state}: {} not highlighted",
+                    action.highlight()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn card_action_line_fits_rail_width() {
+        // Rail inner width is 42 cols; the widest state (Running) must fit.
+        let line = card_action_line(&SandboxState::Running);
+        let width: usize = line.spans.iter().map(|s| s.content.len()).sum();
+        assert!(
+            width <= 42,
+            "action row needs {width} cols, rail inner is 42"
+        );
+    }
+
+    #[test]
+    fn running_card_renders_action_row() {
+        // The selected RUNNING card must show its available actions in the
+        // rendered buffer; an unselected card must not.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        let sandboxes = vec![
+            SandboxSummary {
+                created_at: chrono::Utc::now(),
+                image: "alpine".into(),
+                name: "alpha".into(),
+                status: SandboxState::Running,
+                workdir: Some("/app".into()),
+                mounts: Vec::new(),
+            },
+            SandboxSummary {
+                created_at: chrono::Utc::now(),
+                image: "alpine".into(),
+                name: "beta".into(),
+                status: SandboxState::Stopped,
+                workdir: Some("/app".into()),
+                mounts: Vec::new(),
+            },
+        ];
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &sandboxes,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    0,
+                    StatusLines {
+                        banner: None,
+                        error: None,
+                        status_text: None,
+                    },
+                    DetailTab::Overview,
+                    None,
+                    None,
+                    &[],
+                    false,
+                    f.area(),
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let text = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Selected running card shows its actions (Docker-sbx style words).
+        assert!(text.contains("Stop"), "missing action row:\n{text}");
+        assert!(text.contains("Restart"), "missing action row:\n{text}");
+        assert!(text.contains("Exec"), "missing action row:\n{text}");
+        assert!(text.contains("Delete"), "missing action row:\n{text}");
+        assert!(
+            !text.contains("Start"),
+            "start must not show for running sandbox:\n{text}"
+        );
     }
 }

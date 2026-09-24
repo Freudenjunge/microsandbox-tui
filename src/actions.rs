@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use crate::backend::fake::spec_from_config;
 use crate::backend::{CreateSpec, ExecOutput, LogStream, MsbBackend};
-use crate::models::PublishedPort;
+use crate::models::{PublishedPort, SandboxState};
 
 /// Outcome of [`publish_port`] / [`unpublish_port`]: whether the sandbox was
 /// recreated or the operation was a no-op.
@@ -23,6 +23,98 @@ pub enum PublishResult {
     AlreadyExists,
     /// The sandbox was stopped, recreated with the new port set, and started.
     Recreated,
+}
+
+/// A state-gated key action offered on the selected sandbox card
+/// (Docker-sbx parity: the card shows the action word with the key letter
+/// highlighted inside it, e.g. E**x**ec — and only what the current state
+/// allows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardAction {
+    /// `s` — start a stopped sandbox (the `s` toggle's start half).
+    Start,
+    /// `s` — stop a running sandbox (the `s` toggle's stop half).
+    Stop,
+    /// `r` — restart a running/stalled sandbox.
+    Restart,
+    /// `x` — open an interactive shell (E**x**ec).
+    Shell,
+    /// `Del` — remove the sandbox (stops first if needed).
+    Destroy,
+}
+
+impl CardAction {
+    /// The key that triggers this action, as shown in help text.
+    pub fn key_hint(self) -> &'static str {
+        match self {
+            Self::Start | Self::Stop => "s",
+            Self::Restart => "r",
+            Self::Shell => "x",
+            Self::Destroy => "Del",
+        }
+    }
+
+    /// Action word shown on the card, e.g. `Exec`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Start => "Start",
+            Self::Stop => "Stop",
+            Self::Restart => "Restart",
+            Self::Shell => "Exec",
+            Self::Destroy => "Delete",
+        }
+    }
+
+    /// The substring of [`CardAction::label`] that is the key, highlighted
+    /// in the card's action row (Docker-sbx style).
+    pub fn highlight(self) -> &'static str {
+        match self {
+            Self::Start => "S",
+            Self::Stop => "S",
+            Self::Restart => "R",
+            Self::Shell => "x",
+            Self::Destroy => "Del",
+        }
+    }
+}
+
+/// Which half of the `s` start/stop toggle (Docker-sbx parity) applies to a
+/// sandbox in `state`: startable states get [`CardAction::Start`],
+/// stoppable ones get [`CardAction::Stop`], `None` when neither applies.
+pub fn toggle_action(state: &SandboxState) -> Option<CardAction> {
+    use CardAction as A;
+    use SandboxState as S;
+    match state {
+        S::Stopped | S::Created | S::Crashed | S::Exited => Some(A::Start),
+        S::Running | S::Paused | S::Stalled => Some(A::Stop),
+        S::Unknown(_) => None,
+    }
+}
+
+/// The actions currently available for a sandbox in `state`, in display
+/// order. Destroy is always available (the remove flow stops first);
+/// everything else is gated by state:
+///
+/// | state            | Start | Stop | Restart | Shell | Destroy |
+/// |------------------|-------|------|---------|-------|---------|
+/// | Running          |   –   |  ✓   |    ✓    |   ✓   |    ✓    |
+/// | Stopped/Created/ |   ✓   |  –   |    –    |   –   |    ✓    |
+/// | Crashed/Exited   |       |      |         |       |         |
+/// | Paused           |   –   |  ✓   |    –    |   –   |    ✓    |
+/// | Stalled          |   –   |  ✓   |    ✓    |   –   |    ✓    |
+/// | Unknown          |   –   |  –   |    –    |   –   |    ✓    |
+pub fn available_actions(state: &SandboxState) -> Vec<CardAction> {
+    use CardAction as A;
+    use SandboxState as S;
+    let mut actions = match state {
+        S::Running => vec![A::Stop, A::Restart, A::Shell],
+        S::Stopped | S::Created | S::Crashed | S::Exited => vec![A::Start],
+        S::Paused => vec![A::Stop],
+        S::Stalled => vec![A::Stop, A::Restart],
+        S::Unknown(_) => Vec::new(),
+    };
+    actions.push(A::Destroy);
+    actions
 }
 
 /// Create a new sandbox. Returns the sandbox name.
@@ -217,6 +309,148 @@ mod tests {
         let calls = b.calls().await;
         assert_eq!(calls.len(), 1);
         assert!(matches!(&calls[0], Call::Create(s) if s.name == Some("my-sbx".into())));
+    }
+
+    // ---- available_actions ----
+
+    #[test]
+    fn running_sandbox_offers_stop_restart_shell_destroy() {
+        let actions = available_actions(&SandboxState::Running);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+        assert_eq!(labels, vec!["Stop", "Restart", "Exec", "Delete"]);
+    }
+
+    #[test]
+    fn stopped_sandbox_offers_start_destroy_only() {
+        let actions = available_actions(&SandboxState::Stopped);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+        assert_eq!(labels, vec!["Start", "Delete"]);
+    }
+
+    #[test]
+    fn startable_states_all_offer_start_destroy_only() {
+        for state in [
+            SandboxState::Created,
+            SandboxState::Crashed,
+            SandboxState::Exited,
+        ] {
+            let actions = available_actions(&state);
+            let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+            assert_eq!(labels, vec!["Start", "Delete"], "state: {state}");
+        }
+    }
+
+    #[test]
+    fn paused_sandbox_offers_stop_destroy_only() {
+        let actions = available_actions(&SandboxState::Paused);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+        assert_eq!(labels, vec!["Stop", "Delete"]);
+    }
+
+    #[test]
+    fn stalled_sandbox_offers_stop_restart_destroy() {
+        let actions = available_actions(&SandboxState::Stalled);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+        assert_eq!(labels, vec!["Stop", "Restart", "Delete"]);
+    }
+
+    #[test]
+    fn unknown_state_offers_destroy_only() {
+        let actions = available_actions(&SandboxState::Unknown("weird".into()));
+        let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+        assert_eq!(labels, vec!["Delete"]);
+    }
+
+    #[test]
+    fn card_action_keys_and_labels() {
+        // Docker-sbx parity: the highlighted letter inside the word IS the key.
+        assert_eq!(CardAction::Start.key_hint(), "s");
+        assert_eq!(CardAction::Start.label(), "Start");
+        assert_eq!(CardAction::Stop.key_hint(), "s");
+        assert_eq!(CardAction::Stop.label(), "Stop");
+        assert_eq!(CardAction::Restart.key_hint(), "r");
+        assert_eq!(CardAction::Restart.label(), "Restart");
+        assert_eq!(CardAction::Shell.key_hint(), "x");
+        assert_eq!(CardAction::Shell.label(), "Exec");
+        assert_eq!(CardAction::Destroy.key_hint(), "Del");
+        assert_eq!(CardAction::Destroy.label(), "Delete");
+    }
+
+    #[test]
+    fn card_action_highlight_is_the_key_inside_the_label() {
+        assert_eq!(CardAction::Start.highlight(), "S");
+        assert_eq!(CardAction::Stop.highlight(), "S");
+        assert_eq!(CardAction::Restart.highlight(), "R");
+        assert_eq!(CardAction::Shell.highlight(), "x");
+        assert_eq!(CardAction::Destroy.highlight(), "Del");
+        // The highlighted part must actually appear in the label.
+        for action in [
+            CardAction::Start,
+            CardAction::Stop,
+            CardAction::Restart,
+            CardAction::Shell,
+            CardAction::Destroy,
+        ] {
+            assert!(
+                action.label().contains(action.highlight()),
+                "{} does not contain {}",
+                action.label(),
+                action.highlight()
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_action_maps_s_by_state() {
+        // `s` toggles Start/Stop (Docker sbx): startable → Start,
+        // stoppable → Stop, neither → None.
+        assert_eq!(
+            toggle_action(&SandboxState::Stopped),
+            Some(CardAction::Start)
+        );
+        assert_eq!(
+            toggle_action(&SandboxState::Created),
+            Some(CardAction::Start)
+        );
+        assert_eq!(
+            toggle_action(&SandboxState::Crashed),
+            Some(CardAction::Start)
+        );
+        assert_eq!(
+            toggle_action(&SandboxState::Exited),
+            Some(CardAction::Start)
+        );
+        assert_eq!(
+            toggle_action(&SandboxState::Running),
+            Some(CardAction::Stop)
+        );
+        assert_eq!(toggle_action(&SandboxState::Paused), Some(CardAction::Stop));
+        assert_eq!(
+            toggle_action(&SandboxState::Stalled),
+            Some(CardAction::Stop)
+        );
+        assert_eq!(toggle_action(&SandboxState::Unknown("weird".into())), None);
+    }
+
+    #[test]
+    fn start_and_stop_never_cooccur() {
+        // Invariant the `s` toggle relies on: no state offers both.
+        for state in [
+            SandboxState::Running,
+            SandboxState::Stopped,
+            SandboxState::Paused,
+            SandboxState::Exited,
+            SandboxState::Created,
+            SandboxState::Crashed,
+            SandboxState::Stalled,
+            SandboxState::Unknown("weird".into()),
+        ] {
+            let actions = available_actions(&state);
+            assert!(
+                !(actions.contains(&CardAction::Start) && actions.contains(&CardAction::Stop)),
+                "state {state} offers both Start and Stop"
+            );
+        }
     }
 
     // ---- remove_sandbox ----

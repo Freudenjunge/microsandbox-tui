@@ -471,3 +471,53 @@ machinery is implied; the checkbox only manipulates `CreateSpec.volumes` and
       sandboxes); the `/home/agent/workspace` fallback const is removed.
       `toggle_mount_cwd` clears the auto-filled workdir on un-check and
       restores it on re-check; tests updated (166 green).
+
+---
+
+# Phase 2.11 — state-gated card actions (Docker-sbx parity)
+
+Goal: the selected sandbox card shows its currently available actions in a
+compact action row, like Docker sbx — Start only when stopped, Stop/Exec
+only when running, Restart only running/stalled, Delete always. Keys follow
+sbx: `s` toggles start/stop by state, `x` = E**x**ec, `r` = Restart,
+`Del` = **Del**ete. Unavailable actions are not shown; pressing their key
+sets an explanatory status line instead of opening a dialog.
+
+## Task List
+
+### 1. Action model (`src/actions.rs`)
+- [x] `CardAction` enum (Start/Stop/Restart/Shell/Destroy) with
+      `key_hint()` (sbx keys: s/s/r/x/Del), `label()` (Start/Stop/Restart/
+      Exec/Delete), `highlight()` (the key substring inside the label).
+- [x] `available_actions(&SandboxState)` — the availability matrix; Destroy
+      always available; Start/Stop never co-occur (invariant tested).
+- [x] `toggle_action(&SandboxState)` — which half of the `s` toggle applies
+      (startable → Start, stoppable → Stop, else None).
+- [x] Unit tests: per-state availability (7), keys/labels/highlight (2),
+      toggle mapping + co-occurrence invariant (2).
+
+### 2. Key gating (`src/app.rs`)
+- [x] `s`/`S` = start/stop toggle via `toggle_action` (confirm dialog as
+      before); `x` = exec/shell (running only); `r` = restart
+      (running/stalled); `Del` = remove (always).
+- [x] `confirm_gated` + `gated_state` helpers: unavailable keys set a
+      status message (`'name' is <state> — cannot <verb>`), no dialog.
+- [x] Unit tests: toggle stop states, exec gating, restart gating, destroy
+      always, empty-list no-ops (6 updated/new).
+
+### 3. Card action row (`src/ui/dashboard.rs`)
+- [x] Selected card is one row taller (10 rows vs 9) and ends in the action
+      row: available action words with the key substring highlighted
+      (bold + role color), e.g. `Stop  Restart  Exec  Delete`.
+- [x] `rail_card_heights` / `rail_visible_slice` variable-height rail
+      layout (also fixes the pre-existing Uptime-row clipping at height 8).
+- [x] Footer slimmed to global keys only (`[c] Create [Tab] Next tab [?]
+      Help [q] Quit`) — state-dependent hints moved onto the card.
+- [x] Unit tests: heights, rail slice, action-line content/width fits rail
+      (42 cols), offscreen render shows the row (7 new).
+
+### 4. Docs + gates
+- [x] `docs/DESIGN.md`: keybindings table + dashboard section updated
+      (sbx keys, action-row behavior).
+- [x] Help overlay updated to the new key map.
+- [x] All four gates green (187 unit tests).
