@@ -170,6 +170,30 @@ pub struct PendingOp {
 const PREVIEW_MAX_LINES: usize = 6;
 
 /// The central application state.
+/// Whether the main loop should (re)fetch ports for all sandboxes this
+/// cycle.
+///
+/// Triggers:
+/// - the ports cache is dirty (PORTS tab entry via `open_ports`, the `r`
+///   refresh key, or a publish/unpublish recreate via `OpDone`), or
+/// - the cache was never primed for this session (the initial fetch lets
+///   cards show ports before the PORTS tab is ever opened).
+///
+/// Dirty is one-shot: the loop clears it when the fetch is spawned, so a
+/// fetch happens exactly once per trigger. Replaces the pre-2.9
+/// `View::Ports` trigger, which could never fire after the detail-tab
+/// rework (smoke finding 2026-09-24).
+pub fn ports_fetch_needed(app: &App) -> bool {
+    if app.sandboxes.is_empty() {
+        return false;
+    }
+    app.ports_cache_dirty || !app.ports_primed
+}
+
+/// How many 250 ms UI ticks a transient status/error message stays
+/// visible before auto-clearing (20 ticks ≈ 5 s).
+pub const STATUS_TTL_TICKS: u32 = 20;
+
 #[derive(Debug)]
 pub struct App {
     /// Currently active screen.
@@ -186,6 +210,10 @@ pub struct App {
     pub quit: bool,
     /// Transient status message (spinner text, last action result).
     pub status: Option<String>,
+    /// Ticks since the status message was (re)set; expires it.
+    status_age_ticks: u32,
+    /// Ticks since the error message was (re)set; expires it.
+    error_age_ticks: u32,
     /// Operation awaiting confirmation (`y`/`n`), if any.
     pub confirm: Option<Op>,
     /// Confirmed op queued for the main loop; consumed via [`App::take_op`].
@@ -215,6 +243,9 @@ pub struct App {
     /// True when the port cache should be refetched (view entered, `r`
     /// pressed, or a publish/unpublish recreate finished).
     pub ports_cache_dirty: bool,
+    /// True once the ports cache has been primed for the current sandbox
+    /// list (cards show ports before the PORTS tab is ever opened).
+    pub ports_primed: bool,
     /// True while a long-running `msb` operation is in flight.
     pub busy: bool,
     /// True until the FIRST sandbox-list refresh arrives (drives the
@@ -233,6 +264,8 @@ impl App {
             error: None,
             quit: false,
             status: None,
+            status_age_ticks: 0,
+            error_age_ticks: 0,
             confirm: None,
             queued_op: None,
             queued_create: None,
@@ -246,6 +279,7 @@ impl App {
             images: Vec::new(),
             ports: std::collections::HashMap::new(),
             ports_cache_dirty: false,
+            ports_primed: false,
             busy: false,
             initial_list_loaded: false,
         }
@@ -256,8 +290,11 @@ impl App {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => {
-                if self.busy {
-                    Action::Render // spinner animation cadence
+                // Spinner animation while busy; otherwise age the transient
+                // status/error messages. Either way, check whether a
+                // re-render is warranted.
+                if self.busy || self.expire_transient_messages() {
+                    Action::Render
                 } else {
                     Action::Continue
                 }
@@ -273,11 +310,13 @@ impl App {
             }
             AppEvent::Error(msg) => {
                 self.error = Some(msg);
+                self.error_age_ticks = 0;
                 self.busy = false;
                 Action::Render
             }
             AppEvent::OpDone(msg) => {
                 self.status = Some(msg);
+                self.status_age_ticks = 0;
                 self.busy = false;
                 // Publish/unpublish/restart recreate the sandbox: its port
                 // bindings changed, so the ports cache must be refetched.
@@ -379,11 +418,11 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 self.queued_op = Some(op);
                 self.busy = true;
-                self.status = Some("Working…".into());
+                self.set_status("Working…");
                 Action::Render
             }
             _ => {
-                self.status = Some("Cancelled".into());
+                self.set_status("Cancelled");
                 Action::Render
             }
         }
@@ -507,7 +546,7 @@ impl App {
                     self.create_form = None;
                     self.view = View::Dashboard;
                     self.busy = true;
-                    self.status = Some(format!("Creating {label}…"));
+                    self.set_status(format!("Creating {label}…"));
                     self.queued_create = Some(spec);
                     Action::Render
                 }
@@ -734,7 +773,7 @@ impl App {
             CardAction::Shell => "shell",
             CardAction::Destroy => "destroy", // unreachable: always available
         };
-        self.status = Some(format!(
+        self.set_status(format!(
             "'{}' is {} — cannot {}",
             sbx.name, sbx.status, verb
         ));
@@ -786,6 +825,36 @@ impl App {
         if overflow > 0 {
             self.preview_lines.drain(0..overflow);
         }
+    }
+
+    /// Set the transient status message, restarting its TTL clock.
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = Some(msg.into());
+        self.status_age_ticks = 0;
+    }
+
+    /// Age the transient status/error messages on each tick; returns whether
+    /// one of them expired (→ re-render). While an op is in flight
+    /// ([`App::busy`]), the in-progress status is kept alive (spinner).
+    fn expire_transient_messages(&mut self) -> bool {
+        let mut expired = false;
+        if !self.busy {
+            if self.status.is_some() {
+                self.status_age_ticks += 1;
+                if self.status_age_ticks >= STATUS_TTL_TICKS {
+                    self.status = None;
+                    expired = true;
+                }
+            }
+            if self.error.is_some() {
+                self.error_age_ticks += 1;
+                if self.error_age_ticks >= STATUS_TTL_TICKS {
+                    self.error = None;
+                    expired = true;
+                }
+            }
+        }
+        expired
     }
 
     /// Replace the sandbox list, keeping the selected sandbox highlighted.
@@ -1224,6 +1293,69 @@ mod tests {
     }
 
     #[test]
+    fn opdone_marks_ports_cache_dirty_for_refetch() {
+        // Publish/unpublish recreate sandboxes → ports must be refetched.
+        let mut app = App::new();
+        app.ports_cache_dirty = false;
+        app.busy = true;
+        app.handle_event(AppEvent::OpDone("published 8888:80 on Test".into()));
+        assert!(
+            app.ports_cache_dirty,
+            "OpDone must mark the ports cache dirty"
+        );
+    }
+
+    // ---- ports fetch policy (pure; smoke finding 2026-09-24) ----
+
+    #[test]
+    fn ports_fetch_triggers_on_ports_tab_and_initial_list() {
+        // Entering the PORTS detail tab marks the cache dirty → fetch.
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("a")]);
+        app.detail = DetailTab::Ports;
+        app.ports_state = None;
+        app.ports_primed = true;
+        app.ports_cache_dirty = true; // set by open_ports()
+        assert!(
+            ports_fetch_needed(&app),
+            "ports tab entry must trigger a fetch"
+        );
+
+        // The first list load primes the cache too (cards show ports even
+        // before the tab is ever opened) — only once.
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("a")]);
+        app.detail = DetailTab::Overview;
+        app.ports_cache_dirty = false;
+        app.ports_primed = false;
+        assert!(
+            ports_fetch_needed(&app),
+            "initial list load must prime the ports cache"
+        );
+        // Once primed and clean: no more fetches.
+        app.ports_primed = true;
+        assert!(
+            !ports_fetch_needed(&app),
+            "primed cache must not refetch on every loop"
+        );
+    }
+
+    #[test]
+    fn ports_fetch_skips_empty_list_and_already_primed() {
+        // Nothing to fetch with no sandboxes.
+        let app = App::new();
+        assert!(!ports_fetch_needed(&app));
+
+        // Already primed and clean: no fetch.
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("a")]);
+        app.detail = DetailTab::Overview;
+        app.ports_cache_dirty = false;
+        app.ports_primed = true;
+        assert!(!ports_fetch_needed(&app));
+    }
+
+    #[test]
     fn opdone_and_error_clear_busy() {
         let mut app = App::new();
         app.busy = true;
@@ -1235,6 +1367,77 @@ mod tests {
         app.handle_event(AppEvent::Error("boom".into()));
         assert!(!app.busy);
         assert_eq!(app.error.as_deref(), Some("boom"));
+    }
+
+    // ---- transient status/error auto-clear (smoke finding 2026-09-24) ----
+
+    #[test]
+    fn status_expires_after_timeout() {
+        let mut app = App::new();
+        app.handle_event(AppEvent::OpDone("published 8888:80 on Test".into()));
+        assert!(app.status.is_some());
+
+        // Ticks before the timeout keep the message.
+        for _ in 0..(STATUS_TTL_TICKS - 1) {
+            app.handle_event(AppEvent::Tick);
+        }
+        assert!(
+            app.status.is_some(),
+            "status must survive until the TTL expires"
+        );
+
+        // The TTL-th tick clears it (250ms cadence → ~5s).
+        app.handle_event(AppEvent::Tick);
+        assert!(app.status.is_none(), "status must expire after the TTL");
+    }
+
+    #[test]
+    fn error_expires_after_timeout() {
+        let mut app = App::new();
+        app.handle_event(AppEvent::Error("something failed".into()));
+        assert!(app.error.is_some());
+        for _ in 0..STATUS_TTL_TICKS {
+            app.handle_event(AppEvent::Tick);
+        }
+        assert!(app.error.is_none(), "error must expire after the TTL");
+    }
+
+    #[test]
+    fn busy_spinner_keeps_working_status_alive() {
+        let mut app = App::new();
+        app.busy = true;
+        app.status = Some("Working…".into());
+        // While an op is in flight, ticks animate the spinner and must NOT
+        // expire the in-progress status.
+        for _ in 0..(STATUS_TTL_TICKS + 5) {
+            app.handle_event(AppEvent::Tick);
+        }
+        assert_eq!(app.status.as_deref(), Some("Working…"));
+        // OpDone replaces it and restarts the TTL clock.
+        app.busy = false;
+        app.handle_event(AppEvent::OpDone("done".into()));
+        assert_eq!(app.status.as_deref(), Some("done"));
+        for _ in 0..STATUS_TTL_TICKS {
+            app.handle_event(AppEvent::Tick);
+        }
+        assert!(app.status.is_none());
+    }
+
+    #[test]
+    fn new_status_restarts_the_ttl() {
+        let mut app = App::new();
+        app.handle_event(AppEvent::OpDone("first".into()));
+        for _ in 0..(STATUS_TTL_TICKS - 2) {
+            app.handle_event(AppEvent::Tick);
+        }
+        // A new message arrives before the old one expires → full new TTL.
+        app.handle_event(AppEvent::OpDone("second".into()));
+        for _ in 0..(STATUS_TTL_TICKS - 1) {
+            app.handle_event(AppEvent::Tick);
+        }
+        assert_eq!(app.status.as_deref(), Some("second"));
+        app.handle_event(AppEvent::Tick);
+        assert!(app.status.is_none());
     }
 
     #[test]

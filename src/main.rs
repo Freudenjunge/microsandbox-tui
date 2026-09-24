@@ -38,7 +38,7 @@ mod runtime;
 mod shell_window;
 mod ui;
 
-use app::{App, Op, View};
+use app::{App, Op, View, ports_fetch_needed};
 use backend::MsbBackend;
 use backend::sdk::SdkBackend;
 use event::{Action, AppEvent, poll_events};
@@ -163,8 +163,6 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Abort handle + identity of the running log-tail task (one at a time).
     let mut log_task: Option<(String, tokio::sync::oneshot::Sender<()>)> = None;
-    // Name of the sandbox whose ports we last fetched (avoids refetching).
-    let mut ports_fetched_for: Option<bool> = None;
     // Whether the image list was fetched for the create form this session.
     let mut images_fetched = false;
 
@@ -190,7 +188,7 @@ async fn run(cli: Cli) -> Result<()> {
             let Some(sbx) = app.selected_sandbox().map(|s| s.name.clone()) else {
                 continue;
             };
-            app.status = Some(match crate::shell_window::spawn_shell_window(&sbx) {
+            app.set_status(match crate::shell_window::spawn_shell_window(&sbx) {
                 Ok(()) => format!("shell window opened for {sbx}"),
                 Err(e) => format!("shell window failed: {e}"),
             });
@@ -272,12 +270,14 @@ async fn run(cli: Cli) -> Result<()> {
             });
         }
 
-        // Port cache refresh: on entering the ports view, when marked dirty
-        // (`r`), or after a recreate op — fetch ports for ALL sandboxes so
-        // the global matrix reflects each sandbox's own bindings.
-        if app.view == View::Ports && (app.ports_cache_dirty || ports_fetched_for != Some(true)) {
+        // Port cache refresh: entering the PORTS tab, `r`, a recreate op,
+        // or the initial list load (cards show ports immediately) fetch
+        // ports for ALL sandboxes so the global matrix reflects each
+        // sandbox's own bindings. `ports_fetch_needed` is the single,
+        // unit-tested trigger policy.
+        if ports_fetch_needed(&app) {
             app.ports_cache_dirty = false;
-            ports_fetched_for = Some(true);
+            app.ports_primed = true;
             let tx = event_tx.clone();
             let backend = backend.clone();
             let names: Vec<String> = app.sandboxes.iter().map(|s| s.name.clone()).collect();

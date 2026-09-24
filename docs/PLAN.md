@@ -534,3 +534,19 @@ sets an explanatory status line instead of opening a dialog.
       regression-tested (189 green). Note: the port was actually
       published — the VM was live with the listener bound; only the
       status message was wrong.
+
+### 6. Smoke-test fix: status never cleared; ports never shown (2026-09-24)
+- [x] `published 8888:80 on Test` stayed on the status line forever:
+      `OpDone`/`Error` had no expiry. Fix: status/error messages are
+      transient — tick-aged with `STATUS_TTL_TICKS` (20 ticks ≈ 5 s),
+      `set_status()` restarts the TTL; the busy spinner is exempt.
+- [x] Ports were never displayed (even after TUI restart): the fetch
+      trigger checked `app.view == View::Ports` — dead pre-2.9 state
+      (ports are a detail TAB since 2.9), so the trigger could never
+      fire. Fix: unit-tested `ports_fetch_needed()` policy — fetch when
+      the cache is dirty (ports-tab entry, `r`, publish/unpublish
+      recreate) or never primed (initial fetch right after the first
+      list, so cards show ports immediately).
+- [x] Live smoke test `publish_live_smoke` (real SDK, `#[ignore]`d):
+      create → Running → publish recreate → still Running, port in the
+      persisted config.

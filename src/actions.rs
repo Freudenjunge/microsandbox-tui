@@ -728,4 +728,75 @@ mod tests {
                 .any(|c| matches!(c, Call::Restart(n) if n == "tui-fixture"))
         );
     }
+
+    // ---- live smoke test (real SDK; run explicitly) ----
+
+    /// End-to-end publish flow against the REAL local SDK + runtime.
+    /// Not part of CI: needs an installed `msb` runtime and mutates a
+    /// sandbox named `tui-smoke`. Run with:
+    /// `cargo test --bin microsandbox-tui publish_live_smoke -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "mutates a real sandbox; manual smoke only"]
+    async fn publish_live_smoke() {
+        use crate::backend::sdk::SdkBackend;
+        let backend = SdkBackend::new().expect("local SDK init");
+        let b = &backend as &dyn crate::backend::MsbBackend;
+
+        // Clean slate: remove any leftover smoke sandbox (best-effort).
+        let _ = crate::actions::remove_sandbox(b, "tui-smoke").await;
+
+        // Create the victim.
+        let name = crate::actions::create_sandbox(
+            b,
+            &crate::backend::CreateSpec {
+                image: "alpine".into(),
+                name: Some("tui-smoke".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create");
+        assert_eq!(name, "tui-smoke");
+
+        // create_detached boots the VM: status must already be Running.
+        let row = b.status(&name).await.expect("status");
+        assert_eq!(row.status, SandboxState::Running, "create boots the VM");
+
+        // Publish via the recreate flow (the regression path).
+        let port = crate::models::PublishedPort {
+            host_bind: "127.0.0.1".into(),
+            host_port: 19999,
+            guest_port: 80,
+            protocol: "tcp".into(),
+        };
+        let result = crate::actions::publish_port(b, &name, port)
+            .await
+            .expect("publish_port");
+        assert_eq!(result, PublishResult::Recreated);
+
+        // No start after create: the sandbox must STILL be Running.
+        let row = b.status(&name).await.expect("status after publish");
+        assert_eq!(
+            row.status,
+            SandboxState::Running,
+            "recreated sandbox must be running (create boots it)"
+        );
+
+        // The port must be in the persisted config.
+        let insp = b.inspect(&name).await.expect("inspect");
+        assert!(
+            insp.active_config
+                .network
+                .ports
+                .iter()
+                .any(|p| p.host_port == 19999 && p.guest_port == 80),
+            "published port missing: {:?}",
+            insp.active_config.network.ports
+        );
+
+        // Cleanup.
+        crate::actions::remove_sandbox(b, &name)
+            .await
+            .expect("remove");
+    }
 }
