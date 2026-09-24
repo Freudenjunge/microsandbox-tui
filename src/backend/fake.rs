@@ -408,6 +408,11 @@ impl MsbBackend for FakeBackend {
             .sandboxes
             .get_mut(name)
             .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
+        // SDK invariant (0.7.2): starting a Running sandbox fails with
+        // SandboxStillRunning ("cannot start sandbox: already running").
+        if sbx.state.is_running() {
+            return Err(anyhow!("cannot start sandbox '{name}': already running"));
+        }
         sbx.state = SandboxState::Running;
         Ok(())
     }

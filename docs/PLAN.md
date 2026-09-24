@@ -521,3 +521,16 @@ sets an explanatory status line instead of opening a dialog.
       (sbx keys, action-row behavior).
 - [x] Help overlay updated to the new key map.
 - [x] All four gates green (187 unit tests).
+
+### 5. Smoke-test fix: publish flow failed after recreate (2026-09-24)
+- [x] `✗ Publish 127.0.0.1:8888→80/tcp on 'Test' — failed: start Test
+      after recreate: start Test: sandbox still running` — root cause:
+      0.7.2 `create_detached` boots the VM and waits for "sandbox
+      ready"; the recreated sandbox is **Running** when create returns.
+      The explicit `start` afterwards was redundant and tripped
+      `SandboxStillRunning`. Fix: `recreate_with_ports` no longer starts
+      after create. FakeBackend now models both SDK invariants (start on
+      Running errors; create leaves Running) so the sequence is
+      regression-tested (189 green). Note: the port was actually
+      published — the VM was live with the listener bound; only the
+      status message was wrong.

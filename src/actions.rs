@@ -272,10 +272,9 @@ async fn recreate_with_ports(
         .await
         .with_context(|| format!("recreate {name}"))?;
 
-    backend
-        .start(name)
-        .await
-        .with_context(|| format!("start {name} after recreate"))?;
+    // No explicit start here: 0.7.2 `create_detached` boots the VM and waits
+    // for "sandbox ready" — the recreated sandbox is already Running. An
+    // extra `start` would fail with SandboxStillRunning.
     Ok(())
 }
 
@@ -495,6 +494,40 @@ mod tests {
     // ---- publish_port: full recreate flow ----
 
     #[tokio::test]
+    async fn fake_backend_matches_sdk_start_invariant() {
+        // SDK invariant (0.7.2): `start` on a Running sandbox errors with
+        // SandboxStillRunning ("cannot start sandbox: already running") —
+        // the FakeBackend must model that so the recreate flow's tests can
+        // catch a redundant start.
+        let b = FakeBackend::with_fixture_sandbox();
+        let err = b.start("tui-fixture").await;
+        assert!(err.is_err(), "start on a running sandbox must fail");
+
+        let b = FakeBackend::with_fixture_sandbox();
+        b.stop("tui-fixture").await.unwrap();
+        b.start("tui-fixture").await.unwrap();
+        let insp = b.inspect("tui-fixture").await.unwrap();
+        assert_eq!(insp.status, SandboxState::Running);
+    }
+
+    #[tokio::test]
+    async fn fake_backend_create_leaves_sandbox_running() {
+        // SDK invariant (0.7.2): create_detached boots the VM fully and
+        // leaves the sandbox Running ("sandbox ready" is awaited inside
+        // create); the FakeBackend must model that.
+        let b = FakeBackend::new();
+        b.create(&CreateSpec {
+            image: "alpine".into(),
+            name: Some("fresh".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let insp = b.inspect("fresh").await.unwrap();
+        assert_eq!(insp.status, SandboxState::Running);
+    }
+
+    #[tokio::test]
     async fn publish_port_recreate_sequence() {
         let b = FakeBackend::with_fixture_sandbox();
         // Fixture has ports 8080→80/tcp and 9090→90/udp. Add 7070→70/tcp.
@@ -503,8 +536,11 @@ mod tests {
         assert_eq!(result, PublishResult::Recreated);
 
         let calls = b.calls().await;
-        // Expected: inspect, stop, remove, create, start (0.7.2 has no
+        // Expected: inspect, stop, remove, create (0.7.2 has no
         // `create --replace`; recreate = rm then create with the same name).
+        // NO start afterwards: create_detached already boots the VM — an
+        // extra start would fail with SandboxStillRunning (regression:
+        // "start Test after recreate: sandbox still running").
         let seq: Vec<&Call> = calls
             .iter()
             .filter(|c| {
@@ -518,12 +554,22 @@ mod tests {
                 )
             })
             .collect();
-        assert!(seq.len() >= 5, "expected at least 5 calls, got {seq:?}");
+        assert!(
+            seq.len() >= 4,
+            "expected inspect/stop/remove/create, got {seq:?}"
+        );
         assert!(matches!(seq[0], Call::Inspect(n) if n == "tui-fixture"));
         assert!(matches!(seq[1], Call::Stop(n) if n == "tui-fixture"));
         assert!(matches!(seq[2], Call::Remove(n) if n == "tui-fixture"));
         assert!(matches!(seq[3], Call::Create(_)));
-        assert!(matches!(seq[4], Call::Start(n) if n == "tui-fixture"));
+        assert!(
+            !seq.iter().any(|c| matches!(c, Call::Start(_))),
+            "recreate must not start after create (create boots the VM): {seq:?}"
+        );
+
+        // The recreated sandbox must be Running — create already started it.
+        let insp = b.inspect("tui-fixture").await.unwrap();
+        assert_eq!(insp.status, SandboxState::Running);
     }
 
     #[tokio::test]
