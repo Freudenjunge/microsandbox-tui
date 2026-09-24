@@ -576,3 +576,16 @@ sets an explanatory status line instead of opening a dialog.
 - [x] Live smoke test extended: canary file written into the rootfs
       must SURVIVE the publish (verified: `data-preserved`); no snapshot
       litter after the flow.
+
+### 8. Confirm dialog wraps instead of clipping (2026-09-24)
+- [x] The longer publish/unpublish confirm messages were clipped at the
+      dialog's fixed 60-col width (message tail invisible). Fix:
+      `confirm_size()` + `textwrap()` pure helpers — the dialog now
+      word-wraps the message into a `CONFIRM_MAX_WIDTH` (64) box, grows
+      in height with the wrapped lines, and clamps to small terminals.
+      The offscreen-render regression test fails against the old
+      unwrapped fixed-size behavior (verified by mutation).
+- Note for the next create/quick-create rework (maintainer): snapshot
+  restores surface auto-named images in the image list; the picker has
+  no scrolling yet. Both are part of the planned template/create-form
+  pass.
