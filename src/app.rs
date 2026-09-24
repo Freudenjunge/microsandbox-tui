@@ -134,13 +134,13 @@ impl Op {
             Op::Exec { name, cmd } => format!("Run in '{name}': {}", cmd.join(" ")),
             Op::PublishPort { name, port } => {
                 format!(
-                    "Publish {}:{}→{}/{} on '{name}'? (recreates the sandbox; rootfs resets)",
+                    "Publish {}:{}→{}/{} on '{name}'? (snapshots the disk, recreates from it — your data is preserved, processes restart)",
                     port.host_bind, port.host_port, port.guest_port, port.protocol
                 )
             }
             Op::UnpublishPort { name, port } => {
                 format!(
-                    "Unpublish {}:{} from '{name}'? (recreates the sandbox; rootfs resets)",
+                    "Unpublish {}:{} from '{name}'? (snapshots the disk, recreates from it — your data is preserved, processes restart)",
                     port.host_port, port.guest_port
                 )
             }
@@ -639,11 +639,6 @@ impl App {
             }
             KeyCode::Char('+') | KeyCode::Char('p') => {
                 state.publish_form = Some(crate::ui::ports::PublishForm::new());
-                Action::Render
-            }
-            // Refresh the port cache from inspect.
-            KeyCode::Char('r') => {
-                self.ports_cache_dirty = true;
                 Action::Render
             }
             KeyCode::Up => {

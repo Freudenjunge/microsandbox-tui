@@ -268,17 +268,17 @@ pub fn render_ports_body(
             ),
             Span::raw("  "),
             Span::styled(
-                "[+] publish  [-] unpublish  [r] refresh",
+                "[↑↓] select binding  [+] publish  [-] unpublish",
                 Style::default().fg(t.muted),
             ),
         ])),
         chunks[0],
     );
-    render_matrix(frame, sandboxes, port_cache, chunks[1]);
+    render_matrix(frame, sandboxes, port_cache, state.selected, chunks[1]);
     // Publish form replaces the inspector area via a bottom overlay strip.
     if state.publish_form.is_some() {
         let split = Layout::vertical([Constraint::Min(3), Constraint::Length(12)]).split(chunks[1]);
-        render_matrix(frame, sandboxes, port_cache, split[0]);
+        render_matrix(frame, sandboxes, port_cache, state.selected, split[0]);
         render_publish_form(frame, state, sandboxes, port_cache, split[1]);
     }
 }
@@ -303,11 +303,12 @@ pub fn selected_binding<'a>(
     Some((row.sandbox, row.port))
 }
 
-/// Render the host⇄guest matrix table.
+/// Render the host⇄guest matrix table, highlighting row `selected`.
 fn render_matrix(
     frame: &mut Frame,
     sandboxes: &[SandboxSummary],
     port_cache: &std::collections::HashMap<String, Vec<PublishedPort>>,
+    selected: usize,
     area: Rect,
 ) {
     let t = &THEME;
@@ -335,8 +336,7 @@ fn render_matrix(
         .style(Style::default().fg(t.muted).add_modifier(Modifier::BOLD))
         .bottom_margin(0);
 
-    let selected_idx = state_selected_snapshot();
-    let _ = selected_idx; // selection is applied by the caller-provided state below
+    let selected_idx = selected.min(rows.len().saturating_sub(1));
 
     let rows_rendered = rows.iter().enumerate().map(|(i, row)| {
         let state_span = if row.running {
@@ -377,12 +377,6 @@ fn render_matrix(
         .header(header)
         .row_highlight_style(Style::default().bg(t.selection).fg(t.fg));
     frame.render_widget(table, inner);
-}
-
-// Snapshot helper so `render_matrix` can stay a pure function of its inputs
-// in tests; the real call passes `state.selected`.
-fn state_selected_snapshot() -> usize {
-    0
 }
 
 /// Render the inline publish-port form (replaces the inspector while open).
@@ -494,7 +488,7 @@ fn render_publish_form(
         ]));
     }
     lines.push(Line::from(Span::styled(
-        " ⚠ Recreates the sandbox (rootfs resets)",
+        " ⚠ Restarts the sandbox from a disk snapshot — your data is preserved",
         Style::default().fg(t.warn),
     )));
     frame.render_widget(Paragraph::new(lines), inner);
@@ -577,7 +571,11 @@ fn render_inspector(
                 Style::default().fg(t.muted),
             )),
             Line::from(Span::styled(
-                "recreates the sandbox (rootfs resets).",
+                "snapshots the disk and restores from it —",
+                Style::default().fg(t.muted),
+            )),
+            Line::from(Span::styled(
+                "your data is preserved, processes restart.",
                 Style::default().fg(t.muted),
             )),
         ]),

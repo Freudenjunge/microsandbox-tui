@@ -707,6 +707,109 @@ impl MsbBackend for SdkBackend {
             .with_context(|| format!("remove {name}"))
     }
 
+    async fn snapshot_disk(&self, name: &str) -> Result<String> {
+        // The snapshot installs into the SOURCE's group (defaults to the
+        // sandbox name); a deterministic member name keeps repeated flows
+        // predictable. Grouped members are immutable — a failed earlier run
+        // may have left the member behind, so remove it explicitly first.
+        // (`.force()` on the builder is rejected for installed groups.)
+        let member = "tui-pre-publish";
+        let qualified = format!("{name}:{member}");
+        let _ = microsandbox::Snapshot::remove(&qualified, false).await;
+        let snap = microsandbox::Snapshot::builder(member)
+            .from_sandbox(name)
+            .create()
+            .await
+            .with_context(|| format!("disk snapshot of {name}"))?;
+        // `Snapshot::reference()` keeps the id/path interpretation the
+        // backend expects on restore — use it verbatim.
+        match snap.reference() {
+            microsandbox::SnapshotReference::Id(id) => Ok(id.clone()),
+            microsandbox::SnapshotReference::Auto(v) | microsandbox::SnapshotReference::Path(v) => {
+                Ok(v.clone())
+            }
+        }
+    }
+
+    async fn restore_with_ports(
+        &self,
+        snapshot_ref: &str,
+        spec: &CreateSpec,
+        ports: Vec<PublishedPort>,
+    ) -> Result<()> {
+        let name = spec
+            .name
+            .clone()
+            .ok_or_else(|| anyhow!("restore: spec must carry the sandbox name"))?;
+        let mut builder =
+            microsandbox::Sandbox::restore(snapshot_ref.to_string()).name(name.clone());
+        // Volumes re-bind the same host sources (the RestoreBuilder only
+        // rebuilds the disk itself).
+        for v in &spec.volumes {
+            if let Some(mount) = parse_volume_string(v) {
+                let ParsedMount { guest, kind } = mount;
+                builder = builder.volume(guest, move |m| match kind {
+                    ParsedMountKind::Bind(host) => m.bind(host),
+                    ParsedMountKind::Named(volume) => m.named(volume),
+                    // Tmpfs mounts have no host source; the captured disk
+                    // snapshot does not carry them, so re-declare the mount
+                    // as an empty owned tmpfs.
+                    ParsedMountKind::Tmpfs => m.owned(),
+                });
+            }
+        }
+        // Ports are cleared by the RestoreBuilder and must be set
+        // explicitly — they are the entire point of the recreate.
+        for p in &ports {
+            let bind: std::net::IpAddr = p
+                .host_bind
+                .parse()
+                .unwrap_or_else(|_| "127.0.0.1".parse().unwrap());
+            if p.protocol == "udp" {
+                builder = builder.port_udp_bind(bind, p.host_port, p.guest_port);
+            } else {
+                builder = builder.port_bind(bind, p.host_port, p.guest_port);
+            }
+        }
+        builder
+            .restore()
+            .await
+            .with_context(|| format!("restore {name} from {snapshot_ref}"))?;
+        Ok(())
+    }
+
+    async fn remove_snapshot(&self, snapshot_ref: &str) -> Result<()> {
+        microsandbox::Snapshot::remove(snapshot_ref, false)
+            .await
+            .with_context(|| format!("remove snapshot {snapshot_ref}"))
+    }
+
+    async fn reapply_config(&self, name: &str, spec: &CreateSpec) -> Result<()> {
+        // The 0.7.2 RestoreBuilder has no env/workdir/label setters, so the
+        // flow re-applies them through the modification API (persisted for
+        // the next start; the restored VM keeps running).
+        let handle = microsandbox::Sandbox::get(name).await?;
+        let mut modify = handle.modify().next_start();
+        for e in &spec.env {
+            if let Some((k, v)) = e.split_once('=') {
+                modify = modify.env(k, v);
+            }
+        }
+        if let Some(wd) = &spec.workdir {
+            modify = modify.workdir(wd);
+        }
+        for l in &spec.labels {
+            if let Some((k, v)) = l.split_once('=') {
+                modify = modify.label(k, v);
+            }
+        }
+        modify
+            .apply()
+            .await
+            .with_context(|| format!("reapply config to {name} after restore"))?;
+        Ok(())
+    }
+
     async fn create(&self, spec: &CreateSpec) -> Result<String> {
         let name = spec
             .name

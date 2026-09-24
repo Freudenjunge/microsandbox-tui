@@ -46,7 +46,26 @@ pub enum Call {
     Remove(String),
     Create(Box<CreateSpec>),
     LogsFollow(String),
-    Exec { name: String, cmd: Vec<String> },
+    Exec {
+        name: String,
+        cmd: Vec<String>,
+    },
+    /// Disk snapshot of a sandbox; the string is the returned reference.
+    SnapshotDisk(String),
+    /// Restore a snapshot into a sandbox with the given spec + ports.
+    Restore {
+        name: String,
+        spec: Box<CreateSpec>,
+        ports: Vec<PublishedPort>,
+    },
+    /// Best-effort snapshot cleanup by reference.
+    RemoveSnapshot(String),
+    /// Reapply config (env/workdir/labels) after a restore, persisted for
+    /// the next start (no restart).
+    Modify {
+        name: String,
+        spec: Box<CreateSpec>,
+    },
 }
 
 /// In-memory backend for unit tests.
@@ -66,6 +85,11 @@ struct FakeBackendInner {
     calls: Vec<Call>,
     /// Names returned by `create` when `spec.name` is `None`.
     auto_name_counter: u64,
+    /// Snapshots by reference: the captured sandbox state (a clone taken at
+    /// snapshot time — like a real snapshot, it survives the source's removal).
+    snapshots: HashMap<String, FakeSandbox>,
+    /// When set, the next `restore_with_ports` fails (error injection).
+    fail_next_restore: bool,
 }
 
 impl FakeBackend {
@@ -123,6 +147,8 @@ impl FakeBackend {
                 images,
                 calls: Vec::new(),
                 auto_name_counter: 0,
+                snapshots: HashMap::new(),
+                fail_next_restore: false,
             })),
         }
     }
@@ -135,6 +161,11 @@ impl FakeBackend {
     /// Snapshot of recorded calls, in invocation order.
     pub async fn calls(&self) -> Vec<Call> {
         self.inner.lock().await.calls.clone()
+    }
+
+    /// Make the next `restore_with_ports` fail (error injection).
+    pub async fn fail_next_restore(&self) {
+        self.inner.lock().await.fail_next_restore = true;
     }
 
     /// Insert a sandbox directly (bypassing `create`).
@@ -445,6 +476,85 @@ impl MsbBackend for FakeBackend {
         g.sandboxes
             .remove(name)
             .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
+        Ok(())
+    }
+
+    async fn snapshot_disk(&self, name: &str) -> Result<String> {
+        let mut g = self.inner.lock().await;
+        g.calls.push(Call::SnapshotDisk(name.to_string()));
+        let sbx = g
+            .sandboxes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
+        // Like a real snapshot: clone the captured state; the copy survives
+        // the source's removal.
+        let reference = format!("snap-{name}");
+        g.snapshots.insert(reference.clone(), sbx);
+        Ok(reference)
+    }
+
+    async fn restore_with_ports(
+        &self,
+        snapshot_ref: &str,
+        spec: &CreateSpec,
+        ports: Vec<PublishedPort>,
+    ) -> Result<()> {
+        let mut g = self.inner.lock().await;
+        g.calls.push(Call::Restore {
+            name: spec.name.clone().unwrap_or_else(|| "restored".to_string()),
+            spec: Box::new(spec.clone()),
+            ports: ports.clone(),
+        });
+        if g.fail_next_restore {
+            g.fail_next_restore = false;
+            return Err(anyhow!("FakeBackend: injected restore failure"));
+        }
+        // The restore cold-boots the captured disk content: the sandbox
+        // comes back with the snapshot's config, the NEW port set, running.
+        let mut sbx = g
+            .snapshots
+            .get(snapshot_ref)
+            .cloned()
+            .ok_or_else(|| anyhow!("FakeBackend: no snapshot {snapshot_ref}"))?;
+        sbx.name = spec.name.clone().unwrap_or(sbx.name);
+        sbx.state = SandboxState::Running;
+        sbx.config.network.ports = ports;
+        g.sandboxes.insert(sbx.name.clone(), sbx);
+        Ok(())
+    }
+
+    async fn remove_snapshot(&self, snapshot_ref: &str) -> Result<()> {
+        let mut g = self.inner.lock().await;
+        g.calls.push(Call::RemoveSnapshot(snapshot_ref.to_string()));
+        g.snapshots
+            .remove(snapshot_ref)
+            .ok_or_else(|| anyhow!("FakeBackend: no snapshot {snapshot_ref}"))?;
+        Ok(())
+    }
+
+    async fn reapply_config(&self, name: &str, spec: &CreateSpec) -> Result<()> {
+        let mut g = self.inner.lock().await;
+        g.calls.push(Call::Modify {
+            name: name.to_string(),
+            spec: Box::new(spec.clone()),
+        });
+        let sbx = g
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
+        // Persist env/workdir/labels like the modification API would.
+        sbx.config.env = spec
+            .env
+            .iter()
+            .filter_map(|e| {
+                e.split_once('=').map(|(k, v)| EnvVar {
+                    key: k.into(),
+                    value: v.into(),
+                })
+            })
+            .collect();
+        sbx.config.runtime.workdir = spec.workdir.clone().filter(|w| !w.is_empty());
         Ok(())
     }
 

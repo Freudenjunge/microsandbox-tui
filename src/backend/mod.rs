@@ -69,6 +69,28 @@ pub trait MsbBackend: Send + Sync {
     /// Remove the named sandbox (must be stopped).
     async fn remove(&self, name: &str) -> Result<()>;
 
+    /// Create a disk snapshot of `name` (running sources supported) and
+    /// return its restore reference (group/member name or id).
+    async fn snapshot_disk(&self, name: &str) -> Result<String>;
+
+    /// Restore `snapshot_ref` into a detached sandbox `name`, publishing
+    /// `ports` and applying the rest of `spec` (env, volumes, workdir).
+    /// Cold-boots the captured disk — the sandbox's data is preserved.
+    async fn restore_with_ports(
+        &self,
+        snapshot_ref: &str,
+        spec: &CreateSpec,
+        ports: Vec<PublishedPort>,
+    ) -> Result<()>;
+
+    /// Delete a snapshot by its restore reference (best-effort cleanup).
+    async fn remove_snapshot(&self, snapshot_ref: &str) -> Result<()>;
+
+    /// Reapply a sandbox's env/workdir/labels after a restore (persisted
+    /// for the next start; the running VM is not restarted). The 0.7.2
+    /// RestoreBuilder cannot set these itself.
+    async fn reapply_config(&self, name: &str, spec: &CreateSpec) -> Result<()>;
+
     // ---- creation ----
 
     /// Create a sandbox from this spec; returns the sandbox name.

@@ -550,3 +550,29 @@ sets an explanatory status line instead of opening a dialog.
 - [x] Live smoke test `publish_live_smoke` (real SDK, `#[ignore]`d):
       create → Running → publish recreate → still Running, port in the
       persisted config.
+
+### 7. Ports-tab UX + data-preserving publish flow (2026-09-24)
+- [x] Ports-tab navigation was broken: `render_matrix` read the
+      highlighted row from a stub that always returned 0, so the
+      highlight froze on the first row and `↑↓` seemed dead (you could
+      only unpublish the topmost binding). Fix: `selected` is passed
+      through to `render_matrix`; the `[↑↓] select binding` hint shows
+      in the toolbar. The `r` refresh key was dropped (ports now refresh
+      via the fetch policy: on entry, after recreate ops).
+- [x] Publish/unpublish no longer resets the rootfs. The recreate flow
+      snapshots the sandbox disk first, then stop → remove →
+      `Sandbox::restore(snapshot)` with the new port set → reapply
+      env/workdir/labels via the modification API (the 0.7.2
+      RestoreBuilder has no setters for those) → remove the temporary
+      snapshot. The sandbox's DATA IS PRESERVED (like `restart`, only
+      the processes restart). On restore failure the snapshot is kept
+      for manual recovery (`msb restore`).
+- [x] Backend: `snapshot_disk` / `restore_with_ports` / `remove_snapshot` /
+      `reapply_config` on `MsbBackend` (+ FakeBackend modeling, incl.
+      restore-failure injection). Note: grouped snapshot members are
+      immutable — `snapshot_disk` removes the deterministic member
+      (`<name>:tui-pre-publish`) before creating it; builder `.force()`
+      is rejected for installed groups (local SDK).
+- [x] Live smoke test extended: canary file written into the rootfs
+      must SURVIVE the publish (verified: `data-preserved`); no snapshot
+      litter after the flow.
