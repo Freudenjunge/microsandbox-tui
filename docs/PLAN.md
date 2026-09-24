@@ -600,3 +600,12 @@ sets an explanatory status line instead of opening a dialog.
 - [x] The picker shows each cached image's size next to the reference
       (`alpine  3.7M`) — `ImagesUpdated` now carries full `Image`s
       (event, App, CreateForm, main.rs fetch) instead of bare strings.
+- [x] Digest dedupe in `list_images` (`dedupe_images`): snapshot
+      restores materialize the base image under its fully-qualified
+      digest reference (`docker.io/library/debian@sha256:…`) — same
+      content, ugly duplicate. Entries sharing a digest collapse to one,
+      the plain/shorter reference wins; digest-only entries stay (sole
+      handle to that content) and render readable via `Image::display_name`
+      (`debian@sha256:d5ce19d`, display-only — adoption keeps the full
+      reference valid for creation). Entries without a digest are never
+      merged.

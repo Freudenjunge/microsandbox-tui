@@ -427,6 +427,48 @@ fn network_policy_for(profile: &str) -> Option<microsandbox::NetworkPolicy> {
 ///
 /// Exposed for unit tests (the builder itself requires a live runtime to
 /// resolve, so we test the pieces instead of the final create call).
+/// Collapse an image list to one entry per unique digest: when the same
+/// content is registered twice (e.g. snapshot restores materialize the
+/// base image under its fully-qualified digest reference), the plain /
+/// shorter reference wins. Digest-only entries are kept as the sole
+/// handle to that content; entries without a digest are never merged.
+///
+/// Pure helper (unit-tested below); `list_images` applies it.
+pub(crate) fn dedupe_images(images: Vec<Image>) -> Vec<Image> {
+    use std::collections::HashMap;
+    let mut index_by_digest: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<Image> = Vec::new();
+    for img in images {
+        if img.digest.is_empty() {
+            out.push(img); // no digest = no content identity
+            continue;
+        }
+        match index_by_digest.get(&img.digest) {
+            Some(&idx) => {
+                let keep = &mut out[idx];
+                let pinned = |r: &str| r.contains("@sha256:");
+                // Prefer the plain (non-pinned) reference; among plains the
+                // shorter one (tag form over registry-qualified).
+                let better = if pinned(&img.reference) {
+                    false
+                } else if pinned(&keep.reference) {
+                    true
+                } else {
+                    img.reference.len() < keep.reference.len()
+                };
+                if better {
+                    *keep = img;
+                }
+            }
+            None => {
+                index_by_digest.insert(img.digest.clone(), out.len());
+                out.push(img);
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn apply_spec_to_builder(builder: SandboxBuilder, spec: &CreateSpec) -> SandboxBuilder {
     // The image is mandatory — the SDK validates it as "image source is
     // required" otherwise (regression found in the phase2.5 smoke test).
@@ -662,7 +704,10 @@ impl MsbBackend for SdkBackend {
                 size_bytes: i.size_bytes().unwrap_or(0).max(0) as u64,
             });
         }
-        Ok(out)
+        // Snapshot restores materialize the base image under its fully
+        // qualified digest reference — collapse the duplicates so the
+        // picker shows one entry per unique content.
+        Ok(dedupe_images(out))
     }
 
     async fn start(&self, name: &str) -> Result<()> {
@@ -866,6 +911,64 @@ impl MsbBackend for SdkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- image digest dedupe (snapshot-restores materialize duplicates) ----
+
+    fn img(reference: &str, digest: &str) -> Image {
+        Image {
+            architecture: "amd64".into(),
+            created_at: chrono::Utc::now(),
+            digest: digest.into(),
+            layer_count: 1,
+            os: "linux".into(),
+            reference: reference.into(),
+            size_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn dedupe_prefers_plain_reference_for_same_digest() {
+        let digest = "sha256:d5ce19d4736f0e";
+        let pinned = "docker.io/library/debian@sha256:d5ce19d4736f0ebbacd686d1040271a5aeb0cc920f5990c1bfae1717627f0674";
+        // Either list order: the plain reference wins.
+        for images in [
+            vec![img("debian", digest), img(pinned, digest)],
+            vec![img(pinned, digest), img("debian", digest)],
+        ] {
+            let out = dedupe_images(images);
+            assert_eq!(out.len(), 1, "same digest = same content: {out:?}");
+            assert_eq!(out[0].reference, "debian");
+        }
+    }
+
+    #[test]
+    fn dedupe_keeps_unique_digests() {
+        let images = vec![img("alpine", "sha256:aaa"), img("debian", "sha256:bbb")];
+        let out = dedupe_images(images);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].reference, "alpine");
+        assert_eq!(out[1].reference, "debian");
+    }
+
+    #[test]
+    fn dedupe_keeps_digest_only_entry_for_manual_recovery() {
+        // A digest-only entry (base image gone, materialization remains)
+        // must stay — it is the only handle to that content. The picker
+        // renders it via Image::display_name.
+        let out = dedupe_images(vec![img(
+            "docker.io/library/debian@sha256:d5ce19d4736f0e",
+            "sha256:d5ce19d4736f0e",
+        )]);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn dedupe_never_merges_unknown_digests() {
+        // Missing digest strings ("") are not content identity — keep
+        // separate entries instead of merging distinct images.
+        let out = dedupe_images(vec![img("a", ""), img("b", "")]);
+        assert_eq!(out.len(), 2);
+    }
 
     // ---- memory parsing ----
 

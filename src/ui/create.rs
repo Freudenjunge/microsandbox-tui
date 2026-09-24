@@ -1075,14 +1075,21 @@ fn picker_lines(form: &CreateForm) -> Vec<Line<'static>> {
                 Style::default().fg(t.text)
             };
             // Cached image size next to the reference (curated suggestions
-            // without a cached image show none).
+            // without a cached image show none). Display name shortens
+            // digest-pinned variants; adoption keeps the full reference.
             let size = form
                 .image_size(img)
                 .map(|b| format!("  {}", crate::ui::dashboard::format_bytes(b)))
                 .unwrap_or_default();
+            let display = form
+                .images
+                .iter()
+                .find(|i| i.reference == *img)
+                .map(|i| i.display_name())
+                .unwrap_or_else(|| img.clone());
             Line::from(vec![
                 Span::raw("  └ "),
-                Span::styled(format!("{marker}{img}"), style),
+                Span::styled(format!("{marker}{display}"), style),
                 Span::styled(size, Style::default().fg(t.muted)),
             ])
         })

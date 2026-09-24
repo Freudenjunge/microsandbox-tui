@@ -562,6 +562,29 @@ pub struct Image {
     pub size_bytes: u64,
 }
 
+impl Image {
+    /// Human-readable display name for the picker: strips the registry
+    /// host prefix and shortens digest-pinned references
+    /// (`docker.io/library/debian@sha256:d5ce19d…` → `debian@sha256:d5ce19d`).
+    /// The full [`Image::reference`] stays valid for creation — this is
+    /// display-only.
+    pub fn display_name(&self) -> String {
+        display_name_for(&self.reference)
+    }
+}
+
+/// Display transformation for image references (unit-tested).
+fn display_name_for(reference: &str) -> String {
+    let stripped = reference
+        .strip_prefix("docker.io/library/")
+        .unwrap_or(reference);
+    if let Some((name, hex)) = stripped.split_once("@sha256:") {
+        let short: String = hex.chars().take(7).collect();
+        return format!("{name}@sha256:{short}");
+    }
+    stripped.to_string()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -953,6 +976,42 @@ pub(crate) mod tests {
         assert_eq!(i.layer_count, 1);
         assert_eq!(i.size_bytes, 3849738);
         assert!(i.digest.starts_with("sha256:"));
+    }
+
+    // ---- image display names (digest-pinned snapshot artifacts) ----
+
+    #[test]
+    fn display_name_strips_registry_and_shortens_digest() {
+        // Snapshot restores materialize the base image under its fully
+        // qualified digest reference; the picker shows a readable form.
+        let mut i = image(
+            "docker.io/library/debian@sha256:d5ce19d4736f0ebbacd686d1040271a5aeb0cc920f5990c1bfae1717627f0674",
+        );
+        i.digest = "sha256:d5ce19d4736f0e".into();
+        assert_eq!(i.display_name(), "debian@sha256:d5ce19d");
+    }
+
+    #[test]
+    fn display_name_keeps_plain_references() {
+        assert_eq!(image("debian").display_name(), "debian");
+        assert_eq!(image("python:3.12").display_name(), "python:3.12");
+        assert_eq!(
+            image("my.registry.io/custom:1.0").display_name(),
+            "my.registry.io/custom:1.0",
+            "registry hosts other than docker.io are kept"
+        );
+    }
+
+    fn image(reference: &str) -> Image {
+        Image {
+            architecture: "amd64".into(),
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+            digest: "sha256:deadbeef".into(),
+            layer_count: 1,
+            os: "linux".into(),
+            reference: reference.into(),
+            size_bytes: 1024,
+        }
     }
 }
 
