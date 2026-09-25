@@ -1,0 +1,8 @@
+[meta]
+name = "Shell"
+description = "Nackte Sandbox mit CWD-Mount — generischer Einstieg"
+
+[spec]
+image = "alpine"
+name = "shell"
+mount_cwd = true

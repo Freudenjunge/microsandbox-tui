@@ -1,0 +1,10 @@
+[meta]
+name = "Opencode2"
+description = "Node 24 Variante mit mehr Ressourcen — Beispiel zum Anpassen"
+
+[spec]
+image = "node:24-alpine"
+name = "opencode2"
+cpus = 8
+memory = "4G"
+mount_cwd = true
