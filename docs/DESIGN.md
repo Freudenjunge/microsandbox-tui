@@ -184,8 +184,9 @@ none of it; panels show only real backend data.
 - Image field: an always-visible picker lists pulled images first, then
   curated suggestions; typing filters, `↑↓`+`Enter` adopts
 - **Enter creates from anywhere in the form** (Docker-sbx convention; the
-  image picker's `Enter` adopts instead, list fields commit typed items
-  first) — `Tab`/`Shift+Tab` navigate fields
+  image picker's `Enter` adopts instead). List fields commit typed items
+  and navigate with plain `Enter` (no accidental create mid-list) —
+  `Ctrl+Enter` creates from anywhere. `Tab`/`Shift+Tab` navigate fields
 - Advanced fields prefilled **empty** = use the runtime default
 - Port entries use Docker syntax: `HOST:GUEST` or `BIND:HOST:GUEST`, with `/udp` suffix
 - Network profile presets map to SDK network profiles:

@@ -465,6 +465,11 @@ impl CreateForm {
         if self.save_dialog.is_some() {
             return self.handle_save_dialog_key(key);
         }
+        // Ctrl+Enter: explicit create from anywhere (esp. list fields,
+        // where plain Enter commits items / navigates).
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return FormAction::Submit;
+        }
         // Ctrl+S: open the save-as-template dialog with a name suggestion
         // derived from the image reference.
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -669,9 +674,13 @@ impl CreateForm {
                     self.active_list_mut().push(item);
                     self.list_selected = self.active_list_ref().len() - 1;
                     FormAction::Continue
-                } else {
-                    // Empty input + Enter = done editing → create.
+                } else if self.active_field_index() + 1 >= self.field_count() {
+                    // Last field: the keyboard-only create path.
                     FormAction::Submit
+                } else {
+                    // Mid-form: empty Enter navigates (Ctrl+Enter creates).
+                    self.next_field();
+                    FormAction::NextField
                 }
             }
             KeyCode::Up => {
@@ -1017,6 +1026,11 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         crate::ui::chrome::FooterHint {
             key: "[Enter]",
             label: "create",
+            role: crate::ui::chrome::FooterRole::Accent,
+        },
+        crate::ui::chrome::FooterHint {
+            key: "[Ctrl+↵]",
+            label: "create in lists",
             role: crate::ui::chrome::FooterRole::Accent,
         },
         crate::ui::chrome::FooterHint {
@@ -1379,6 +1393,10 @@ mod tests {
         KeyEvent::new(code, mods)
     }
 
+    fn key_mod_ctrl_enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+    }
+
     fn img(reference: &str) -> crate::models::Image {
         crate::models::Image {
             architecture: "amd64".into(),
@@ -1586,12 +1604,33 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_list_field_with_empty_input_submits() {
+    fn enter_on_list_field_with_empty_input_advances() {
+        // A-Followup (User-Feedback): im Ports-Feld darf leeres Enter NICHT
+        // die Sandbox erstellen — es navigiert weiter (wie Tab); sonst
+        // führt „Port committen, noch einen tippen“ zur Früh-Erstellung.
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::Ports;
-        // Kein eingegebener Listeneintrag → Enter heißt „fertig“ → erstellen.
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::NetRules);
+    }
+
+    #[test]
+    fn enter_on_last_list_field_with_empty_input_submits() {
+        // Labels ist das letzte Feld — hier bleibt der Tastatur-Create-Pfad.
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::Labels;
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+    }
+
+    #[test]
+    fn ctrl_enter_submits_from_anywhere() {
+        // Explizites Create aus Listenfeldern heraus.
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::Ports;
+        assert_eq!(form.handle_key(key_mod_ctrl_enter()), FormAction::Submit);
     }
 
     #[test]
@@ -1604,8 +1643,8 @@ mod tests {
         }
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Continue);
         assert_eq!(form.ports, vec!["8080:80".to_string()]);
-        // Zweites Enter (Input jetzt leer) → erstellen.
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+        // Zweites Enter (Input jetzt leer) → NICHT erstellen, weitergehen.
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
     }
 
     #[test]

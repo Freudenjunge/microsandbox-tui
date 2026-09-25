@@ -527,6 +527,17 @@ mod tests {
     }
 
     #[test]
+    fn builtin_opencode_has_usable_memory() {
+        // A-Followup (User-Feedback): ohne memory gilt der SDK-Default von
+        // 512 MiB (config/mod.rs: DEFAULT_MEMORY_MIB) — damit kann
+        // opencode-ai nicht laden. Das Built-in setzt explizit 4G + 2
+        // vCPUs.
+        let t = parse("opencode", include_str!("templates/opencode.toml")).unwrap();
+        assert_eq!(t.spec.memory.as_deref(), Some("4G"));
+        assert_eq!(t.spec.cpus, Some(2));
+    }
+
+    #[test]
     fn load_builtins_contain_the_three_presets() {
         let t = load_builtins();
         let ids: Vec<&str> = t.iter().map(|x| x.id.as_str()).collect();
