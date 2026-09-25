@@ -390,6 +390,15 @@ impl App {
             }
             AppEvent::TemplatesLoaded(templates) => {
                 self.templates = templates;
+                // Clamp a stale picker selection to the new list length
+                // (delete/reload shrink the list).
+                if let Some(CreateState::Select { selected }) = &mut self.create_state {
+                    if self.templates.is_empty() {
+                        *selected = 0;
+                    } else {
+                        *selected = (*selected).min(self.templates.len() - 1);
+                    }
+                }
                 Action::Render
             }
             AppEvent::TemplateSaved(t) => {
@@ -662,7 +671,12 @@ impl App {
                     self.create_state = Some(CreateState::Select { selected });
                     return Action::Continue;
                 }
-                let template = &self.templates[selected];
+                let Some(template) = self.templates.get(selected) else {
+                    // Stale index (list shrank): no-op with a hint, no panic.
+                    self.set_status("template list changed — select again");
+                    self.create_state = Some(CreateState::Select { selected: 0 });
+                    return Action::Render;
+                };
                 let cwd = self.create_cwd();
                 match crate::template::to_create_spec(template, &cwd) {
                     Ok(mut spec) => {
@@ -691,10 +705,15 @@ impl App {
                 }
             }
             KeyCode::Char('e') => {
-                let form = crate::ui::create::CreateForm::from_template(
-                    &self.templates[selected],
-                    self.create_cwd(),
-                );
+                let Some(template) = self.templates.get(selected) else {
+                    self.set_status("template list changed — select again");
+                    self.create_state = Some(CreateState::Select { selected: 0 });
+                    return Action::Render;
+                };
+                let mut form =
+                    crate::ui::create::CreateForm::from_template(template, self.create_cwd());
+                // I3: the e-path form sees the same cached image list as `n`.
+                form.images = self.images.clone();
                 self.create_state = Some(CreateState::Form(Box::new(form)));
                 Action::Render
             }
@@ -706,7 +725,11 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('d') => {
-                let template = &self.templates[selected];
+                let Some(template) = self.templates.get(selected) else {
+                    self.set_status("template list changed — select again");
+                    self.create_state = Some(CreateState::Select { selected: 0 });
+                    return Action::Render;
+                };
                 if template.built_in {
                     self.set_status(
                         "built-in template — create a file with the same id in the template dir to override it",
@@ -1378,6 +1401,59 @@ mod tests {
         form.open_save_dialog("Test".into(), "Beschreibung".into());
         app.create_state = Some(CreateState::Form(Box::new(form)));
         render_app(&app, 120, 34);
+    }
+
+    #[test]
+    fn templates_loaded_clamps_select_index() {
+        // C2: list shrank (delete/reload) → the Select index must clamp,
+        // otherwise the next Enter/e/d indexes out of bounds.
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 2 });
+        let one = vec![app.templates[0].clone()];
+        app.handle_event(crate::event::AppEvent::TemplatesLoaded(one));
+        assert!(matches!(
+            app.create_state,
+            Some(CreateState::Select { selected: 0 })
+        ));
+    }
+
+    #[test]
+    fn template_select_guards_stale_index() {
+        // C2 (belt): a stale index never panics — Enter is a no-op with a
+        // status hint instead of an index-out-of-bounds.
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 5 });
+        app.handle_event(key(KeyCode::Enter));
+        assert!(app.queued_create.is_none());
+        app.create_state = Some(CreateState::Select { selected: 5 });
+        app.handle_event(key(KeyCode::Char('e')));
+        app.create_state = Some(CreateState::Select { selected: 5 });
+        app.handle_event(key(KeyCode::Char('d')));
+    }
+
+    #[test]
+    fn e_path_seeds_cached_images() {
+        // I3: the e-path form must see the cached image list (sizes in the
+        // picker), like `n` does.
+        let mut app = app_with_templates();
+        app.images = vec![crate::models::Image {
+            architecture: "amd64".into(),
+            created_at: chrono::Utc::now(),
+            digest: "sha256:x".into(),
+            layer_count: 1,
+            os: "linux".into(),
+            reference: "alpine".into(),
+            size_bytes: 1024,
+        }];
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        app.handle_event(key(KeyCode::Char('e')));
+        let Some(CreateState::Form(form)) = &app.create_state else {
+            panic!("expected Form");
+        };
+        assert_eq!(form.images.len(), 1);
     }
 
     #[test]

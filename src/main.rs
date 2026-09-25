@@ -334,6 +334,27 @@ async fn run(cli: Cli) -> Result<()> {
 
 /// Execute a confirmed lifecycle/exec operation on a background task,
 /// reporting completion or failure through the event channel.
+/// Remove a user template file and produce the events the UI needs: a
+/// full reload (built-ins restored if the file shadowed one) on success,
+/// an error event when the file is gone or unreadable.
+fn delete_template_events(dir: &std::path::Path, id: &str) -> Vec<AppEvent> {
+    let path = dir.join(format!("{id}.toml"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            let (templates, warnings) = crate::template::load_all(dir);
+            let mut events = vec![AppEvent::TemplatesLoaded(templates)];
+            events.extend(warnings.into_iter().map(AppEvent::Error));
+            events
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            vec![AppEvent::Error(format!(
+                "template '{id}' has no file (built-ins cannot be deleted)"
+            ))]
+        }
+        Err(e) => vec![AppEvent::Error(format!("delete '{id}.toml': {e}"))],
+    }
+}
+
 fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
     let backend = backend.clone();
     let describe = op.describe();
@@ -396,16 +417,14 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                     })
             }
             Op::DeleteTemplate(id) => {
-                // User files live at `<templates_dir>/<id>.toml` (the id is
-                // the file stem); built-ins have no file and cannot go.
-                let path = crate::template::templates_dir().join(format!("{id}.toml"));
-                match std::fs::remove_file(&path) {
-                    Ok(()) => Ok(format!("template '{id}' deleted")),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(format!(
-                        "template '{id}' has no file (built-ins cannot be deleted)"
-                    )),
-                    Err(e) => Err(anyhow::anyhow!("delete '{id}.toml': {e}")),
+                // Remove the user file and reload the list (restores
+                // unshadowed built-ins); built-ins have no file and
+                // cannot go.
+                let events = delete_template_events(&crate::template::templates_dir(), id);
+                for event in events {
+                    let _ = tx.send(event).await;
                 }
+                Ok(format!("template '{id}' deleted"))
             }
             Op::OverwriteTemplate(t) => {
                 let dir = crate::template::templates_dir();
@@ -603,4 +622,34 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
         render_view(frame, app, area, banner.as_deref());
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_template_removes_file_and_reloads_list() {
+        // C1: the delete op must refresh the in-memory list (the picker
+        // showed deleted templates forever). Reload-based, so the
+        // unshadowed built-in comes back (I5).
+        let dir = std::env::temp_dir().join(format!("msb-tui-del-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("mine.toml"),
+            "[meta]\nname = \"Mine\"\ndescription = \"d\"\n\n[spec]\nimage = \"alpine\"\n",
+        )
+        .unwrap();
+        let events = delete_template_events(&dir, "mine");
+        let crate::event::AppEvent::TemplatesLoaded(ts) = &events[0] else {
+            panic!("expected TemplatesLoaded, got {:?}", events[0]);
+        };
+        assert!(ts.iter().all(|t| t.id != "mine"), "deleted id gone: {ts:?}");
+        assert!(ts.iter().any(|t| t.id == "shell"), "built-in restored");
+        assert!(!dir.join("mine.toml").exists(), "file removed");
+        // Second delete: file gone → error event, not a silent ok.
+        let events = delete_template_events(&dir, "mine");
+        assert!(matches!(&events[0], crate::event::AppEvent::Error(_)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

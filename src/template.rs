@@ -5,11 +5,6 @@
 //! create form's fields and becomes a `CreateSpec` (see
 //! [`crate::template::to_create_spec`]). The `rootfs` key is reserved for
 //! future golden-image sources and has no effect yet.
-//
-// TODO(phase2#10.8): remove this allow once main.rs wires up every item —
-// until then consumers land task by task and clippy -D warnings would
-// reject the not-yet-reached ones.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
@@ -96,31 +91,40 @@ impl TemplateSpec {
 /// Parse a template document. `id` comes from the filename stem. Unknown
 /// fields are ignored (serde default); `rootfs` is parsed and stored but
 /// has no effect in v1 (reserved for golden-image sources).
-pub fn parse(id: &str, s: &str) -> Result<Template, String> {
-    let f: TemplateFile = toml::from_str(s).map_err(|e| format!("template '{id}': {e}"))?;
-    if f.spec.image.trim().is_empty() {
-        return Err(format!("template '{id}': 'image' is required"));
+/// Validate the spec fields a template carries (shared by the file parser
+/// and the Ctrl+S path — a saved template must load again later). The
+/// message never mentions an id: the dialog shows it verbatim.
+pub fn validate_spec(spec: &TemplateSpec) -> Result<(), String> {
+    if spec.image.trim().is_empty() {
+        return Err("'image' is required".to_string());
     }
-    if let Some(m) = f.spec.memory.as_deref()
+    if let Some(c) = spec.cpus
+        && c == 0
+    {
+        return Err("'cpus' must be at least 1".to_string());
+    }
+    if let Some(m) = spec.memory.as_deref()
         && crate::backend::sdk::parse_memory_mib(m).is_none()
     {
-        return Err(format!(
-            "template '{id}': invalid memory '{m}' (use e.g. 512M, 2G)"
-        ));
+        return Err(format!("invalid memory '{m}' (use e.g. 512M, 2G)"));
     }
-    for p in &f.spec.ports {
+    for p in &spec.ports {
         if crate::models::PublishedPort::parse_cli(p).is_err() {
-            return Err(format!("template '{id}': invalid port '{p}'"));
+            return Err(format!("invalid port '{p}'"));
         }
     }
-    for r in &f.spec.net_rules {
+    for r in &spec.net_rules {
         // Format wie die Formular-Eingabe: `allow@host`.
         if !r.contains('@') {
-            return Err(format!(
-                "template '{id}': invalid net rule '{r}' (expected allow@host)"
-            ));
+            return Err(format!("invalid net rule '{r}' (expected allow@host)"));
         }
     }
+    Ok(())
+}
+
+pub fn parse(id: &str, s: &str) -> Result<Template, String> {
+    let f: TemplateFile = toml::from_str(s).map_err(|e| format!("template '{id}': {e}"))?;
+    validate_spec(&f.spec).map_err(|e| format!("template '{id}': {e}"))?;
     Ok(Template {
         id: id.to_string(),
         meta: f.meta,

@@ -423,8 +423,16 @@ impl CreateForm {
                     return FormAction::Continue;
                 }
                 let description = dialog.description.trim().to_string();
+                let template = self.to_template(name, description);
+                // I1: validate BEFORE writing — an invalid template would
+                // vanish at the next startup (load-time validation skips
+                // the whole file).
+                if let Err(e) = crate::template::validate_spec(&template.spec) {
+                    self.error = Some(format!("Template: {e}"));
+                    return FormAction::Continue;
+                }
                 self.save_dialog = None;
-                FormAction::SaveTemplate(Box::new(self.to_template(name, description)))
+                FormAction::SaveTemplate(Box::new(template))
             }
             KeyCode::Backspace => {
                 match dialog.field {
@@ -845,13 +853,23 @@ impl CreateForm {
     /// defaults as [`Self::new`].
     pub fn from_template(t: &crate::template::Template, cwd: String) -> Self {
         let s = &t.spec;
+        let mount_cwd = s.mount_cwd.unwrap_or(true);
         Self {
             image: s.image.clone(),
             name: s.name.clone().unwrap_or_default(),
             cpus: s.cpus.map(|c| c.to_string()).unwrap_or_default(),
             memory: s.memory.clone().unwrap_or_default(),
-            workdir: s.workdir.clone().unwrap_or_else(|| cwd.clone()),
-            mount_cwd: s.mount_cwd.unwrap_or(true),
+            // Mount coherence (same rule as toggle_mount_cwd): with the
+            // mount off there is no host CWD to prefill — the SDK stats
+            // explicit workdirs inside the guest rootfs.
+            workdir: s.workdir.clone().unwrap_or_else(|| {
+                if mount_cwd {
+                    cwd.clone()
+                } else {
+                    String::new()
+                }
+            }),
+            mount_cwd,
             cwd,
             net_profile: s
                 .net_profile
@@ -1524,6 +1542,44 @@ mod tests {
         assert_eq!(t1.spec.image, "node:22-alpine");
         assert_eq!(t1.spec.cpus, Some(4));
         assert_eq!(t1.spec.labels_vec(), vec!["team=infra"]);
+    }
+
+    #[test]
+    fn save_dialog_validates_before_emit() {
+        // I1: an invalid template must NOT be written — it would vanish at
+        // the next startup (load-time validation skips the whole file).
+        let mut form = CreateForm::new(Vec::new());
+        form.image = String::new(); // invalid: image required
+        form.open_save_dialog("Test".into(), "d".into());
+        let action = form.handle_key(key(KeyCode::Enter));
+        assert_eq!(action, FormAction::Continue, "no SaveTemplate emitted");
+        assert!(form.error.as_deref().unwrap_or_default().contains("image"));
+        assert!(form.save_dialog.is_some(), "dialog stays open");
+    }
+
+    #[test]
+    fn save_dialog_rejects_bad_memory() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.memory = "lots".into();
+        form.open_save_dialog("Test".into(), "d".into());
+        let action = form.handle_key(key(KeyCode::Enter));
+        assert_eq!(action, FormAction::Continue);
+        assert!(form.error.as_deref().unwrap_or_default().contains("memory"));
+    }
+
+    #[test]
+    fn from_template_keeps_mount_off_coherent() {
+        // I2: mount_cwd=false without workdir → NO workdir prefill (the
+        // SDK would stat the workdir inside the guest rootfs and fail).
+        let t = crate::template::parse(
+            "nomount",
+            "[meta]\nname = \"NoMount\"\ndescription = \"d\"\n\n[spec]\nimage = \"alpine\"\nmount_cwd = false\n",
+        )
+        .unwrap();
+        let form = CreateForm::from_template(&t, "/home/me/proj".into());
+        assert!(!form.mount_cwd);
+        assert_eq!(form.workdir, "", "no host CWD prefill without the mount");
     }
 
     // -- quick mode --

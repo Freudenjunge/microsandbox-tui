@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::template::{LayoutKind, Template, preview_values, template_layout};
 use crate::ui::theme::THEME;
@@ -147,9 +147,14 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
             Style::default().fg(t.muted),
         )));
     }
+    // Two lines per entry; the window follows the selection (same rule as
+    // the form's image picker). Lines longer than the pane truncate —
+    // Review Focus 5 decided truncate over wrap.
+    let entries_visible = (inner.height / 2).max(1) as usize;
+    let offset_entries = selected.saturating_sub(entries_visible.saturating_sub(1));
     let p = Paragraph::new(lines)
         .block(Block::default().style(Style::default().bg(t.panel)))
-        .wrap(Wrap { trim: true });
+        .scroll(((offset_entries * 2) as u16, 0));
     frame.render_widget(p, inner);
 }
 
@@ -194,8 +199,62 @@ fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selecte
         "  Enter erstellt die Sandbox direkt.",
         Style::default().fg(t.muted),
     )));
-    let p = Paragraph::new(lines)
-        .block(Block::default().style(Style::default().bg(t.panel)))
-        .wrap(Wrap { trim: false });
+    let p = Paragraph::new(lines).block(Block::default().style(Style::default().bg(t.panel)));
     frame.render_widget(p, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn user_tpl(id: &str, name: &str, description: &str) -> Template {
+        crate::template::parse(
+            id,
+            &format!("[meta]\nname = \"{name}\"\ndescription = \"{description}\"\n\n[spec]\nimage = \"alpine\"\n"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn picker_scrolls_selected_into_view_offscreen() {
+        // I4: with more templates than fit, the highlighted row must be
+        // visible (scrolling list, truncating lines — no wrap).
+        let mut templates = crate::template::load_builtins();
+        templates.push(user_tpl("t4", "Vierter", "vier"));
+        templates.push(user_tpl("t5", "Fuenfter", "fuenfte Beschreibung"));
+        let selected = 4;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &templates, selected))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<String>();
+        assert!(
+            text.contains("Fuenfter"),
+            "selected template must be scrolled into view at 80x16:\n{text}"
+        );
+    }
+
+    #[test]
+    fn picker_truncates_long_descriptions_offscreen() {
+        // Review Focus 5: long descriptions truncate (no wrap, no panic).
+        let templates = vec![user_tpl(
+            "x",
+            "Lang",
+            &"sehr lange Beschreibung ".repeat(20),
+        )];
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &templates, 0))
+            .unwrap();
+    }
 }
