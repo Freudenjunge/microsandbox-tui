@@ -724,3 +724,10 @@ official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
       surfaces `sbx/claude-image`. Distros remain reachable in the
       tail (still the fastest way to a minimal box). The 50-entry
       picker safety cap unchanged.
+
+### 11.4 Docs
+- [x] DESIGN.md: create-flow section rewritten for the sbx Hub
+      catalog (scratch row, download-order harnesses, kit-vs-base
+      image distinction, `sbx/shell` 404 note, 2 vCPU/4G rationale)
+      and the picker suggestions paragraph; keybinding table updated
+      for the scratch row semantics. This section records the tasks.

@@ -170,10 +170,23 @@ none of it; panels show only real backend data.
   pre-filled, `n` an empty form, `d` deletes a user template file
   (built-ins are only shadowable). Template files live in
   `~/.config/microsandbox-tui/templates/*.toml` with `[meta]`+`[spec]`
-  sections; the built-ins (`opencode`, `opencode2`, `shell`) are embedded
-  examples of the format. `rootfs = "snapshot:…"` is reserved for future
-  golden-image sources and has no effect yet.
-- **Grouped full-screen form** (via `e`/`n`): all fields visible in five
+  sections. `rootfs = "snapshot:…"` is reserved for future golden-image
+  sources and has no effect yet.
+- **Built-in catalog (sbx Hub, Phase 2.13)**: row 0 of the picker is
+  "Create from scratch" (the empty form — not a template), then
+  `shell` (plain alpine), then 19 curated AI-agent harness presets from
+  the official Docker sbx Hub org (`hub.docker.com/u/sbx`), sorted by
+  their kit's pull count: Pi, Hermes Agent, OpenClaw, Kiro, Crush,
+  Junie, GitHub Copilot, Aider, Droid, Open Interpreter, OpenHands,
+  Antigravity, Vibe, Docker Agent, Claude Code, OpenCode (sbx), Codex,
+  Cursor, Devin; the maintainer's `opencode`/`opencode2` examples close
+  the list. Hub `*-kit` repos are `docker.sandbox.kit.v2` artifacts
+  (config bundles, ~400 KB — not bootable), so every harness entry
+  creates from its matching `sbx/<name>-image` base OCI image (multi-GB
+  first pull). `sbx/shell` does not exist on the Hub; Shell stays the
+  alpine preset. Catalog entries name the sandbox after the harness and
+  ship 2 vCPU + 4G (the SDK's 512 MiB default is unusable for agents).
+- **Grouped full-screen form** (via `e`/`n`/scratch): all fields visible in five
   sections — BASIS (image picker, name), RESSOURCEN (cpus/memory),
   MOUNTS (mount toggle, workdir, volumes), NETZWERK (profile, ports,
   rules), SONSTIGES (env, labels). Empty resource/list fields mean
@@ -182,7 +195,8 @@ none of it; panels show only real backend data.
   for confirmation).
 - Named by default (persistent) — ephemeral is an advanced toggle
 - Image field: an always-visible picker lists pulled images first, then
-  curated suggestions; typing filters, `↑↓`+`Enter` adopts
+  curated suggestions — the 19 `sbx/<name>-image` harness bases (download
+  order), then generic distros/tools; typing filters, `↑↓`+`Enter` adopts
 - **Enter creates from anywhere in the form** (Docker-sbx convention; the
   image picker's `Enter` adopts instead). List fields commit typed items
   and navigate with plain `Enter` (no accidental create mid-list) —
@@ -425,10 +439,10 @@ struct Image {
 | `↑↓` | dashboard | select sandbox card |
 | `Enter` | dashboard | inspect selected sandbox |
 | `c` | dashboard | create flow: template picker (master-detail) |
-| `Enter` | template picker | create sandbox from the selected template |
-| `e` | template picker | open the grouped form pre-filled from the template |
-| `n` | template picker | open the grouped form empty |
-| `d` | template picker | delete user template file (confirm; built-ins shadow-only) |
+| `Enter` | template picker | row 0 (scratch): open the empty form · otherwise create sandbox from the selected template |
+| `e` | template picker | row 0 (scratch): open the empty form · otherwise open the grouped form pre-filled from the template |
+| `n` | template picker | open the grouped form empty (the scratch row) |
+| `d` | template picker | delete user template file (confirm; built-ins shadow-only; scratch is not a template) |
 | `Ctrl+S` | create form | save current form as template (confirm on overwrite) |
 | `x` | dashboard | exec: interactive shell (running sandboxes only) |
 | `s` | dashboard | start/stop toggle for the selected sandbox (state-dependent) |
