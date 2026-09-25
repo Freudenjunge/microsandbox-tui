@@ -514,6 +514,19 @@ mod tests {
     }
 
     #[test]
+    fn builtin_opencode_has_no_guest_workdir() {
+        // B (User-Feedback): der SDK-Create validiert workdir per
+        // fs().stat() IM GAST (microsandbox create.rs:856) und rollt die
+        // Sandbox zurück, wenn das Verzeichnis im Rootfs fehlt. Plain
+        // Images wie node:22-alpine enthalten kein /workspace — das
+        // Built-in darf daher keinen workdir setzen (Default = gemountetes
+        // Host-CWD, das per Bind existiert).
+        let t = parse("opencode", include_str!("templates/opencode.toml")).unwrap();
+        assert_eq!(t.spec.workdir, None, "workdir would fail the guest stat");
+        assert_eq!(t.id, "opencode");
+    }
+
+    #[test]
     fn load_builtins_contain_the_three_presets() {
         let t = load_builtins();
         let ids: Vec<&str> = t.iter().map(|x| x.id.as_str()).collect();

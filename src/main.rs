@@ -291,14 +291,23 @@ async fn run(cli: Cli) -> Result<()> {
         // or the initial list load (cards show ports immediately) fetch
         // ports for ALL sandboxes so the global matrix reflects each
         // sandbox's own bindings. `ports_fetch_needed` is the single,
-        // unit-tested trigger policy.
+        // unit-tested trigger policy. The target list comes fresh from
+        // the backend (a just-deleted sandbox must not be fetched) and a
+        // vanished sandbox clears its cache entry silently instead of
+        // erroring (User-Feedback: "ports: sandbox … not found").
         if ports_fetch_needed(&app) {
             app.ports_cache_dirty = false;
             app.ports_primed = true;
             let tx = event_tx.clone();
             let backend = backend.clone();
-            let names: Vec<String> = app.sandboxes.iter().map(|s| s.name.clone()).collect();
             tokio::spawn(async move {
+                let names = match backend.list_sandboxes().await {
+                    Ok(list) => list.into_iter().map(|s| s.name).collect::<Vec<_>>(),
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Error(format!("ports: {e:#}"))).await;
+                        return;
+                    }
+                };
                 for name in names {
                     match backend.inspect(&name).await {
                         Ok(insp) => {
@@ -306,6 +315,15 @@ async fn run(cli: Cli) -> Result<()> {
                                 .send(AppEvent::PortsUpdated {
                                     name,
                                     ports: insp.active_config.network.ports,
+                                })
+                                .await;
+                        }
+                        Err(e) if is_missing_sandbox_error(&e) => {
+                            // Gone between list and inspect: clear quietly.
+                            let _ = tx
+                                .send(AppEvent::PortsUpdated {
+                                    name,
+                                    ports: Vec::new(),
                                 })
                                 .await;
                         }
@@ -353,6 +371,14 @@ fn delete_template_events(dir: &std::path::Path, id: &str) -> Vec<AppEvent> {
         }
         Err(e) => vec![AppEvent::Error(format!("delete '{id}.toml': {e}"))],
     }
+}
+
+/// True when the error means "this sandbox does not exist (anymore)": a
+/// just-deleted sandbox can still be in a stale fetch list, and that is a
+/// silent cache clear — not a user-facing error. Matches the context
+/// string our own backend layer attaches (`sandbox '{name}' not found`).
+fn is_missing_sandbox_error(e: &anyhow::Error) -> bool {
+    e.to_string().contains("not found")
 }
 
 fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
@@ -651,5 +677,24 @@ mod tests {
         let events = delete_template_events(&dir, "mine");
         assert!(matches!(&events[0], crate::event::AppEvent::Error(_)));
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod missing_sandbox_tests {
+    use super::*;
+
+    #[test]
+    fn missing_sandbox_errors_are_tolerated_in_the_ports_fetch() {
+        // C (User-Feedback): nach dem Löschen einer Sandbox war sie noch in
+        // der (veralteten) Fetch-Liste → „ports: sandbox 'x' not found“
+        // als rote Fehlermeldung. Nicht-gefunden ist kein Fehler: der
+        // Cache-Eintrag wird still geleert.
+        let e = anyhow::anyhow!("sandbox 'gone' not found");
+        assert!(is_missing_sandbox_error(&e));
+        // Echte Fehler bleiben Fehler.
+        assert!(!is_missing_sandbox_error(&anyhow::anyhow!(
+            "connection refused"
+        )));
     }
 }

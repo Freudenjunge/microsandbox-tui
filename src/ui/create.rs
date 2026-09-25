@@ -555,14 +555,7 @@ impl CreateForm {
                 FormAction::Continue
             }
             KeyCode::Enter if self.active_field == FormField::Image => self.enter_on_image(),
-            KeyCode::Enter => {
-                if self.active_field_index() + 1 >= self.field_count() {
-                    FormAction::Submit
-                } else {
-                    self.next_field();
-                    FormAction::NextField
-                }
-            }
+            KeyCode::Enter => FormAction::Submit,
             _ => FormAction::Continue,
         }
     }
@@ -616,14 +609,7 @@ impl CreateForm {
                 self.toggle_mount_cwd();
                 FormAction::Continue
             }
-            KeyCode::Enter => {
-                if self.active_field_index() + 1 >= self.field_count() {
-                    FormAction::Submit
-                } else {
-                    self.next_field();
-                    FormAction::NextField
-                }
-            }
+            KeyCode::Enter => FormAction::Submit,
             _ => FormAction::Continue,
         }
     }
@@ -641,14 +627,7 @@ impl CreateForm {
                 self.net_profile = self.net_profile.next();
                 FormAction::Continue
             }
-            KeyCode::Enter => {
-                if self.active_field_index() + 1 >= self.field_count() {
-                    FormAction::Submit
-                } else {
-                    self.next_field();
-                    FormAction::NextField
-                }
-            }
+            KeyCode::Enter => FormAction::Submit,
             _ => FormAction::Continue,
         }
     }
@@ -690,11 +669,9 @@ impl CreateForm {
                     self.active_list_mut().push(item);
                     self.list_selected = self.active_list_ref().len() - 1;
                     FormAction::Continue
-                } else if self.active_field_index() + 1 >= self.field_count() {
-                    FormAction::Submit
                 } else {
-                    self.next_field();
-                    FormAction::NextField
+                    // Empty input + Enter = done editing → create.
+                    FormAction::Submit
                 }
             }
             KeyCode::Up => {
@@ -1582,6 +1559,64 @@ mod tests {
         assert_eq!(form.workdir, "", "no host CWD prefill without the mount");
     }
 
+    #[test]
+    fn enter_on_name_submits_the_form() {
+        // A: Enter erstellt (Footer „[Enter] create“) — es wandert nicht
+        // wie Tab durch die Felder (User-Feedback nach dem Smoke-Test).
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::Name;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+    }
+
+    #[test]
+    fn enter_on_mount_toggle_submits() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::MountCwd;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+    }
+
+    #[test]
+    fn enter_on_net_profile_submits() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::NetProfile;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+    }
+
+    #[test]
+    fn enter_on_list_field_with_empty_input_submits() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::Ports;
+        // Kein eingegebener Listeneintrag → Enter heißt „fertig“ → erstellen.
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+    }
+
+    #[test]
+    fn enter_commits_typed_list_item_and_stays() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::Ports;
+        for ch in "8080:80".chars() {
+            form.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Continue);
+        assert_eq!(form.ports, vec!["8080:80".to_string()]);
+        // Zweites Enter (Input jetzt leer) → erstellen.
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+    }
+
+    #[test]
+    fn enter_on_image_adopts_and_moves_to_name() {
+        // Ausnahme vom Submit: der Picker übernimmt die Auswahl.
+        let mut form = CreateForm::new(Vec::new());
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::Name);
+        assert_eq!(form.image, crate::ui::create::SUGGESTED_IMAGES[0]);
+    }
+
     // -- quick mode --
 
     #[test]
@@ -1717,19 +1752,16 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_name_moves_to_cpus() {
+    fn space_on_mount_toggle_flips_without_moving() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        form.active_field = FormField::Name;
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
-        assert_eq!(form.active_field, FormField::Cpus);
-        // Space on the mount toggle flips the checkbox without moving.
         form.active_field = FormField::MountCwd;
         assert_eq!(
             form.handle_key(key(KeyCode::Char(' '))),
             FormAction::Continue
         );
         assert!(!form.mount_cwd);
+        assert_eq!(form.active_field, FormField::MountCwd);
     }
 
     // -- field values (grouped form; no toggle anymore) --

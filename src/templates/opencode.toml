@@ -1,10 +1,9 @@
 [meta]
 name = "Opencode"
-description = "Node-Image + CWD-Mount, um opencode-ai in der Sandbox zu nutzen"
+description = "Node-Image + CWD-Mount. opencode-ai einmalig installieren: npm i -g opencode-ai (Rootfs bleibt erhalten)"
 
 [spec]
 image = "node:22-alpine"
 name = "opencode"
 mount_cwd = true
-workdir = "/workspace"
 env = ["TERM=xterm-256color"]
