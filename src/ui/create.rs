@@ -749,15 +749,9 @@ impl CreateForm {
             }
         };
 
-        // Workdir: explicit input wins; with the workspace mount on (and no
-        // explicit entry) the mounted path is the default — sbx starts the
-        // sandbox in its primary workspace. Unchecked means NO explicit
-        // workdir: the SDK stats the workdir inside the guest rootfs at
-        // create time, and plain OCI images don't contain
-        // `/home/agent/workspace` (it's baked into sbx template images only)
-        // — mountless sandboxes start in the image's own working directory,
-        // exactly like `sbx run` without a workspace.
-        let mut workspace_mount: Option<String> = None;
+        // Workspace mount source checks live with the form: the TUI's CWD
+        // must be absolute and still exist at submit time (the assembly
+        // itself is shared with templates in `template::assemble_spec`).
         if self.mount_cwd {
             let cwd = self.cwd.trim();
             if !cwd.starts_with('/') {
@@ -766,29 +760,7 @@ impl CreateForm {
             if !std::path::Path::new(cwd).exists() {
                 bail!("Workspace mount: {cwd} does not exist (deleted after open?)");
             }
-            workspace_mount = Some(cwd.to_string());
         }
-        let workdir = {
-            let w = self.workdir.trim();
-            if !w.is_empty() {
-                Some(w.to_string())
-            } else {
-                workspace_mount.clone()
-            }
-        };
-
-        // Filter empty entries from string lists.
-        let mut volumes = trim_filter(&self.volumes);
-        if let Some(cwd) = workspace_mount {
-            // Bind-mount the current dir at the same absolute path (sbx:
-            // paths match between host and guest so stack traces line up).
-            let spec = format!("{cwd}:{cwd}");
-            if !volumes.contains(&spec) {
-                volumes.insert(0, spec);
-            }
-        }
-        let env = trim_filter(&self.env_vars);
-        let net_rules = trim_filter(&self.net_rules);
 
         // Quick mode leaves the profile at the runtime default; advanced
         // mode applies the explicitly selected profile.
@@ -798,18 +770,20 @@ impl CreateForm {
             None
         };
 
-        Ok(CreateSpec {
-            image: image.to_string(),
+        crate::template::assemble_spec(crate::template::SpecInputs {
+            image,
             name,
             cpus,
             memory,
-            workdir,
+            workdir: Some(self.workdir.clone()),
+            mount_cwd: self.mount_cwd,
+            cwd: self.cwd.trim(),
             ports,
-            volumes,
-            env,
+            volumes: self.volumes.clone(),
+            env: self.env_vars.clone(),
             labels: Vec::new(),
+            net_rules: self.net_rules.clone(),
             net_profile,
-            net_rules,
         })
     }
 }
@@ -833,14 +807,6 @@ fn is_valid_memory(s: &str) -> bool {
     } else {
         s.parse::<u64>().is_ok()
     }
-}
-
-/// Trim and filter empty strings from a list.
-fn trim_filter(list: &[String]) -> Vec<String> {
-    list.iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1738,12 +1704,6 @@ mod tests {
         assert!(PublishedPort::parse_cli("a:b").is_err());
         assert!(PublishedPort::parse_cli("8080:80/sctp").is_err());
         assert!(PublishedPort::parse_cli("127.0.0.1:8080:80").is_ok());
-    }
-
-    #[test]
-    fn trim_filter_removes_blanks() {
-        let list = vec![" a ".into(), String::new(), "b".into()];
-        assert_eq!(trim_filter(&list), vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

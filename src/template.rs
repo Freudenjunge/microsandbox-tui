@@ -240,6 +240,226 @@ pub fn write_template(dir: &std::path::Path, t: &Template) -> anyhow::Result<std
     Ok(path)
 }
 
+/// Trim and filter empty strings from a list (shared by form and template
+/// spec assembly).
+pub(crate) fn trim_filter(list: &[String]) -> Vec<String> {
+    list.iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Everything needed to assemble a [`CreateSpec`], already parsed: the
+/// create form and templates both converge here so there is exactly one
+/// assembly path.
+pub(crate) struct SpecInputs<'a> {
+    pub image: &'a str,
+    pub name: Option<String>,
+    pub cpus: Option<u32>,
+    pub memory: Option<String>,
+    pub workdir: Option<String>,
+    pub mount_cwd: bool,
+    pub cwd: &'a str,
+    pub ports: Vec<crate::models::PublishedPort>,
+    pub volumes: Vec<String>,
+    pub env: Vec<String>,
+    pub labels: Vec<String>,
+    pub net_rules: Vec<String>,
+    pub net_profile: Option<String>,
+}
+
+/// Assemble a `CreateSpec`: workspace mount at the same absolute path
+/// (sbx-style, paths match host/guest so stack traces line up), workdir
+/// defaulting to the mount, empty list entries filtered out. The exists
+/// check for the CWD lives with the form (it validates the live
+/// environment at submit time); this stays pure.
+pub(crate) fn assemble_spec(i: SpecInputs<'_>) -> anyhow::Result<crate::backend::CreateSpec> {
+    let mut workspace_mount: Option<String> = None;
+    if i.mount_cwd {
+        let cwd = i.cwd.trim();
+        if !cwd.starts_with('/') {
+            anyhow::bail!("Workspace mount: {cwd} is not an absolute path");
+        }
+        workspace_mount = Some(cwd.to_string());
+    }
+    // Explicit workdir wins; with the workspace mount on (and no explicit
+    // entry) the mounted path is the default — sbx starts the sandbox in
+    // its primary workspace. No mount means no explicit workdir: the SDK
+    // stats the workdir inside the guest rootfs at create time, and plain
+    // OCI images don't contain `/home/agent/workspace` (it's baked into
+    // sbx template images only) — mountless sandboxes start in the image's
+    // own working directory, exactly like `sbx run` without a workspace.
+    let workdir = {
+        let w = i.workdir.as_deref().unwrap_or("").trim();
+        if !w.is_empty() {
+            Some(w.to_string())
+        } else {
+            workspace_mount.clone()
+        }
+    };
+    let mut volumes = trim_filter(&i.volumes);
+    if let Some(cwd) = workspace_mount {
+        let spec = format!("{cwd}:{cwd}");
+        if !volumes.contains(&spec) {
+            volumes.insert(0, spec);
+        }
+    }
+    Ok(crate::backend::CreateSpec {
+        image: i.image.to_string(),
+        name: i.name,
+        cpus: i.cpus,
+        memory: i.memory,
+        workdir,
+        ports: i.ports,
+        volumes,
+        env: trim_filter(&i.env),
+        labels: trim_filter(&i.labels),
+        net_profile: i.net_profile,
+        net_rules: trim_filter(&i.net_rules),
+    })
+}
+
+/// Build the `CreateSpec` a template stands for (rootfs is reserved and
+/// has no effect in v1). `cwd` is the workspace mount source.
+pub fn to_create_spec(t: &Template, cwd: &str) -> anyhow::Result<crate::backend::CreateSpec> {
+    let ports = t
+        .spec
+        .ports
+        .iter()
+        .map(|p| crate::models::PublishedPort::parse_cli(p))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let name = match t.spec.name.as_deref() {
+        Some(n) if !n.trim().is_empty() => Some(n.trim().to_string()),
+        _ => None, // resolve_name decides on suffixes before this
+    };
+    assemble_spec(SpecInputs {
+        image: t.spec.image.trim(),
+        name,
+        cpus: t.spec.cpus,
+        memory: t.spec.memory.clone(),
+        workdir: t.spec.workdir.clone(),
+        mount_cwd: t.spec.mount_cwd.unwrap_or(true),
+        cwd,
+        ports,
+        volumes: t.spec.volumes.clone(),
+        env: t.spec.env.clone(),
+        labels: t.spec.labels_vec(),
+        net_rules: t.spec.net_rules.clone(),
+        net_profile: t.spec.net_profile.clone(),
+    })
+}
+
+/// Resolve a template's name pattern against existing sandbox names:
+/// free → as-is, taken → first free `pattern-2`, `pattern-3`, …
+pub fn resolve_name(pattern: &str, existing: &[String]) -> Option<String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return None;
+    }
+    if !existing.iter().any(|n| n == pattern) {
+        return Some(pattern.to_string());
+    }
+    for n in 2.. {
+        let candidate = format!("{pattern}-{n}");
+        if !existing.iter().any(|n2| n2 == &candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// One row of the template preview: the effective value that would be
+/// created, flagged when it is a default (not set by the template).
+pub struct PreviewRow {
+    pub label: &'static str,
+    pub value: String,
+    pub is_default: bool,
+}
+
+/// Effective values of what a template would create (Spec §3): template
+/// values win, unset fields fall back to the documented defaults and are
+/// flagged.
+pub fn preview_values(t: &Template, cwd: &str) -> Vec<PreviewRow> {
+    let s = &t.spec;
+    let mut rows = Vec::with_capacity(8);
+    rows.push(PreviewRow {
+        label: "Image",
+        value: s.image.clone(),
+        is_default: false,
+    });
+    rows.push(PreviewRow {
+        label: "Name",
+        value: s.name.clone().unwrap_or_else(|| "(auto)".into()),
+        is_default: s.name.is_none(),
+    });
+    rows.push(PreviewRow {
+        label: "CPU",
+        value: s
+            .cpus
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "(default)".into()),
+        is_default: s.cpus.is_none(),
+    });
+    rows.push(PreviewRow {
+        label: "Mem",
+        value: s.memory.clone().unwrap_or_else(|| "(default)".into()),
+        is_default: s.memory.is_none(),
+    });
+    rows.push(PreviewRow {
+        label: "Mount",
+        value: if s.mount_cwd.unwrap_or(true) {
+            format!("CWD → {cwd}")
+        } else {
+            "(none)".into()
+        },
+        is_default: s.mount_cwd.is_none(),
+    });
+    rows.push(PreviewRow {
+        label: "Ports",
+        value: if s.ports.is_empty() {
+            "(none)".into()
+        } else {
+            s.ports.join(", ")
+        },
+        is_default: s.ports.is_empty(),
+    });
+    rows.push(PreviewRow {
+        label: "Env",
+        value: if s.env.is_empty() {
+            "(none)".into()
+        } else {
+            s.env.join(", ")
+        },
+        is_default: s.env.is_empty(),
+    });
+    rows.push(PreviewRow {
+        label: "Net",
+        value: s.net_profile.clone().unwrap_or_else(|| "public".into()),
+        is_default: s.net_profile.is_none(),
+    });
+    rows
+}
+
+/// How the template picker lays out at the given terminal size (Spec §3):
+/// master-detail at ≥72 columns and ≥20 rows, stacked list-over-preview
+/// when narrower, list-only when shorter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutKind {
+    MasterDetail,
+    Stacked,
+    ListOnly,
+}
+
+pub fn template_layout(width: u16, height: u16) -> LayoutKind {
+    if height < 20 {
+        LayoutKind::ListOnly
+    } else if width < 72 {
+        LayoutKind::Stacked
+    } else {
+        LayoutKind::MasterDetail
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +577,85 @@ mod tests {
     fn slugify_kebab_cases_names() {
         assert_eq!(slugify("My Cool Template"), "my-cool-template");
         assert_eq!(slugify("opencode"), "opencode");
+    }
+
+    #[test]
+    fn trim_filter_removes_blanks() {
+        let list = vec![" a ".into(), String::new(), "b".into()];
+        assert_eq!(trim_filter(&list), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn resolve_name_appends_first_free_suffix() {
+        assert_eq!(resolve_name("opencode", &[]), Some("opencode".into()));
+        assert_eq!(
+            resolve_name("opencode", &["opencode".into()]),
+            Some("opencode-2".into())
+        );
+        assert_eq!(
+            resolve_name(
+                "opencode",
+                &["opencode".into(), "opencode-2".into(), "opencode-3".into()]
+            ),
+            Some("opencode-4".into())
+        );
+    }
+
+    #[test]
+    fn template_to_create_spec_maps_every_field() {
+        let t = parse(
+            "opencode",
+            include_str!("fixtures/templates/valid-full.toml"),
+        )
+        .unwrap();
+        let spec = to_create_spec(&t, "/home/me/proj").unwrap();
+        assert_eq!(spec.image, "node:22-alpine");
+        assert_eq!(spec.name.as_deref(), Some("opencode"));
+        assert_eq!(spec.cpus, Some(4));
+        assert_eq!(spec.memory.as_deref(), Some("2G"));
+        assert_eq!(spec.ports.len(), 1);
+        assert_eq!(spec.ports[0].guest_port, 3000);
+        // mount_cwd=true → CWD-Bind an gleicher Stelle, workdir-Default = Mount
+        assert!(
+            spec.volumes
+                .contains(&"/home/me/proj:/home/me/proj".to_string())
+        );
+        assert_eq!(spec.workdir.as_deref(), Some("/workspace"));
+        assert_eq!(spec.env, vec!["TERM=xterm-256color"]);
+        assert_eq!(spec.labels, vec!["team=infra"]);
+        assert_eq!(spec.net_profile.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn template_to_create_spec_rejects_missing_cwd_mount() {
+        let t = parse("x", include_str!("fixtures/templates/valid-full.toml")).unwrap();
+        assert!(to_create_spec(&t, "relative/path").is_err());
+    }
+
+    #[test]
+    fn preview_marks_defaults() {
+        let t = parse("x", include_str!("fixtures/templates/valid-full.toml")).unwrap();
+        let rows = preview_values(&t, "/home/me/proj");
+        let cpu = rows.iter().find(|r| r.label == "CPU").unwrap();
+        assert_eq!(cpu.value, "4");
+        assert!(!cpu.is_default);
+        // Template ohne cpus → Default-Zeile
+        let plain = parse(
+            "y",
+            "[meta]\nname = \"S\"\ndescription = \"d\"\n\n[spec]\nimage = \"alpine\"\n",
+        )
+        .unwrap();
+        let rows = preview_values(&plain, "/home/me/proj");
+        assert!(rows.iter().any(|r| r.label == "CPU" && r.is_default));
+        assert!(rows.iter().any(|r| r.label == "Net" && r.value == "public"));
+    }
+
+    #[test]
+    fn layout_thresholds() {
+        // Spec §3: <72 Spalten gestapelt; <20 Zeilen nur Liste.
+        assert!(matches!(template_layout(71, 24), LayoutKind::Stacked));
+        assert!(matches!(template_layout(72, 24), LayoutKind::MasterDetail));
+        assert!(matches!(template_layout(72, 19), LayoutKind::ListOnly));
+        assert!(matches!(template_layout(60, 10), LayoutKind::ListOnly));
     }
 }
