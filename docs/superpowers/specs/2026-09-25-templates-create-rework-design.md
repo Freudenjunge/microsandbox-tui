@@ -38,6 +38,7 @@ TOML:
 name = "Opencode"                # Anzeigename; Dateiname (ohne .toml) = id
 description = "Node-Image + CWD-Mount, um opencode-ai in der Sandbox zu nutzen"
 
+[spec]
 # Spec-Felder — 1:1 die Formular-Felder, alle optional außer image
 image = "node:22-alpine"         # Pflicht
 name = "opencode"                # Namens-Muster; Kollision → Auto-Suffix -2, -3 …

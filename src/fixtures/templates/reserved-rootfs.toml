@@ -1,0 +1,7 @@
+[meta]
+name = "Reserved"
+description = "valid document with the reserved rootfs field"
+
+[spec]
+image = "alpine"
+rootfs = "snapshot:opencode/base"

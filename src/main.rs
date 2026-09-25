@@ -36,6 +36,7 @@ mod event;
 mod models;
 mod runtime;
 mod shell_window;
+mod template;
 mod ui;
 
 use app::{App, Op, View, ports_fetch_needed};

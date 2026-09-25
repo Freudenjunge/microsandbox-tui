@@ -1,0 +1,7 @@
+[meta]
+name = "BadMem"
+description = "memory string does not parse"
+
+[spec]
+image = "alpine"
+memory = "lots"

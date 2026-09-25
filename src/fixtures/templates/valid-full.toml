@@ -1,0 +1,17 @@
+[meta]
+name = "Opencode"
+description = "Node-Image + CWD-Mount, um opencode-ai in der Sandbox zu nutzen"
+
+[spec]
+image = "node:22-alpine"
+name = "opencode"
+cpus = 4
+memory = "2G"
+workdir = "/workspace"
+mount_cwd = true
+ports = ["127.0.0.1:3000:3000"]
+volumes = ["/tmp/share:/share:ro"]
+env = ["TERM=xterm-256color"]
+labels = { team = "infra" }
+net_profile = "public"
+net_rules = ["allow@api.example.com"]
