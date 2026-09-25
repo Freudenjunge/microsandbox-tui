@@ -1,0 +1,10 @@
+[meta]
+name = "Hermes Agent"
+description = "The self-improving AI agent by Nous Research (sbx) — pulls 7.3k"
+
+[spec]
+image = "sbx/hermes-agent-image"
+name = "hermes-agent"
+cpus = 2
+memory = "4G"
+mount_cwd = true

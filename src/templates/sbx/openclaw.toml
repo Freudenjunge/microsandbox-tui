@@ -1,0 +1,10 @@
+[meta]
+name = "OpenClaw"
+description = "Personal AI assistant with multi-platform chat (sbx) — pulls 6.9k"
+
+[spec]
+image = "sbx/openclaw-image"
+name = "openclaw"
+cpus = 2
+memory = "4G"
+mount_cwd = true

@@ -670,3 +670,31 @@ Plan: `docs/superpowers/plans/2026-09-25-templates-create-rework.md`
 - [x] DESIGN.md: Phase 2 items 11/12, create-flow section rewritten
       (templates-first), keybinding table updated (`c`/`Enter`/`e`/`n`/
       `d`/`Ctrl+S`, no more `Ctrl+A`). This section records the tasks.
+
+## Phase 2.13 — sbx Hub catalog in the create flow (2026-09-25)
+
+The create flow's built-in templates move from generic distros to the
+official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
+
+### 11.1 sbx harness catalog as built-ins
+- [x] 19 popular AI-agent harness entries as built-in TOMLs in
+      `src/templates/sbx/`: Pi, Hermes Agent, OpenClaw, Kiro, Crush,
+      Junie, GitHub Copilot, Aider, Droid, Open Interpreter, OpenHands,
+      Antigravity, Vibe, Docker Agent, Claude Code, OpenCode (sbx),
+      Codex, Cursor, Devin — sorted by their kit's Hub pull count,
+      descending. Registry verification: Hub `*-kit` repos are
+      `application/vnd.docker.sandbox.kit.v2` artifacts (~400 KB config
+      YAML + one empty layer — NOT bootable), so every entry creates
+      from its matching `sbx/<name>-image` base OCI image instead.
+      `sbx/shell` does not exist on the Hub (404) — Shell stays the
+      alpine preset. Each catalog entry: friendly name + Hub description
+      with pull count, `sbx/<name>-image`, explicit sandbox name, 2 vCPU
+      + 4G (opencode precedent: SDK default 512 MiB is unusable), CWD
+      mount on.
+- [x] Display order: `shell` first, then the catalog, then the
+      maintainer's `opencode`/`opencode2` presets (untouched). The sbx
+      OpenCode entry gets id `opencode-sbx` so nothing collides; user
+      files still shadow built-ins by id as before.
+- [x] Tests pin the catalog order, the `sbx/*-image` pattern, names,
+      resources, and the non-collision; app tests select templates by id
+      instead of hardcoded indexes.

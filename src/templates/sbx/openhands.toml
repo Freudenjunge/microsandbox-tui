@@ -1,0 +1,10 @@
+[meta]
+name = "OpenHands"
+description = "AI software engineer by All Hands AI (sbx) — pulls 1.3k"
+
+[spec]
+image = "sbx/openhands-image"
+name = "openhands"
+cpus = 2
+memory = "4G"
+mount_cwd = true

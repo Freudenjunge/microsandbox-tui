@@ -135,10 +135,50 @@ pub fn parse(id: &str, s: &str) -> Result<Template, String> {
 
 /// Built-in templates, embedded at compile time — they double as living
 /// examples of the file format (copy one to start your own).
+///
+/// Display order (agreed with the maintainer): `shell` first, then the
+/// curated sbx Hub catalog (popular AI agent harnesses, sorted by their
+/// kit's Docker Hub pull count, descending), then the maintainer's
+/// opencode presets. Hub `*-kit` repos are not bootable images — every
+/// catalog entry creates from its matching `sbx/<name>-image` base.
 const BUILTIN_SOURCES: &[(&str, &str)] = &[
+    ("shell", include_str!("templates/shell.toml")),
+    ("pi", include_str!("templates/sbx/pi.toml")),
+    (
+        "hermes-agent",
+        include_str!("templates/sbx/hermes-agent.toml"),
+    ),
+    ("openclaw", include_str!("templates/sbx/openclaw.toml")),
+    ("kiro", include_str!("templates/sbx/kiro.toml")),
+    ("crush", include_str!("templates/sbx/crush.toml")),
+    ("junie", include_str!("templates/sbx/junie.toml")),
+    ("copilot", include_str!("templates/sbx/copilot.toml")),
+    ("aider", include_str!("templates/sbx/aider.toml")),
+    ("droid", include_str!("templates/sbx/droid.toml")),
+    (
+        "open-interpreter",
+        include_str!("templates/sbx/open-interpreter.toml"),
+    ),
+    ("openhands", include_str!("templates/sbx/openhands.toml")),
+    (
+        "antigravity",
+        include_str!("templates/sbx/antigravity.toml"),
+    ),
+    ("vibe", include_str!("templates/sbx/vibe.toml")),
+    (
+        "docker-agent",
+        include_str!("templates/sbx/docker-agent.toml"),
+    ),
+    ("claude", include_str!("templates/sbx/claude.toml")),
+    (
+        "opencode-sbx",
+        include_str!("templates/sbx/opencode-sbx.toml"),
+    ),
+    ("codex", include_str!("templates/sbx/codex.toml")),
+    ("cursor", include_str!("templates/sbx/cursor.toml")),
+    ("devin", include_str!("templates/sbx/devin.toml")),
     ("opencode", include_str!("templates/opencode.toml")),
     ("opencode2", include_str!("templates/opencode2.toml")),
-    ("shell", include_str!("templates/shell.toml")),
 ];
 
 /// The built-in templates, in stable display order.
@@ -538,11 +578,79 @@ mod tests {
     }
 
     #[test]
-    fn load_builtins_contain_the_three_presets() {
+    fn load_builtins_lead_with_shell_then_sbx_catalog() {
         let t = load_builtins();
         let ids: Vec<&str> = t.iter().map(|x| x.id.as_str()).collect();
-        assert_eq!(ids, vec!["opencode", "opencode2", "shell"]);
+        assert_eq!(ids.first(), Some(&"shell"), "shell leads the presets");
+        assert_eq!(
+            &ids[1..20],
+            &[
+                "pi",
+                "hermes-agent",
+                "openclaw",
+                "kiro",
+                "crush",
+                "junie",
+                "copilot",
+                "aider",
+                "droid",
+                "open-interpreter",
+                "openhands",
+                "antigravity",
+                "vibe",
+                "docker-agent",
+                "claude",
+                "opencode-sbx",
+                "codex",
+                "cursor",
+                "devin",
+            ],
+            "sbx harness catalog in Hub download order"
+        );
+        // User presets stay untouched at the end.
+        assert_eq!(&ids[20..], &["opencode", "opencode2"]);
         assert!(t.iter().all(|x| x.built_in));
+    }
+
+    #[test]
+    fn sbx_builtins_create_from_bootable_base_images() {
+        // Hub kits (application/vnd.docker.sandbox.kit.v2) are ~400 KB
+        // config artifacts with one empty layer — NOT bootable OCI images.
+        // Every catalog entry must therefore create from its matching
+        // sbx/<name>-image base image (verified against the registry).
+        let t = load_builtins();
+        for x in t.iter().skip(1).take(19) {
+            assert!(
+                x.spec.image.starts_with("sbx/") && x.spec.image.ends_with("-image"),
+                "{} creates from a bootable base image, got {}",
+                x.id,
+                x.spec.image
+            );
+            assert!(
+                x.spec.name.is_some(),
+                "{} names the sandbox (no auto tui-* names)",
+                x.id
+            );
+            assert_eq!(x.spec.mount_cwd, Some(true), "{} mounts the CWD", x.id);
+        }
+    }
+
+    #[test]
+    fn sbx_builtins_have_usable_resources_and_names() {
+        // Opencode precedent (builtin_opencode_has_usable_memory): the SDK
+        // default of 512 MiB is unusable for agent harnesses — the catalog
+        // sets 2 vCPUs + 4G like the maintainer's opencode preset.
+        let t = load_builtins();
+        let claude = t.iter().find(|x| x.id == "claude").unwrap();
+        assert_eq!(claude.meta.name, "Claude Code");
+        assert_eq!(claude.spec.image, "sbx/claude-image");
+        assert_eq!(claude.spec.name.as_deref(), Some("claude"));
+        assert_eq!(claude.spec.cpus, Some(2));
+        assert_eq!(claude.spec.memory.as_deref(), Some("4G"));
+        // The sbx OpenCode entry must not collide with the user preset id.
+        let oc = t.iter().find(|x| x.id == "opencode-sbx").unwrap();
+        assert_eq!(oc.spec.image, "sbx/opencode-image");
+        assert!(t.iter().filter(|x| x.id == "opencode").count() == 1);
     }
 
     #[test]

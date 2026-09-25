@@ -1,0 +1,10 @@
+[meta]
+name = "Vibe"
+description = "Mistral AI's open source coding agent (sbx) — pulls 0.5k"
+
+[spec]
+image = "sbx/vibe-image"
+name = "vibe"
+cpus = 2
+memory = "4G"
+mount_cwd = true

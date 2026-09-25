@@ -1230,7 +1230,8 @@ mod tests {
         // A sandbox named "shell" already exists → auto suffix.
         app.sandboxes = vec![summary("shell")];
         app.view = View::Create;
-        app.create_state = Some(CreateState::Select { selected: 2 }); // shell
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap();
+        app.create_state = Some(CreateState::Select { selected: shell });
         assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
         let spec = app.queued_create.take().unwrap();
         assert_eq!(spec.name.as_deref(), Some("shell-2"));
@@ -1245,7 +1246,8 @@ mod tests {
         let mut app = app_with_templates();
         app.busy = true;
         app.view = View::Create;
-        app.create_state = Some(CreateState::Select { selected: 2 });
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap();
+        app.create_state = Some(CreateState::Select { selected: shell });
         assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Continue);
         assert!(app.queued_create.is_none());
     }
@@ -1254,7 +1256,12 @@ mod tests {
     fn select_e_opens_prefilled_form() {
         let mut app = app_with_templates();
         app.view = View::Create;
-        app.create_state = Some(CreateState::Select { selected: 0 }); // opencode
+        let opencode = app
+            .templates
+            .iter()
+            .position(|t| t.id == "opencode")
+            .unwrap();
+        app.create_state = Some(CreateState::Select { selected: opencode });
         assert_eq!(app.handle_event(key(KeyCode::Char('e'))), Action::Render);
         let Some(CreateState::Form(form)) = &app.create_state else {
             panic!("expected Form state");
@@ -1424,12 +1431,12 @@ mod tests {
         // status hint instead of an index-out-of-bounds.
         let mut app = app_with_templates();
         app.view = View::Create;
-        app.create_state = Some(CreateState::Select { selected: 5 });
+        app.create_state = Some(CreateState::Select { selected: 500 });
         app.handle_event(key(KeyCode::Enter));
         assert!(app.queued_create.is_none());
-        app.create_state = Some(CreateState::Select { selected: 5 });
+        app.create_state = Some(CreateState::Select { selected: 500 });
         app.handle_event(key(KeyCode::Char('e')));
-        app.create_state = Some(CreateState::Select { selected: 5 });
+        app.create_state = Some(CreateState::Select { selected: 500 });
         app.handle_event(key(KeyCode::Char('d')));
     }
 

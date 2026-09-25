@@ -1,0 +1,10 @@
+[meta]
+name = "Cursor"
+description = "Cursor Agent, the CLI coding agent from Cursor (sbx) — pulls 0.3k"
+
+[spec]
+image = "sbx/cursor-image"
+name = "cursor"
+cpus = 2
+memory = "4G"
+mount_cwd = true

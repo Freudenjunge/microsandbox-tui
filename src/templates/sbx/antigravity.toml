@@ -1,0 +1,10 @@
+[meta]
+name = "Antigravity"
+description = "Google's agent-first dev platform — the agy terminal agent (sbx) — pulls 0.9k"
+
+[spec]
+image = "sbx/antigravity-image"
+name = "antigravity"
+cpus = 2
+memory = "4G"
+mount_cwd = true

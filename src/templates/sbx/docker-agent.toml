@@ -1,0 +1,10 @@
+[meta]
+name = "Docker Agent"
+description = "Docker's multi-provider agentic coding CLI (sbx) — pulls 0.4k"
+
+[spec]
+image = "sbx/docker-agent-image"
+name = "docker-agent"
+cpus = 2
+memory = "4G"
+mount_cwd = true

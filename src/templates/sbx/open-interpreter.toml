@@ -1,0 +1,10 @@
+[meta]
+name = "Open Interpreter"
+description = "Let language models run code on your computer (sbx) — pulls 1.4k"
+
+[spec]
+image = "sbx/open-interpreter-image"
+name = "open-interpreter"
+cpus = 2
+memory = "4G"
+mount_cwd = true

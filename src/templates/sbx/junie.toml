@@ -1,0 +1,10 @@
+[meta]
+name = "Junie"
+description = "The AI coding agent by JetBrains (sbx) — pulls 5.9k"
+
+[spec]
+image = "sbx/junie-image"
+name = "junie"
+cpus = 2
+memory = "4G"
+mount_cwd = true

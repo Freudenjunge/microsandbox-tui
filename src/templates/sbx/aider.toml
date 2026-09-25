@@ -1,0 +1,10 @@
+[meta]
+name = "Aider"
+description = "AI pair programming in your terminal (sbx) — pulls 1.8k"
+
+[spec]
+image = "sbx/aider-image"
+name = "aider"
+cpus = 2
+memory = "4G"
+mount_cwd = true

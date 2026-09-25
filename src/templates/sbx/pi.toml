@@ -1,0 +1,10 @@
+[meta]
+name = "Pi"
+description = "Pi coding agent (sbx) — pulls 8.8k"
+
+[spec]
+image = "sbx/pi-image"
+name = "pi"
+cpus = 2
+memory = "4G"
+mount_cwd = true

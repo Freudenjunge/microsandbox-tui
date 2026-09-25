@@ -1,0 +1,10 @@
+[meta]
+name = "Codex"
+description = "OpenAI Codex CLI, OpenAI's agentic coding CLI (sbx) — pulls 0.3k"
+
+[spec]
+image = "sbx/codex-image"
+name = "codex"
+cpus = 2
+memory = "4G"
+mount_cwd = true

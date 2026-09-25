@@ -1,0 +1,10 @@
+[meta]
+name = "Droid"
+description = "Droid CLI by Factory, an agentic coding CLI (sbx) — pulls 1.4k"
+
+[spec]
+image = "sbx/droid-image"
+name = "droid"
+cpus = 2
+memory = "4G"
+mount_cwd = true

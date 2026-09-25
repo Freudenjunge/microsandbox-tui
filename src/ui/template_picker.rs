@@ -222,9 +222,9 @@ mod tests {
         // I4: with more templates than fit, the highlighted row must be
         // visible (scrolling list, truncating lines — no wrap).
         let mut templates = crate::template::load_builtins();
-        templates.push(user_tpl("t4", "Vierter", "vier"));
-        templates.push(user_tpl("t5", "Fuenfter", "fuenfte Beschreibung"));
-        let selected = 4;
+        templates.push(user_tpl("t-z4", "Vierter", "vier"));
+        templates.push(user_tpl("t-z5", "Fuenfter", "fuenfte Beschreibung"));
+        let selected = templates.len() - 1;
 
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         terminal

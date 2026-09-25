@@ -1,0 +1,10 @@
+[meta]
+name = "Kiro"
+description = "Kiro CLI by AWS with interactive device-flow auth (sbx) — pulls 6.4k"
+
+[spec]
+image = "sbx/kiro-image"
+name = "kiro"
+cpus = 2
+memory = "4G"
+mount_cwd = true

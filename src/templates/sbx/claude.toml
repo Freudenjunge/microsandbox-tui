@@ -1,0 +1,10 @@
+[meta]
+name = "Claude Code"
+description = "Anthropic's Claude Code, resolved by the sandbox proxy (sbx) — pulls 0.4k"
+
+[spec]
+image = "sbx/claude-image"
+name = "claude"
+cpus = 2
+memory = "4G"
+mount_cwd = true

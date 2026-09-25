@@ -1,0 +1,10 @@
+[meta]
+name = "OpenCode (sbx)"
+description = "OpenCode from the official sbx hub, all providers via sandbox proxy — pulls 0.4k"
+
+[spec]
+image = "sbx/opencode-image"
+name = "opencode"
+cpus = 2
+memory = "4G"
+mount_cwd = true

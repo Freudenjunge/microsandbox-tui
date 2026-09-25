@@ -1,0 +1,10 @@
+[meta]
+name = "Devin"
+description = "Devin CLI by Cognition, resolved by the sandbox proxy (sbx) — pulls 0.3k"
+
+[spec]
+image = "sbx/devin-image"
+name = "devin"
+cpus = 2
+memory = "4G"
+mount_cwd = true

@@ -1,0 +1,10 @@
+[meta]
+name = "GitHub Copilot"
+description = "GitHub Copilot CLI, GitHub's agentic coding CLI (sbx) — pulls 5.5k"
+
+[spec]
+image = "sbx/copilot-image"
+name = "copilot"
+cpus = 2
+memory = "4G"
+mount_cwd = true

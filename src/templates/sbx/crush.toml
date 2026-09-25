@@ -1,0 +1,10 @@
+[meta]
+name = "Crush"
+description = "Multi-provider AI coding agent from Charm (sbx) — pulls 6.1k"
+
+[spec]
+image = "sbx/crush-image"
+name = "crush"
+cpus = 2
+memory = "4G"
+mount_cwd = true
