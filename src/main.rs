@@ -377,6 +377,18 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                         }
                     })
             }
+            Op::DeleteTemplate(id) => {
+                // User files live at `<templates_dir>/<id>.toml` (the id is
+                // the file stem); built-ins have no file and cannot go.
+                let path = crate::template::templates_dir().join(format!("{id}.toml"));
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(format!("template '{id}' deleted")),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(format!(
+                        "template '{id}' has no file (built-ins cannot be deleted)"
+                    )),
+                    Err(e) => Err(anyhow::anyhow!("delete '{id}.toml': {e}")),
+                }
+            }
         };
         let event = match res {
             Ok(msg) => AppEvent::OpDone(msg),
@@ -482,8 +494,15 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
             View::Help => {
                 ui::render_help(frame, area);
             }
-            View::Create => match &app.create_form {
-                Some(form) => ui::create::render_create_form(frame, form, area),
+            View::Create => match &app.create_state {
+                Some(crate::app::CreateState::Form(form)) => {
+                    ui::create::render_create_form(frame, form, area)
+                }
+                // The master-detail picker rendering lands with the picker
+                // module (next task); until then show the transition frame.
+                Some(crate::app::CreateState::Select { .. }) => {
+                    ui::render_placeholder(frame, "Templates", area)
+                }
                 None => ui::render_placeholder(frame, "Create", area),
             },
             View::Logs | View::Ports | View::Inspect => {

@@ -23,6 +23,10 @@ use crate::backend::{ExecOutput, LogLine};
 use crate::models::{Metrics, PublishedPort, SandboxSummary};
 
 /// Events the app cares about (abstracted over crossterm + background pollers).
+/// Events the background tasks send into the UI loop. Some variants carry
+/// bulk payloads (whole sandbox/metric/template lists) by design — that is
+/// what the poller contract is, so the size warning is accepted here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum AppEvent {
     /// A key was pressed.
@@ -43,6 +47,12 @@ pub enum AppEvent {
     LogsEnded,
     /// Images list was refreshed (used by the create form autocomplete).
     ImagesUpdated(Vec<crate::models::Image>),
+    /// Templates were loaded from disk + built-ins (startup or reload).
+    TemplatesLoaded(Vec<crate::template::Template>),
+    /// A template file was written; carries the template for the list.
+    TemplateSaved(crate::template::Template),
+    /// A template file was deleted; carries the template id.
+    TemplateDeleted(String),
     /// Ports for a sandbox were refreshed (used by the ports view).
     PortsUpdated {
         name: String,

@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 /// Display metadata for a template (`[meta]` section).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TemplateMeta {
     /// Human-readable display name (e.g. `Opencode`).
     pub name: String,
@@ -24,7 +24,7 @@ pub struct TemplateMeta {
 
 /// The spec fields of a template document: the create form's fields, all
 /// optional except `image`.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TemplateSpec {
     /// OCI image reference (required).
@@ -64,7 +64,7 @@ pub struct TemplateSpec {
 }
 
 /// A template document as loaded from disk or from the built-in presets.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Template {
     /// Identity: the file name stem (also the shadowing key).
     pub id: String,

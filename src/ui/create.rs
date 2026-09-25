@@ -183,7 +183,7 @@ impl FormField {
 // ---------------------------------------------------------------------------
 
 /// What the form wants the caller to do after a key press.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FormAction {
     /// Stay on the form (re-render).
     Continue,
@@ -195,6 +195,8 @@ pub enum FormAction {
     NextField,
     /// Shift-Tab was pressed — moved to previous field.
     PrevField,
+    /// Ctrl+S confirmed in the save dialog — write this template to disk.
+    SaveTemplate(Box<crate::template::Template>),
 }
 
 // ---------------------------------------------------------------------------

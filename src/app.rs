@@ -21,7 +21,6 @@ use crate::actions::CardAction;
 use crate::event::Action;
 use crate::event::AppEvent;
 use crate::models::{Metrics, PublishedPort, SandboxState, SandboxSummary};
-use crate::ui::create::CreateForm;
 use crate::ui::logs::LogsState;
 use crate::ui::ports::PortsState;
 
@@ -98,6 +97,17 @@ impl View {
     }
 }
 
+/// State of the create flow (Spec §3/§4): the master-detail template
+/// select is the entry; `e` opens the full-screen form pre-filled, `n`
+/// empty. `Enter` in the select creates directly from the template.
+#[derive(Debug)]
+pub enum CreateState {
+    /// Template picker with the highlighted row.
+    Select { selected: usize },
+    /// Full-screen grouped form.
+    Form(Box<crate::ui::create::CreateForm>),
+}
+
 /// A lifecycle/exec operation awaiting confirmation or execution.
 ///
 /// Destructive ops (`x` stop, `Del` remove, `r` restart) require the user to
@@ -121,6 +131,8 @@ pub enum Op {
     UnpublishPort { name: String, port: PublishedPort },
     /// Install or update the host microsandbox runtime to the SDK version.
     InstallRuntime,
+    /// Delete a user template file (built-ins cannot be deleted).
+    DeleteTemplate(String),
 }
 
 impl Op {
@@ -149,6 +161,9 @@ impl Op {
                     "Install/update microsandbox runtime to v{}? (downloads the official bundle)",
                     crate::runtime::sdk_version()
                 )
+            }
+            Op::DeleteTemplate(id) => {
+                format!("Delete template '{id}'? (the file will be removed)")
             }
         }
     }
@@ -221,8 +236,12 @@ pub struct App {
     /// Validated create spec queued by the form, consumed via
     /// [`App::take_create_spec`].
     pub queued_create: Option<crate::backend::CreateSpec>,
-    /// Create-form state (lives across renders while the form is open).
-    pub create_form: Option<CreateForm>,
+    /// Create-flow state: template select ↔ full-screen form.
+    pub create_state: Option<CreateState>,
+    /// Template to write to disk (Ctrl+S), consumed by the main loop.
+    pub take_save_template: Option<crate::template::Template>,
+    /// Loaded templates (user files shadow built-ins).
+    pub templates: Vec<crate::template::Template>,
     /// Logs-view state; `Some` while the logs view is open.
     pub logs_state: Option<LogsState>,
     /// Bounded log preview for the selected sandbox on the dashboard
@@ -269,7 +288,9 @@ impl App {
             confirm: None,
             queued_op: None,
             queued_create: None,
-            create_form: None,
+            create_state: None,
+            take_save_template: None,
+            templates: Vec::new(),
             logs_state: None,
             preview_lines: Vec::new(),
             preview_for: None,
@@ -353,9 +374,27 @@ impl App {
             }
             AppEvent::ImagesUpdated(images) => {
                 self.images = images.clone();
-                if let Some(form) = &mut self.create_form {
+                if let Some(CreateState::Form(form)) = &mut self.create_state {
                     form.images = images;
                 }
+                Action::Render
+            }
+            AppEvent::TemplatesLoaded(templates) => {
+                self.templates = templates;
+                Action::Render
+            }
+            AppEvent::TemplateSaved(t) => {
+                // The saved template was written by the main loop; refresh
+                // the in-memory list entry (id = shadowing key).
+                let id = t.id.clone();
+                match self.templates.iter().position(|x| x.id == id) {
+                    Some(pos) => self.templates[pos] = t,
+                    None => self.templates.insert(0, t),
+                }
+                Action::Render
+            }
+            AppEvent::TemplateDeleted(id) => {
+                self.templates.retain(|t| t.id != id);
                 Action::Render
             }
             AppEvent::PortsUpdated { name, ports } => {
@@ -479,7 +518,7 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('c') => {
-                self.open_create_form();
+                self.open_create_templates();
                 Action::Render
             }
             KeyCode::Enter => {
@@ -530,33 +569,150 @@ impl App {
 
     /// Keys on the create form.
     fn handle_create_key(&mut self, key: KeyEvent) -> Action {
-        let Some(form) = &mut self.create_form else {
-            self.view = View::Dashboard;
-            return Action::Render;
-        };
-        match form.handle_key(key) {
-            crate::ui::create::FormAction::Cancel => {
-                self.create_form = None;
-                self.view = View::Dashboard;
-                Action::Render
+        match self.create_state.take() {
+            Some(CreateState::Select { selected }) => {
+                self.handle_template_select_key(key, selected)
             }
-            crate::ui::create::FormAction::Submit => match form.to_create_spec() {
-                Ok(spec) => {
-                    let label = spec.name.clone().unwrap_or_else(|| "<auto-name>".into());
-                    self.create_form = None;
-                    self.view = View::Dashboard;
-                    self.busy = true;
-                    self.set_status(format!("Creating {label}…"));
-                    self.queued_create = Some(spec);
+            Some(CreateState::Form(mut form)) => match form.handle_key(key) {
+                crate::ui::create::FormAction::Cancel => {
+                    // Back to the picker, not the dashboard (Spec §3).
+                    self.create_state = Some(CreateState::Select { selected: 0 });
                     Action::Render
                 }
-                Err(e) => {
-                    form.error = Some(e.to_string());
+                crate::ui::create::FormAction::Submit => match form.to_create_spec() {
+                    Ok(spec) => {
+                        let label = spec.name.clone().unwrap_or_else(|| "<auto-name>".into());
+                        self.view = View::Dashboard;
+                        self.busy = true;
+                        self.set_status(format!("Creating {label}…"));
+                        self.queued_create = Some(spec);
+                        Action::Render
+                    }
+                    Err(e) => {
+                        form.error = Some(e.to_string());
+                        self.create_state = Some(CreateState::Form(form));
+                        Action::Render
+                    }
+                },
+                crate::ui::create::FormAction::SaveTemplate(t) => {
+                    self.take_save_template = Some(*t);
+                    self.create_state = Some(CreateState::Form(form));
+                    Action::Render
+                }
+                other => {
+                    self.create_state = Some(CreateState::Form(form));
+                    let _ = other;
                     Action::Render
                 }
             },
-            _ => Action::Render,
+            None => {
+                self.view = View::Dashboard;
+                Action::Render
+            }
         }
+    }
+
+    /// Keys on the template picker (master-detail, Spec §3).
+    fn handle_template_select_key(&mut self, key: KeyEvent, selected: usize) -> Action {
+        if self.templates.is_empty() {
+            self.view = View::Dashboard;
+            return Action::Render;
+        }
+        let last = self.templates.len() - 1;
+        match key.code {
+            KeyCode::Up => {
+                self.create_state = Some(CreateState::Select {
+                    selected: selected.saturating_sub(1),
+                });
+                Action::Render
+            }
+            KeyCode::Down => {
+                self.create_state = Some(CreateState::Select {
+                    selected: (selected + 1).min(last),
+                });
+                Action::Render
+            }
+            KeyCode::Enter => {
+                // Review Focus 3: never queue a second create while one
+                // is running.
+                if self.busy {
+                    self.create_state = Some(CreateState::Select { selected });
+                    return Action::Continue;
+                }
+                let template = &self.templates[selected];
+                let cwd = self.create_cwd();
+                match crate::template::to_create_spec(template, &cwd) {
+                    Ok(mut spec) => {
+                        // Name pattern taken → first free -N suffix.
+                        if let Some(pattern) = template.spec.name.clone() {
+                            let existing: Vec<String> =
+                                self.sandboxes.iter().map(|s| s.name.clone()).collect();
+                            if let Some(resolved) =
+                                crate::template::resolve_name(&pattern, &existing)
+                            {
+                                spec.name = Some(resolved);
+                            }
+                        }
+                        let label = spec.name.clone().unwrap_or_else(|| "<auto-name>".into());
+                        self.view = View::Dashboard;
+                        self.busy = true;
+                        self.set_status(format!("Creating {label}…"));
+                        self.queued_create = Some(spec);
+                        Action::Render
+                    }
+                    Err(e) => {
+                        self.set_status(format!("Template error: {e:#}"));
+                        self.create_state = Some(CreateState::Select { selected });
+                        Action::Render
+                    }
+                }
+            }
+            KeyCode::Char('e') => {
+                let form = crate::ui::create::CreateForm::from_template(
+                    &self.templates[selected],
+                    self.create_cwd(),
+                );
+                self.create_state = Some(CreateState::Form(Box::new(form)));
+                Action::Render
+            }
+            KeyCode::Char('n') => {
+                let mut form = crate::ui::create::CreateForm::new(self.images.clone());
+                form.cwd = self.create_cwd();
+                form.workdir = form.cwd.clone();
+                self.create_state = Some(CreateState::Form(Box::new(form)));
+                Action::Render
+            }
+            KeyCode::Char('d') => {
+                let template = &self.templates[selected];
+                if template.built_in {
+                    self.set_status(
+                        "built-in template — create a file with the same id in the template dir to override it",
+                    );
+                    self.create_state = Some(CreateState::Select { selected });
+                } else {
+                    let id = template.id.clone();
+                    self.confirm = Some(Op::DeleteTemplate(id));
+                    self.create_state = Some(CreateState::Select { selected });
+                }
+                Action::Render
+            }
+            KeyCode::Esc => {
+                self.view = View::Dashboard;
+                Action::Render
+            }
+            _ => {
+                self.create_state = Some(CreateState::Select { selected });
+                Action::Continue
+            }
+        }
+    }
+
+    /// The CWD captured for the workspace mount when the create flow
+    /// opened (the dashboard's process CWD).
+    fn create_cwd(&self) -> String {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 
     /// Keys on the logs panel.
@@ -689,9 +845,9 @@ impl App {
         }
     }
 
-    /// Open the create form, pre-seeding the image list from cache.
-    fn open_create_form(&mut self) {
-        self.create_form = Some(CreateForm::new(self.images.clone()));
+    /// Open the create flow: the template picker (master-detail).
+    fn open_create_templates(&mut self) {
+        self.create_state = Some(CreateState::Select { selected: 0 });
         self.view = View::Create;
     }
 
@@ -911,6 +1067,7 @@ mod tests {
     use super::*;
     use crate::backend::LogLine;
     use crate::models::SandboxState;
+    use crate::ui::create::CreateForm;
     use chrono::{DateTime, Utc};
 
     fn summary(name: &str) -> SandboxSummary {
@@ -995,6 +1152,135 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.handle_event(key(KeyCode::Char('c'))), Action::Render);
         assert_eq!(app.view, View::Create);
+    }
+
+    // -- template select state (create rework) --
+
+    fn app_with_templates() -> App {
+        let mut app = App::new();
+        app.templates = crate::template::load_builtins();
+        app
+    }
+
+    #[test]
+    fn c_key_opens_template_select() {
+        let mut app = App::new();
+        assert_eq!(app.handle_event(key(KeyCode::Char('c'))), Action::Render);
+        assert_eq!(app.view, View::Create);
+        assert!(matches!(
+            app.create_state,
+            Some(CreateState::Select { selected: 0 })
+        ));
+    }
+
+    #[test]
+    fn select_enter_queues_create_with_resolved_name() {
+        let mut app = app_with_templates();
+        // A sandbox named "shell" already exists → auto suffix.
+        app.sandboxes = vec![summary("shell")];
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 2 }); // shell
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        let spec = app.queued_create.take().unwrap();
+        assert_eq!(spec.name.as_deref(), Some("shell-2"));
+        assert!(app.create_state.is_none());
+        assert_eq!(app.view, View::Dashboard);
+        assert!(app.busy);
+    }
+
+    #[test]
+    fn select_enter_while_busy_ignored() {
+        // Review Focus 3: kein zweites Create, solange eines läuft.
+        let mut app = app_with_templates();
+        app.busy = true;
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 2 });
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Continue);
+        assert!(app.queued_create.is_none());
+    }
+
+    #[test]
+    fn select_e_opens_prefilled_form() {
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 }); // opencode
+        assert_eq!(app.handle_event(key(KeyCode::Char('e'))), Action::Render);
+        let Some(CreateState::Form(form)) = &app.create_state else {
+            panic!("expected Form state");
+        };
+        assert_eq!(form.image, "node:22-alpine");
+        assert_eq!(form.name, "opencode");
+    }
+
+    #[test]
+    fn select_n_opens_empty_form() {
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        assert_eq!(app.handle_event(key(KeyCode::Char('n'))), Action::Render);
+        let Some(CreateState::Form(form)) = &app.create_state else {
+            panic!("expected Form state");
+        };
+        assert!(form.image.is_empty());
+        assert!(form.mount_cwd);
+    }
+
+    #[test]
+    fn form_esc_returns_to_select_not_dashboard() {
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Form(Box::new(CreateForm::from_template(
+            &app.templates[0],
+            "/tmp".into(),
+        ))));
+        assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Render);
+        assert_eq!(app.view, View::Create);
+        assert!(matches!(app.create_state, Some(CreateState::Select { .. })));
+    }
+
+    #[test]
+    fn select_d_on_builtin_shows_hint_only() {
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 }); // built-in
+        assert_eq!(app.handle_event(key(KeyCode::Char('d'))), Action::Render);
+        assert!(app.confirm.is_none());
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or_default()
+                .contains("built-in")
+        );
+    }
+
+    #[test]
+    fn select_d_on_user_template_asks_confirm() {
+        let mut app = app_with_templates();
+        let mut t = crate::template::parse(
+            "mine",
+            "[meta]\nname = \"Mine\"\ndescription = \"d\"\n\n[spec]\nimage = \"alpine\"\n",
+        )
+        .unwrap();
+        t.id = "mine".into();
+        app.templates.insert(0, t);
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 }); // user template
+        assert_eq!(app.handle_event(key(KeyCode::Char('d'))), Action::Render);
+        assert!(matches!(
+            app.confirm.as_ref(),
+            Some(Op::DeleteTemplate(id)) if id == "mine"
+        ));
+    }
+
+    #[test]
+    fn templates_loaded_replaces_list() {
+        let mut app = App::new();
+        let ts = crate::template::load_builtins();
+        assert_eq!(
+            app.handle_event(crate::event::AppEvent::TemplatesLoaded(ts.clone())),
+            Action::Render
+        );
+        assert_eq!(app.templates.len(), ts.len());
     }
 
     #[test]
