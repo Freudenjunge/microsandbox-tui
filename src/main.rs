@@ -160,6 +160,20 @@ async fn run(cli: Cli) -> Result<()> {
         }
     });
 
+    // Templates: load built-ins + user files once at startup; per-file
+    // problems surface as status-line warnings, not errors.
+    {
+        let tx = event_tx.clone();
+        tokio::spawn(async move {
+            let (templates, warnings) =
+                crate::template::load_all(&crate::template::templates_dir());
+            let _ = tx.send(AppEvent::TemplatesLoaded(templates)).await;
+            for w in warnings {
+                let _ = tx.send(AppEvent::Error(w)).await;
+            }
+        });
+    }
+
     // ---- main event loop ----
 
     // Abort handle + identity of the running log-tail task (one at a time).
@@ -179,6 +193,10 @@ async fn run(cli: Cli) -> Result<()> {
         }
         if let Some(spec) = app.take_create_spec() {
             run_create(spec, &backend, event_tx.clone());
+        }
+        // Ctrl+S with a fresh name: write the template file off-thread.
+        if let Some(t) = app.take_save_template() {
+            run_save_template(t, event_tx.clone());
         }
         // (The captured-exec path from the removed EXEC tab is gone; `e`
         // now opens the interactive shell window below.)
@@ -429,6 +447,31 @@ fn run_create(
     });
 }
 
+/// Write a template file (Ctrl+S, no collision), reporting the outcome.
+fn run_save_template(t: crate::template::Template, tx: mpsc::Sender<AppEvent>) {
+    tokio::spawn(async move {
+        let dir = crate::template::templates_dir();
+        match crate::template::write_template(&dir, &t) {
+            Ok(path) => {
+                let _ = tx.send(AppEvent::TemplateSaved(t)).await;
+                let _ = tx
+                    .send(AppEvent::OpDone(format!(
+                        "template gespeichert: {}",
+                        path.display()
+                    )))
+                    .await;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(AppEvent::Error(format!(
+                        "template speichern fehlgeschlagen: {e:#}"
+                    )))
+                    .await;
+            }
+        }
+    });
+}
+
 /// Future returned by a poller closure.
 type PollFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppEvent>> + Send>>;
 /// Poller closure: takes the backend and produces an event future.
@@ -468,80 +511,96 @@ fn spawn_poller(
 }
 
 /// Render the current view based on `app.view`.
+/// Per-view rendering, factored out of the terminal closure so offscreen
+/// smoke tests drive the same dispatch.
+fn render_view(
+    frame: &mut ratatui::Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    banner: Option<&str>,
+) {
+    // Opaque base layer: without it, transparent terminal themes
+    // (e.g. milky fish/zsh setups) bleed through ratatui's Reset
+    // background. Widgets only patch cells they touch, so this solid
+    // backdrop persists behind every view.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(ui::theme::THEME.bg)),
+        area,
+    );
+    match app.view {
+        View::Dashboard => {
+            ui::render_dashboard(
+                frame,
+                &app.sandboxes,
+                &app.metrics,
+                &app.ports,
+                app.selected,
+                ui::dashboard::StatusLines {
+                    banner,
+                    error: app.error.as_deref(),
+                    status_text: app.status.as_deref(),
+                },
+                app.detail,
+                app.logs_state.as_ref(),
+                app.ports_state.as_ref(),
+                &app.preview_lines,
+                !app.initial_list_loaded,
+                area,
+            );
+        }
+        View::Help => {
+            ui::render_help(frame, area);
+        }
+        View::Create => match &app.create_state {
+            Some(crate::app::CreateState::Form(form)) => {
+                ui::create::render_create_form(frame, form, area)
+            }
+            Some(crate::app::CreateState::Select { selected }) => {
+                ui::template_picker::render(frame, area, &app.templates, *selected)
+            }
+            None => ui::render_placeholder(frame, "Create", area),
+        },
+        View::Logs | View::Ports | View::Inspect => {
+            // 2.9 IA: logs/ports/inspect are detail tabs of the selected
+            // sandbox, rendered inside the dashboard; these arms only
+            // fire during transition frames.
+            ui::render_dashboard(
+                frame,
+                &app.sandboxes,
+                &app.metrics,
+                &app.ports,
+                app.selected,
+                ui::dashboard::StatusLines {
+                    banner,
+                    error: app.error.as_deref(),
+                    status_text: app.status.as_deref(),
+                },
+                app.detail,
+                app.logs_state.as_ref(),
+                app.ports_state.as_ref(),
+                &app.preview_lines,
+                !app.initial_list_loaded,
+                area,
+            );
+        }
+    }
+
+    // Confirmation dialog overlays any view.
+    if let Some(op) = &app.confirm {
+        ui::render_confirm(frame, &op.describe(), area);
+    }
+}
+
 fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
         let banner = crate::runtime::banner_text();
-        // Opaque base layer: without it, transparent terminal themes
-        // (e.g. milky fish/zsh setups) bleed through ratatui's Reset
-        // background. Widgets only patch cells they touch, so this solid
-        // backdrop persists behind every view.
+        // Opaque base layer first (see render_view), then the view itself.
         frame.render_widget(
             Block::default().style(Style::default().bg(ui::theme::THEME.bg)),
             area,
         );
-        match app.view {
-            View::Dashboard => {
-                ui::render_dashboard(
-                    frame,
-                    &app.sandboxes,
-                    &app.metrics,
-                    &app.ports,
-                    app.selected,
-                    ui::dashboard::StatusLines {
-                        banner: banner.as_deref(),
-                        error: app.error.as_deref(),
-                        status_text: app.status.as_deref(),
-                    },
-                    app.detail,
-                    app.logs_state.as_ref(),
-                    app.ports_state.as_ref(),
-                    &app.preview_lines,
-                    !app.initial_list_loaded,
-                    area,
-                );
-            }
-            View::Help => {
-                ui::render_help(frame, area);
-            }
-            View::Create => match &app.create_state {
-                Some(crate::app::CreateState::Form(form)) => {
-                    ui::create::render_create_form(frame, form, area)
-                }
-                Some(crate::app::CreateState::Select { selected }) => {
-                    ui::template_picker::render(frame, area, &app.templates, *selected)
-                }
-                None => ui::render_placeholder(frame, "Create", area),
-            },
-            View::Logs | View::Ports | View::Inspect => {
-                // 2.9 IA: logs/ports/inspect are detail tabs of the selected
-                // sandbox, rendered inside the dashboard; these arms only
-                // fire during transition frames.
-                ui::render_dashboard(
-                    frame,
-                    &app.sandboxes,
-                    &app.metrics,
-                    &app.ports,
-                    app.selected,
-                    ui::dashboard::StatusLines {
-                        banner: banner.as_deref(),
-                        error: app.error.as_deref(),
-                        status_text: app.status.as_deref(),
-                    },
-                    app.detail,
-                    app.logs_state.as_ref(),
-                    app.ports_state.as_ref(),
-                    &app.preview_lines,
-                    !app.initial_list_loaded,
-                    area,
-                );
-            }
-        }
-
-        // Confirmation dialog overlays any view.
-        if let Some(op) = &app.confirm {
-            ui::render_confirm(frame, &op.describe(), area);
-        }
+        render_view(frame, app, area, banner.as_deref());
     })?;
     Ok(())
 }

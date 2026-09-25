@@ -434,6 +434,12 @@ impl App {
         self.queued_create.take()
     }
 
+    /// The template queued by the Ctrl+S dialog (no collision), consumed
+    /// by the main loop's writer task.
+    pub fn take_save_template(&mut self) -> Option<crate::template::Template> {
+        self.take_save_template.take()
+    }
+
     /// Key handling for the current view.
     fn handle_key(&mut self, key: KeyEvent) -> Action {
         // Confirmation dialog takes precedence over everything.
@@ -1330,6 +1336,48 @@ mod tests {
                 .map(|t| t.meta.name.as_str()),
             Some("Meine Shell")
         );
+    }
+
+    #[test]
+    fn smoke_picker_and_form_render_offscreen() {
+        // Throwaway render smoke (UI-Rendering ist nicht unit-getestet;
+        // hier geht es nur um Panics in den Render-Pfäden mit echten
+        // Templates — Master-Detail, Stacked, ListOnly, Formular, Dialog).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn render_app(app: &App, w: u16, h: u16) {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| crate::render_view(f, app, f.area(), None))
+                .unwrap();
+        }
+
+        let mut app = app_with_templates();
+
+        // Picker: master-detail (≥72/≥20), stacked (<72), list-only (<20).
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        render_app(&app, 120, 34);
+        render_app(&app, 60, 24);
+        render_app(&app, 80, 18);
+
+        // Leere Template-Liste rendert (Hinweis-Zeile).
+        app.templates.clear();
+        render_app(&app, 120, 34);
+
+        // Gruppiertes Formular mit Picker + Dialog.
+        app.templates = crate::template::load_builtins();
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        app.create_state = Some(CreateState::Form(Box::new(form)));
+        render_app(&app, 120, 34);
+        render_app(&app, 50, 22);
+
+        let mut form = CreateForm::new(Vec::new());
+        form.open_save_dialog("Test".into(), "Beschreibung".into());
+        app.create_state = Some(CreateState::Form(Box::new(form)));
+        render_app(&app, 120, 34);
     }
 
     #[test]
