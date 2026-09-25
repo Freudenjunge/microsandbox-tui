@@ -389,6 +389,16 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                     Err(e) => Err(anyhow::anyhow!("delete '{id}.toml': {e}")),
                 }
             }
+            Op::OverwriteTemplate(t) => {
+                let dir = crate::template::templates_dir();
+                match crate::template::write_template(&dir, t) {
+                    Ok(path) => {
+                        let _ = tx.send(AppEvent::TemplateSaved(*t.clone())).await;
+                        Ok(format!("template saved: {}", path.display()))
+                    }
+                    Err(e) => Err(anyhow::anyhow!("save template: {e:#}")),
+                }
+            }
         };
         let event = match res {
             Ok(msg) => AppEvent::OpDone(msg),

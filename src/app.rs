@@ -133,6 +133,8 @@ pub enum Op {
     InstallRuntime,
     /// Delete a user template file (built-ins cannot be deleted).
     DeleteTemplate(String),
+    /// Write a template file over an existing one (confirmed).
+    OverwriteTemplate(Box<crate::template::Template>),
 }
 
 impl Op {
@@ -164,6 +166,13 @@ impl Op {
             }
             Op::DeleteTemplate(id) => {
                 format!("Delete template '{id}'? (the file will be removed)")
+            }
+            Op::OverwriteTemplate(t) => {
+                format!(
+                    "Template '{}' exists — overwrite? ({slug}.toml will be replaced)",
+                    t.meta.name,
+                    slug = crate::template::slugify(&t.meta.name)
+                )
             }
         }
     }
@@ -595,7 +604,15 @@ impl App {
                     }
                 },
                 crate::ui::create::FormAction::SaveTemplate(t) => {
-                    self.take_save_template = Some(*t);
+                    // Collision (same slug among loaded templates, incl.
+                    // built-ins) → ask before overwriting; a fresh name
+                    // goes straight to disk (Task 8 consumes it).
+                    let slug = crate::template::slugify(&t.meta.name);
+                    if self.templates.iter().any(|x| x.id == slug) {
+                        self.confirm = Some(Op::OverwriteTemplate(t));
+                    } else {
+                        self.take_save_template = Some(*t);
+                    }
                     self.create_state = Some(CreateState::Form(form));
                     Action::Render
                 }
@@ -1100,6 +1117,11 @@ mod tests {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    /// Raw key event for form-level handlers.
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     #[test]
     fn new_starts_empty_on_dashboard() {
         let app = App::new();
@@ -1270,6 +1292,44 @@ mod tests {
             app.confirm.as_ref(),
             Some(Op::DeleteTemplate(id)) if id == "mine"
         ));
+    }
+
+    #[test]
+    fn save_dialog_asks_on_collision() {
+        // Review Focus 4: existierender Dateiname → Confirm, kein stilles
+        // Überschreiben. Der Dialog emittiert SaveTemplate; die App
+        // entscheidet anhand der geladenen Templates (id = Slug).
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.open_save_dialog("Shell".into(), "eigene Shell-Variante".into());
+        assert!(form.save_dialog.is_some());
+        // "Shell" → slug "shell" → kollidiert mit dem Built-in. Ein Enter
+        // genügt: App → Form (Dialog offen) → SaveTemplate.
+        app.create_state = Some(CreateState::Form(Box::new(form)));
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        // take_save_template bleibt leer — stattdessen Confirm-Dialog.
+        assert!(app.take_save_template.is_none());
+        assert!(matches!(app.confirm, Some(Op::OverwriteTemplate(_))));
+    }
+
+    #[test]
+    fn save_without_collision_goes_straight_to_disk() {
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.open_save_dialog("Meine Shell".into(), "d".into());
+        app.create_state = Some(CreateState::Form(Box::new(form)));
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        assert!(app.confirm.is_none());
+        assert_eq!(
+            app.take_save_template
+                .as_ref()
+                .map(|t| t.meta.name.as_str()),
+            Some("Meine Shell")
+        );
     }
 
     #[test]

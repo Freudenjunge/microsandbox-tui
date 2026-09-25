@@ -251,6 +251,27 @@ pub struct CreateForm {
     list_input: String,
     /// Selected item index within the active list field.
     list_selected: usize,
+    /// Open "save as template" dialog (Ctrl+S), if any.
+    pub save_dialog: Option<SaveDialog>,
+}
+
+/// The Ctrl+S save-as-template dialog state.
+#[derive(Debug, Default)]
+pub struct SaveDialog {
+    /// Template display name (also drives the file slug).
+    pub name: String,
+    /// One-line description.
+    pub description: String,
+    /// Which dialog field is active.
+    pub field: SaveField,
+}
+
+/// Fields of the save dialog, in Tab order.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SaveField {
+    #[default]
+    Name,
+    Description,
 }
 
 impl CreateForm {
@@ -284,6 +305,7 @@ impl CreateForm {
             picker_selected: 0,
             list_input: String::new(),
             list_selected: 0,
+            save_dialog: None,
         }
     }
 
@@ -358,8 +380,97 @@ impl CreateForm {
             .map(|i| i.size_bytes)
     }
 
+    /// Open the Ctrl+S save-as-template dialog, pre-filled with a name
+    /// suggestion derived from the form's image.
+    pub fn open_save_dialog(&mut self, name: String, description: String) -> FormAction {
+        self.save_dialog = Some(SaveDialog {
+            name,
+            description,
+            field: SaveField::Name,
+        });
+        FormAction::Continue
+    }
+
+    /// The slug the dialog's current name would be written as.
+    pub fn save_dialog_slug(&self) -> String {
+        self.save_dialog
+            .as_ref()
+            .map(|d| crate::template::slugify(&d.name))
+            .unwrap_or_default()
+    }
+
+    /// Keys while the save dialog is open (modal): typing into the active
+    /// field, Tab switches fields, Enter emits SaveTemplate, Esc closes.
+    fn handle_save_dialog_key(&mut self, key: KeyEvent) -> FormAction {
+        let Some(dialog) = &mut self.save_dialog else {
+            return FormAction::Continue;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.save_dialog = None;
+                FormAction::Continue
+            }
+            KeyCode::Tab => {
+                dialog.field = match dialog.field {
+                    SaveField::Name => SaveField::Description,
+                    SaveField::Description => SaveField::Name,
+                };
+                FormAction::Continue
+            }
+            KeyCode::Enter => {
+                let name = dialog.name.trim().to_string();
+                if name.is_empty() {
+                    return FormAction::Continue;
+                }
+                let description = dialog.description.trim().to_string();
+                self.save_dialog = None;
+                FormAction::SaveTemplate(Box::new(self.to_template(name, description)))
+            }
+            KeyCode::Backspace => {
+                match dialog.field {
+                    SaveField::Name => {
+                        dialog.name.pop();
+                    }
+                    SaveField::Description => {
+                        dialog.description.pop();
+                    }
+                }
+                FormAction::Continue
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                match dialog.field {
+                    SaveField::Name => dialog.name.push(c),
+                    SaveField::Description => dialog.description.push(c),
+                }
+                FormAction::Continue
+            }
+            _ => FormAction::Continue,
+        }
+    }
+
     /// Process a key and return what the caller should do.
     pub fn handle_key(&mut self, key: KeyEvent) -> FormAction {
+        // The save dialog is modal while open.
+        if self.save_dialog.is_some() {
+            return self.handle_save_dialog_key(key);
+        }
+        // Ctrl+S: open the save-as-template dialog with a name suggestion
+        // derived from the image reference.
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let suggested = {
+                let base = self.image.split('/').next_back().unwrap_or("");
+                let base = base.split(':').next().unwrap_or(base);
+                let mut chars = base.chars();
+                match chars.next() {
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            };
+            return self.open_save_dialog(suggested, String::new());
+        }
         match key.code {
             KeyCode::Esc => return FormAction::Cancel,
             KeyCode::Tab => {
@@ -758,6 +869,7 @@ impl CreateForm {
             picker_selected: 0,
             list_input: String::new(),
             list_selected: 0,
+            save_dialog: None,
         }
     }
 
@@ -870,55 +982,8 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Image field with an always-visible suggestion picker.
-    lines.push(text_field_line(
-        "Image",
-        &form.image,
-        form.active_field == FormField::Image,
-    ));
-    lines.extend(picker_lines(form));
-
-    lines.push(text_field_line(
-        "Name",
-        &form.name,
-        form.active_field == FormField::Name,
-    ));
-    if form.active_field == FormField::Name {
-        lines.push(Line::from(Span::styled(
-            "  (auto-generated if empty)",
-            Style::default().fg(t.muted),
-        )));
-    }
-
-    // Workspace mount toggle (Docker-sbx style): Space toggles, Enter moves
-    // on. Shows the exact host path being mounted.
-    let mount_active = form.active_field == FormField::MountCwd;
-    let (marker, marker_color) = if form.mount_cwd {
-        ("[x]", t.ok)
-    } else {
-        ("[ ]", t.muted)
-    };
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(marker, Style::default().fg(marker_color)),
-        Span::raw(" "),
-        Span::styled(
-            "Mount current dir",
-            if mount_active {
-                Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.text)
-            },
-        ),
-        Span::styled(
-            format!("  → {} (space toggles)", form.cwd),
-            Style::default().fg(t.muted),
-        ),
-    ]));
-
-    // All fields, grouped order (section headers come with the grouped
-    // rendering pass).
-    lines.extend(advanced_field_lines(form));
+    // All fields, grouped into the five spec sections.
+    lines.extend(grouped_field_lines(form));
 
     // -- footer --
     lines.push(Line::raw(""));
@@ -937,11 +1002,21 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
 
     frame.render_widget(Paragraph::new(lines), inner);
 
+    // The Ctrl+S dialog overlays the form while open.
+    if form.save_dialog.is_some() {
+        render_save_dialog(frame, inner, form);
+    }
+
     // Chrome footer over the legacy hint line.
     let hints = vec![
         crate::ui::chrome::FooterHint {
             key: "[Tab]",
             label: "next field",
+            role: crate::ui::chrome::FooterRole::Plain,
+        },
+        crate::ui::chrome::FooterHint {
+            key: "[^s]",
+            label: "template",
             role: crate::ui::chrome::FooterRole::Plain,
         },
         crate::ui::chrome::FooterHint {
@@ -1018,9 +1093,35 @@ fn picker_lines(form: &CreateForm) -> Vec<Line<'static>> {
 }
 
 /// Advanced-mode field lines (network, ports, volumes, environment).
-fn advanced_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
+fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
+    let t = &THEME;
+    let mut lines = Vec::new();
+
+    // -- BASIS --
+    lines.push(section_header("BASIS"));
+    lines.push(text_field_line(
+        "Image",
+        &form.image,
+        form.active_field == FormField::Image,
+    ));
+    lines.extend(picker_lines(form));
+    lines.push(text_field_line(
+        "Name",
+        &form.name,
+        form.active_field == FormField::Name,
+    ));
+    if form.active_field == FormField::Name {
+        lines.push(Line::from(Span::styled(
+            "  (auto-generated if empty)",
+            Style::default().fg(t.muted),
+        )));
+    }
+
+    // -- RESSOURCEN --
+    lines.push(Line::raw(""));
+    lines.push(section_header("RESSOURCEN"));
     // CPUs + Memory on one line.
-    let mut lines = vec![Line::from(vec![
+    lines.push(Line::from(vec![
         field_label_span("CPUs", form.active_field == FormField::Cpus),
         Span::raw(" "),
         text_value_span(&form.cpus, form.active_field == FormField::Cpus),
@@ -1028,36 +1129,67 @@ fn advanced_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         field_label_span("Memory", form.active_field == FormField::Memory),
         Span::raw(" "),
         text_value_span(&form.memory, form.active_field == FormField::Memory),
-    ])];
+    ]));
 
+    // -- MOUNTS --
+    lines.push(Line::raw(""));
+    lines.push(section_header("MOUNTS"));
+    // Workspace mount toggle (Docker-sbx style): Space toggles, Enter moves
+    // on. Shows the exact host path being mounted.
+    let mount_active = form.active_field == FormField::MountCwd;
+    let (marker, marker_color) = if form.mount_cwd {
+        ("[x]", t.ok)
+    } else {
+        ("[ ]", t.muted)
+    };
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(marker, Style::default().fg(marker_color)),
+        Span::raw(" "),
+        Span::styled(
+            "Mount current dir",
+            if mount_active {
+                Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.text)
+            },
+        ),
+        Span::styled(
+            format!("  → {} (space toggles)", form.cwd),
+            Style::default().fg(t.muted),
+        ),
+    ]));
     lines.push(text_field_line(
         "Workdir",
         &form.workdir,
         form.active_field == FormField::Workdir,
     ));
+    lines.extend(list_field_lines(
+        "Volumes",
+        &form.volumes,
+        &form.list_input,
+        form.active_field == FormField::Volumes,
+        form.list_selected,
+    ));
 
-    // -- network section --
+    // -- NETZWERK --
     lines.push(Line::raw(""));
-    lines.push(section_header("Network"));
-
+    lines.push(section_header("NETZWERK"));
     let profile_active = form.active_field == FormField::NetProfile;
     let mut profile_spans = vec![Span::raw("  Profile: ")];
     for p in NetProfile::ALL {
         let is_selected = form.net_profile == p;
         let marker = if is_selected { "(•)" } else { "( )" };
         let style = if is_selected && profile_active {
-            Style::default()
-                .fg(THEME.accent)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else if is_selected {
-            Style::default().fg(THEME.accent)
+            Style::default().fg(t.accent)
         } else {
-            Style::default().fg(THEME.muted)
+            Style::default().fg(t.muted)
         };
         profile_spans.push(Span::styled(format!("{marker} {}  ", p.as_str()), style));
     }
     lines.push(Line::from(profile_spans));
-
     lines.extend(list_field_lines(
         "Ports",
         &form.ports,
@@ -1073,20 +1205,9 @@ fn advanced_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         form.list_selected,
     ));
 
-    // -- volumes section --
+    // -- SONSTIGES --
     lines.push(Line::raw(""));
-    lines.push(section_header("Volumes"));
-    lines.extend(list_field_lines(
-        "Volumes",
-        &form.volumes,
-        &form.list_input,
-        form.active_field == FormField::Volumes,
-        form.list_selected,
-    ));
-
-    // -- environment section --
-    lines.push(Line::raw(""));
-    lines.push(section_header("Environment"));
+    lines.push(section_header("SONSTIGES"));
     lines.extend(list_field_lines(
         "Env",
         &form.env_vars,
@@ -1094,8 +1215,62 @@ fn advanced_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         form.active_field == FormField::EnvVars,
         form.list_selected,
     ));
+    lines.extend(list_field_lines(
+        "Labels",
+        &form.labels,
+        &form.list_input,
+        form.active_field == FormField::Labels,
+        form.list_selected,
+    ));
 
     lines
+}
+
+/// The Ctrl+S save-as-template dialog: a small centered overlay with a
+/// name and description field. Enter emits
+/// [`FormAction::SaveTemplate`], Esc closes it.
+fn render_save_dialog(frame: &mut Frame, parent: Rect, form: &CreateForm) {
+    let t = &THEME;
+    let Some(dialog) = &form.save_dialog else {
+        return;
+    };
+    let width = parent.width.clamp(30, 64);
+    let height = 7.min(parent.height);
+    let x = parent.x + (parent.width.saturating_sub(width)) / 2;
+    let y = parent.y + (parent.height.saturating_sub(height)) / 2;
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Als Template speichern ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(t.accent))
+        .style(Style::default().bg(t.panel));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        text_field_line("Name", &dialog.name, dialog.field == SaveField::Name),
+        text_field_line(
+            "Beschr.",
+            &dialog.description,
+            dialog.field == SaveField::Description,
+        ),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "[Tab] Feld  [Enter] speichern  [Esc] abbrechen",
+            Style::default().fg(t.muted),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Build a labeled text-field line: `  Label:  [value█]`.
