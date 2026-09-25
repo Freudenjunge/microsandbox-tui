@@ -162,9 +162,24 @@ none of it; panels show only real backend data.
   only) — mountless sandboxes start in the image's own working directory,
   exactly like `sbx run` without a workspace. Validation: the captured CWD
   must be absolute and still exist at submit time.
-- **Quick mode (default)**: image picker + name + the mount toggle — everything
-  else takes runtime defaults (no cpus/memory limit, `public` network profile,
-  no ports/volumes/env). `Ctrl+A` expands the advanced fields.
+- **Templates first**: `c` opens the template picker (master-detail, Spec
+  `docs/superpowers/specs/2026-09-25-templates-create-rework-design.md`):
+  left the template list (user files shadow built-ins by id), right the
+  effective values with `(default)` markers. `Enter` creates directly
+  (name collisions get `-2`, `-3` … suffixes), `e` opens the form
+  pre-filled, `n` an empty form, `d` deletes a user template file
+  (built-ins are only shadowable). Template files live in
+  `~/.config/microsandbox-tui/templates/*.toml` with `[meta]`+`[spec]`
+  sections; the built-ins (`opencode`, `opencode2`, `shell`) are embedded
+  examples of the format. `rootfs = "snapshot:…"` is reserved for future
+  golden-image sources and has no effect yet.
+- **Grouped full-screen form** (via `e`/`n`): all fields visible in five
+  sections — BASIS (image picker, name), RESSOURCEN (cpus/memory),
+  MOUNTS (mount toggle, workdir, volumes), NETZWERK (profile, ports,
+  rules), SONSTIGES (env, labels). Empty resource/list fields mean
+  "runtime default". `Ctrl+S` saves the current form as a template
+  (name + description dialog; overwriting an existing template file asks
+  for confirmation).
 - Named by default (persistent) — ephemeral is an advanced toggle
 - Image field: an always-visible picker lists pulled images first, then
   curated suggestions; typing filters, `↑↓`+`Enter` adopts
@@ -405,7 +420,12 @@ struct Image {
 | `?` | global | help overlay |
 | `↑↓` | dashboard | select sandbox card |
 | `Enter` | dashboard | inspect selected sandbox |
-| `c` | dashboard | create sandbox form |
+| `c` | dashboard | create flow: template picker (master-detail) |
+| `Enter` | template picker | create sandbox from the selected template |
+| `e` | template picker | open the grouped form pre-filled from the template |
+| `n` | template picker | open the grouped form empty |
+| `d` | template picker | delete user template file (confirm; built-ins shadow-only) |
+| `Ctrl+S` | create form | save current form as template (confirm on overwrite) |
 | `x` | dashboard | exec: interactive shell (running sandboxes only) |
 | `s` | dashboard | start/stop toggle for the selected sandbox (state-dependent) |
 | `r` | dashboard | restart sandbox (running/stalled) |
@@ -508,6 +528,8 @@ Planned additions in later phases: `ui/inspect.rs`, `ui/network.rs`,
 8. SSH (suspend TUI, foreground `msb ssh`)
 9. Volumes view (create/remove)
 10. Snapshots view (create/restore/remove)
+11. Templates (built-ins + user TOML files, master-detail create entry)
+12. Create form rework (grouped full-screen form, `Ctrl+S` save-as-template)
 
 ## Phase 3
 

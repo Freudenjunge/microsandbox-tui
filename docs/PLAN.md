@@ -609,3 +609,64 @@ sets an explanatory status line instead of opening a dialog.
       (`debian@sha256:d5ce19d`, display-only — adoption keeps the full
       reference valid for creation). Entries without a digest are never
       merged.
+
+## Phase 2.12 — Templates + Create-Rework (2026-09-25)
+
+Spec: `docs/superpowers/specs/2026-09-25-templates-create-rework-design.md`
+Plan: `docs/superpowers/plans/2026-09-25-templates-create-rework.md`
+
+### 10.1 Foundation: port parser + toml dep
+- [x] `PublishedPort::parse_cli` moved from the form into `src/models.rs`
+      (unit-tested: `HOST:GUEST`, `BIND:HOST:GUEST`, `/udp`, rejects);
+      `toml = "0.8"` dependency added for the template module.
+
+### 10.2 Template data model + TOML parser
+- [x] `src/template.rs`: `Template {id, meta, spec, built_in}` with
+      `[meta]`/`[spec]` TOML sections (TOML forbids top-level keys after a
+      table header — format defect found by the fixture tests, spec §1
+      example fixed). `image` required; memory/ports/net-rules validated
+      with the form's parsers; `rootfs` reserved without effect in v1.
+
+### 10.3 Persistence: built-ins, shadowing, warnings
+- [x] Built-ins embedded via `include_str!` (`opencode`, `opencode2`,
+      `shell`); user files in `~/.config/microsandbox-tui/templates/`
+      shadow built-ins by id; broken files skipped with a warning; a
+      missing template dir is not an error. `None` fields skipped when
+      serializing (TOML has no null).
+
+### 10.4 Pure logic: spec assembly, names, preview, layout
+- [x] `assemble_spec` extracted from the form so form and templates share
+      one `CreateSpec` path (CWD exists-check stays form-side);
+      `resolve_name` (-2/-3 suffixes), `preview_values` (default markers),
+      `template_layout` (72 cols / 20 rows thresholds).
+
+### 10.5 Create state machine
+- [x] `View::Create` is a two-state automaton (`Select` ↔ `Form`); Enter
+      creates directly with resolved names, `e` prefills, `n` empty form,
+      `d` deletes user templates via the confirm pipeline
+      (`Op::DeleteTemplate`); `TemplatesLoaded`/`TemplateSaved`
+      (carries the full template)/`TemplateDeleted` events.
+
+### 10.6 Template master-detail picker
+- [x] `src/ui/template_picker.rs`: list pane with descriptions and
+      built-in markers, preview pane with effective values, stacked and
+      list-only degradations for small terminals.
+
+### 10.7 Grouped form + Ctrl+S authoring
+- [x] FormField gains `Labels` (12 fields in grouped Tab order), the
+      quick/advanced split is gone (`Ctrl+A` removed, net_profile always
+      applied); `from_template`/`to_template` conversions. Rendering
+      follows the five spec sections; `Ctrl+S` opens a name/description
+      dialog — slug collisions ask via `Op::OverwriteTemplate`, fresh
+      names write straight to disk.
+
+### 10.8 main.rs wiring + offscreen smoke
+- [x] Startup template load on a tokio task (warnings on the status
+      line); save/delete executors; view dispatch factored into
+      `render_view` so an offscreen smoke test drives picker layouts,
+      grouped form and dialog with real built-ins.
+
+### 10.9 Docs
+- [x] DESIGN.md: Phase 2 items 11/12, create-flow section rewritten
+      (templates-first), keybinding table updated (`c`/`Enter`/`e`/`n`/
+      `d`/`Ctrl+S`, no more `Ctrl+A`). This section records the tasks.
