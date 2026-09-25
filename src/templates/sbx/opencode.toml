@@ -1,0 +1,10 @@
+[meta]
+name = "OpenCode"
+description = "OpenCode, the open-source terminal coding agent, from the official sbx hub — pulls 0.4k"
+
+[spec]
+image = "sbx/opencode-image"
+name = "opencode"
+cpus = 2
+memory = "4G"
+mount_cwd = true

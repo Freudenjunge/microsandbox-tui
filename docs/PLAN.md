@@ -744,3 +744,13 @@ official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
       description renders in the preview pane, above the value rows.
       All 23 entries fit on screen at once; scroll math moved from
       2 lines/entry to 1.
+
+### 11.6 Old opencode presets removed — OpenCode entirely from the Hub
+- [x] The hand-rolled `opencode` (`node:22-alpine` + npm install) and
+      `opencode2` (`node:24-alpine`, 8 vCPU) built-ins are gone. The
+      catalog entry took their place as THE opencode entry: id renamed
+      `opencode-sbx` → `opencode` (the collision it avoided no longer
+      exists), display name "OpenCode" (no suffix). Built-ins are now
+      exactly `shell` + the 19 sbx harnesses. User TOML files still
+      shadow by id, so custom variants remain possible; the old
+      presets stay retrievable from git history.

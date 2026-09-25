@@ -1296,7 +1296,7 @@ mod tests {
         let Some(CreateState::Form(form)) = &app.create_state else {
             panic!("expected Form state");
         };
-        assert_eq!(form.image, "node:22-alpine");
+        assert_eq!(form.image, "sbx/opencode-image");
         assert_eq!(form.name, "opencode");
     }
 

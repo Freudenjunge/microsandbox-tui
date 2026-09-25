@@ -178,9 +178,11 @@ none of it; panels show only real backend data.
   the official Docker sbx Hub org (`hub.docker.com/u/sbx`), sorted by
   their kit's pull count: Pi, Hermes Agent, OpenClaw, Kiro, Crush,
   Junie, GitHub Copilot, Aider, Droid, Open Interpreter, OpenHands,
-  Antigravity, Vibe, Docker Agent, Claude Code, OpenCode (sbx), Codex,
-  Cursor, Devin; the maintainer's `opencode`/`opencode2` examples close
-  the list. Hub `*-kit` repos are `docker.sandbox.kit.v2` artifacts
+  Antigravity, Vibe, Docker Agent, Claude Code, OpenCode, Codex,
+  Cursor, Devin — that is the whole list (the hand-rolled
+  `opencode`/`opencode2` presets were removed; OpenCode now comes
+  entirely from the Hub, and user TOML files can still shadow any
+  built-in by id). Hub `*-kit` repos are `docker.sandbox.kit.v2` artifacts
   (config bundles, ~400 KB — not bootable), so every harness entry
   creates from its matching `sbx/<name>-image` base OCI image (multi-GB
   first pull). `sbx/shell` does not exist on the Hub; Shell stays the

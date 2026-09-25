@@ -138,9 +138,9 @@ pub fn parse(id: &str, s: &str) -> Result<Template, String> {
 ///
 /// Display order (agreed with the maintainer): `shell` first, then the
 /// curated sbx Hub catalog (popular AI agent harnesses, sorted by their
-/// kit's Docker Hub pull count, descending), then the maintainer's
-/// opencode presets. Hub `*-kit` repos are not bootable images — every
-/// catalog entry creates from its matching `sbx/<name>-image` base.
+/// kit's Docker Hub pull count, descending). Hub `*-kit` repos are not
+/// bootable images — every catalog entry creates from its matching
+/// `sbx/<name>-image` base.
 const BUILTIN_SOURCES: &[(&str, &str)] = &[
     ("shell", include_str!("templates/shell.toml")),
     ("pi", include_str!("templates/sbx/pi.toml")),
@@ -170,15 +170,10 @@ const BUILTIN_SOURCES: &[(&str, &str)] = &[
         include_str!("templates/sbx/docker-agent.toml"),
     ),
     ("claude", include_str!("templates/sbx/claude.toml")),
-    (
-        "opencode-sbx",
-        include_str!("templates/sbx/opencode-sbx.toml"),
-    ),
+    ("opencode", include_str!("templates/sbx/opencode.toml")),
     ("codex", include_str!("templates/sbx/codex.toml")),
     ("cursor", include_str!("templates/sbx/cursor.toml")),
     ("devin", include_str!("templates/sbx/devin.toml")),
-    ("opencode", include_str!("templates/opencode.toml")),
-    ("opencode2", include_str!("templates/opencode2.toml")),
 ];
 
 /// The built-in templates, in stable display order.
@@ -554,27 +549,19 @@ mod tests {
     }
 
     #[test]
-    fn builtin_opencode_has_no_guest_workdir() {
+    fn builtin_opencode_follows_the_sbx_pitfalls() {
         // B (User-Feedback): der SDK-Create validiert workdir per
-        // fs().stat() IM GAST (microsandbox create.rs:856) und rollt die
-        // Sandbox zurück, wenn das Verzeichnis im Rootfs fehlt. Plain
-        // Images wie node:22-alpine enthalten kein /workspace — das
-        // Built-in darf daher keinen workdir setzen (Default = gemountetes
-        // Host-CWD, das per Bind existiert).
-        let t = parse("opencode", include_str!("templates/opencode.toml")).unwrap();
+        // fs().stat() IM GAST — das Built-in darf keinen workdir setzen.
+        // A-Followup: ohne memory gilt der SDK-Default von 512 MiB —
+        // unbenutzbar für Agent-Harnesses. Der sbx-Eintrag ist jetzt DER
+        // opencode-Eintrag und hält beide Regeln ein.
+        let t = parse("opencode", include_str!("templates/sbx/opencode.toml")).unwrap();
+        assert_eq!(t.spec.image, "sbx/opencode-image");
         assert_eq!(t.spec.workdir, None, "workdir would fail the guest stat");
-        assert_eq!(t.id, "opencode");
-    }
-
-    #[test]
-    fn builtin_opencode_has_usable_memory() {
-        // A-Followup (User-Feedback): ohne memory gilt der SDK-Default von
-        // 512 MiB (config/mod.rs: DEFAULT_MEMORY_MIB) — damit kann
-        // opencode-ai nicht laden. Das Built-in setzt explizit 4G + 2
-        // vCPUs.
-        let t = parse("opencode", include_str!("templates/opencode.toml")).unwrap();
         assert_eq!(t.spec.memory.as_deref(), Some("4G"));
         assert_eq!(t.spec.cpus, Some(2));
+        assert_eq!(t.meta.name, "OpenCode");
+        assert_eq!(t.spec.name.as_deref(), Some("opencode"));
     }
 
     #[test]
@@ -583,7 +570,7 @@ mod tests {
         let ids: Vec<&str> = t.iter().map(|x| x.id.as_str()).collect();
         assert_eq!(ids.first(), Some(&"shell"), "shell leads the presets");
         assert_eq!(
-            &ids[1..20],
+            &ids[1..],
             &[
                 "pi",
                 "hermes-agent",
@@ -600,16 +587,18 @@ mod tests {
                 "vibe",
                 "docker-agent",
                 "claude",
-                "opencode-sbx",
+                "opencode",
                 "codex",
                 "cursor",
                 "devin",
             ],
-            "sbx harness catalog in Hub download order"
+            "sbx harness catalog in Hub download order — the whole list"
         );
-        // User presets stay untouched at the end.
-        assert_eq!(&ids[20..], &["opencode", "opencode2"]);
         assert!(t.iter().all(|x| x.built_in));
+        // The hand-rolled opencode presets are gone; OpenCode comes
+        // entirely from the sbx Hub.
+        assert!(!ids.contains(&"opencode2"));
+        assert_eq!(ids.iter().filter(|i| **i == "opencode").count(), 1);
     }
 
     #[test]
@@ -647,10 +636,10 @@ mod tests {
         assert_eq!(claude.spec.name.as_deref(), Some("claude"));
         assert_eq!(claude.spec.cpus, Some(2));
         assert_eq!(claude.spec.memory.as_deref(), Some("4G"));
-        // The sbx OpenCode entry must not collide with the user preset id.
-        let oc = t.iter().find(|x| x.id == "opencode-sbx").unwrap();
+        // The sbx OpenCode entry is THE opencode entry now.
+        let oc = t.iter().find(|x| x.id == "opencode").unwrap();
         assert_eq!(oc.spec.image, "sbx/opencode-image");
-        assert!(t.iter().filter(|x| x.id == "opencode").count() == 1);
+        assert_eq!(oc.meta.name, "OpenCode");
     }
 
     #[test]
