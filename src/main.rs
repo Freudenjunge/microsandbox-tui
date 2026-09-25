@@ -498,10 +498,8 @@ fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Resul
                 Some(crate::app::CreateState::Form(form)) => {
                     ui::create::render_create_form(frame, form, area)
                 }
-                // The master-detail picker rendering lands with the picker
-                // module (next task); until then show the transition frame.
-                Some(crate::app::CreateState::Select { .. }) => {
-                    ui::render_placeholder(frame, "Templates", area)
+                Some(crate::app::CreateState::Select { selected }) => {
+                    ui::template_picker::render(frame, area, &app.templates, *selected)
                 }
                 None => ui::render_placeholder(frame, "Create", area),
             },
