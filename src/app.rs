@@ -648,8 +648,32 @@ impl App {
     /// pseudo-entry "Create from scratch" (an empty form, not a template);
     /// template rows sit at index + 1.
     fn handle_template_select_key(&mut self, key: KeyEvent, selected: usize) -> Action {
+        // Navigation and leave work the same on every row — including the
+        // scratch row (0), where the picker always opens.
+        let last = self.templates.len(); // rows: scratch (0) … len() (last template)
+        match key.code {
+            KeyCode::Up => {
+                self.create_state = Some(CreateState::Select {
+                    selected: selected.saturating_sub(1),
+                });
+                return Action::Render;
+            }
+            KeyCode::Down => {
+                self.create_state = Some(CreateState::Select {
+                    selected: (selected + 1).min(last),
+                });
+                return Action::Render;
+            }
+            KeyCode::Esc => {
+                self.view = View::Dashboard;
+                return Action::Render;
+            }
+            _ => {}
+        }
         // Row 0 is the scratch pseudo-entry and is always present, so the
-        // picker is usable even with zero templates loaded.
+        // picker is usable even with zero templates loaded. It is not a
+        // template: Enter/e open the empty form (queues nothing, so the
+        // busy guard does not apply) and `d` has nothing to delete.
         if selected == 0 {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('n') => {
@@ -660,10 +684,6 @@ impl App {
                     self.create_state = Some(CreateState::Select { selected });
                     return Action::Render;
                 }
-                KeyCode::Esc => {
-                    self.view = View::Dashboard;
-                    return Action::Render;
-                }
                 _ => {
                     self.create_state = Some(CreateState::Select { selected });
                     return Action::Continue;
@@ -671,20 +691,7 @@ impl App {
             }
         }
         let tpl_index = selected - 1;
-        let last = self.templates.len(); // + 1 scratch row, -1 base 0
         match key.code {
-            KeyCode::Up => {
-                self.create_state = Some(CreateState::Select {
-                    selected: selected.saturating_sub(1),
-                });
-                Action::Render
-            }
-            KeyCode::Down => {
-                self.create_state = Some(CreateState::Select {
-                    selected: (selected + 1).min(last),
-                });
-                Action::Render
-            }
             KeyCode::Enter => {
                 // Review Focus 3: never queue a second create while one
                 // is running.
@@ -755,10 +762,6 @@ impl App {
                     self.confirm = Some(Op::DeleteTemplate(id));
                     self.create_state = Some(CreateState::Select { selected });
                 }
-                Action::Render
-            }
-            KeyCode::Esc => {
-                self.view = View::Dashboard;
                 Action::Render
             }
             _ => {
@@ -1366,6 +1369,35 @@ mod tests {
         let shell_tpl = app.templates.iter().find(|t| t.id == "shell").unwrap();
         assert_eq!(spec.image, shell_tpl.spec.image);
         assert_eq!(spec.name.as_deref(), Some("shell"));
+    }
+
+    #[test]
+    fn down_and_up_navigate_all_picker_rows() {
+        // Regression: der Scratch-Zweig (Zeile 0) schluckte Up/Down — der
+        // Picker öffnet auf Zeile 0 und war damit eingesperrt.
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        app.handle_event(key(KeyCode::Down));
+        assert!(
+            matches!(app.create_state, Some(CreateState::Select { selected: 1 })),
+            "Down leaves the scratch row"
+        );
+        let last = app.templates.len(); // scratch + templates → last row
+        for _ in 0..last {
+            app.handle_event(key(KeyCode::Down));
+        }
+        assert!(matches!(
+            app.create_state,
+            Some(CreateState::Select { selected: s }) if s == last
+        ));
+        // Two Ups land two rows above the last (clamped at 0 further up).
+        app.handle_event(key(KeyCode::Up));
+        app.handle_event(key(KeyCode::Up));
+        assert!(matches!(
+            app.create_state,
+            Some(CreateState::Select { selected: s }) if s == last - 2
+        ));
     }
 
     #[test]

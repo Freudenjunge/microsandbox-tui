@@ -731,3 +731,16 @@ official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
       image distinction, `sbx/shell` 404 note, 2 vCPU/4G rationale)
       and the picker suggestions paragraph; keybinding table updated
       for the scratch row semantics. This section records the tasks.
+
+### 11.5 Picker review fixes (2026-09-25)
+- [x] Up/Down worked on template rows but fell through the scratch
+      branch's `_` arm — the picker opens on row 0 and was stuck
+      there. Navigation (Up/Down/Esc) is now handled uniformly before
+      the scratch branch; regression test drives Down to the last row
+      and back up.
+- [x] The list's grayed description lines duplicated the preview
+      pane's job (user report). The list now carries names only
+      (1 line per entry, built-in marker kept); the selected entry's
+      description renders in the preview pane, above the value rows.
+      All 23 entries fit on screen at once; scroll math moved from
+      2 lines/entry to 1.

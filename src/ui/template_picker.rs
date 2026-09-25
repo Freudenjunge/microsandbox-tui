@@ -13,10 +13,7 @@ use crate::template::{LayoutKind, Template, preview_values, template_layout};
 use crate::ui::theme::THEME;
 
 /// The pseudo-entry at picker row 0: open the empty form (not a template).
-const SCRATCH_ROW: (&str, &str) = (
-    "Create from scratch",
-    "Empty form — image picker, name, ports, everything by hand",
-);
+const SCRATCH_ROW_NAME: &str = "Create from scratch";
 
 /// Render the template picker for the create flow. Row 0 is the
 /// "Create from scratch" pseudo-entry; template rows sit at index + 1.
@@ -122,27 +119,23 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Row 0 (scratch) is always rendered — the picker is usable with zero
-    // templates; a hint line notes that none are loaded.
-    let mut lines = Vec::with_capacity(templates.len() * 2 + 2);
+    // One line per entry — names only. Descriptions/details live in the
+    // preview pane (Review 2.13: grayed description rows duplicated it).
+    // The window follows the selection (same rule as the form's image
+    // picker); long names truncate — Review Focus 5 decided truncate.
+    let mut rows: Vec<(&str, bool)> = Vec::with_capacity(templates.len() + 1);
+    rows.push((SCRATCH_ROW_NAME, false));
+    for t in templates {
+        rows.push((t.meta.name.as_str(), t.built_in));
+    }
+    let mut lines = Vec::with_capacity(rows.len());
     if templates.is_empty() {
         lines.push(Line::from(Span::styled(
             "  (keine Templates geladen — nur scratch verfügbar)",
             Style::default().fg(t.muted),
         )));
-        lines.push(Line::raw(""));
     }
-    // Row 0: the scratch pseudo-entry; then the templates, index + 1.
-    let mut rows: Vec<(&str, &str, bool)> = Vec::with_capacity(templates.len() + 1);
-    rows.push((SCRATCH_ROW.0, SCRATCH_ROW.1, false));
-    for t in templates {
-        rows.push((
-            t.meta.name.as_str(),
-            t.meta.description.as_str(),
-            t.built_in,
-        ));
-    }
-    for (i, (name, description, built_in)) in rows.iter().enumerate() {
+    for (i, (name, built_in)) in rows.iter().enumerate() {
         let is_sel = i == selected;
         let marker = if is_sel { "▶ " } else { "  " };
         let name_style = if is_sel {
@@ -158,19 +151,12 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
             name_spans.push(Span::styled("  (built-in)", Style::default().fg(t.muted)));
         }
         lines.push(Line::from(name_spans));
-        lines.push(Line::from(Span::styled(
-            format!("    {description}"),
-            Style::default().fg(t.muted),
-        )));
     }
-    // Two lines per entry; the window follows the selection (same rule as
-    // the form's image picker). Lines longer than the pane truncate —
-    // Review Focus 5 decided truncate over wrap.
-    let entries_visible = (inner.height / 2).max(1) as usize;
+    let entries_visible = inner.height.max(1) as usize;
     let offset_entries = selected.saturating_sub(entries_visible.saturating_sub(1));
     let p = Paragraph::new(lines)
         .block(Block::default().style(Style::default().bg(t.panel)))
-        .scroll(((offset_entries * 2) as u16, 0));
+        .scroll((offset_entries as u16, 0));
     frame.render_widget(p, inner);
 }
 
@@ -179,7 +165,7 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
 fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selected: usize) {
     let t = &THEME;
     let name = if selected == 0 {
-        SCRATCH_ROW.0
+        SCRATCH_ROW_NAME
     } else {
         templates
             .get(selected - 1)
@@ -228,6 +214,13 @@ fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selecte
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let mut lines = Vec::new();
+    // The template's own description (Hub text) — the list carries names
+    // only, so this is the one place it appears.
+    lines.push(Line::from(Span::styled(
+        format!("  {}", tpl.meta.description),
+        Style::default().fg(t.muted),
+    )));
+    lines.push(Line::raw(""));
     for row in preview_values(tpl, &cwd) {
         let mut spans = vec![
             Span::raw("  "),
@@ -290,8 +283,47 @@ mod tests {
     }
 
     #[test]
-    fn picker_truncates_long_descriptions_offscreen() {
-        // Review Focus 5: long descriptions truncate (no wrap, no panic).
+    fn list_shows_names_only_details_live_in_the_preview() {
+        // Phase 2.13 review: description lines (grayed) duplicated the
+        // preview pane's job in the list. The list carries names only;
+        // the selected entry's description appears once — in the preview
+        // pane — and other entries' descriptions are not rendered at all.
+        let templates = crate::template::load_builtins();
+        let pi = templates.iter().position(|t| t.id == "pi").unwrap() + 1;
+        let devin = templates.iter().position(|t| t.id == "devin").unwrap() + 1;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &templates, pi))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<String>();
+
+        assert!(
+            text.contains("Pi coding agent"),
+            "the selected template's description shows in the preview pane:\n{text}"
+        );
+        assert!(
+            !text.contains("Devin CLI"),
+            "unselected entries' descriptions must not render in the list:\n{text}"
+        );
+        assert!(
+            !text.contains("Empty form — image picker"),
+            "the scratch pseudo-row carries no list description:\n{text}"
+        );
+        let _ = devin;
+    }
+
+    #[test]
+    fn picker_truncates_long_description_in_preview_offscreen() {
+        // Review Focus 5: long text truncates (no wrap, no panic) — now
+        // exercised where descriptions live, the preview pane.
         let templates = vec![user_tpl(
             "x",
             "Lang",
@@ -299,7 +331,7 @@ mod tests {
         )];
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &templates, 0))
+            .draw(|f| render(f, f.area(), &templates, 1))
             .unwrap();
     }
 }
