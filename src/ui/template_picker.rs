@@ -12,7 +12,14 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::template::{LayoutKind, Template, preview_values, template_layout};
 use crate::ui::theme::THEME;
 
-/// Render the template picker for the create flow.
+/// The pseudo-entry at picker row 0: open the empty form (not a template).
+const SCRATCH_ROW: (&str, &str) = (
+    "Create from scratch",
+    "Empty form — image picker, name, ports, everything by hand",
+);
+
+/// Render the template picker for the create flow. Row 0 is the
+/// "Create from scratch" pseudo-entry; template rows sit at index + 1.
 pub fn render(frame: &mut Frame, area: Rect, templates: &[Template], selected: usize) {
     let runtime_version = match crate::runtime::detect() {
         crate::runtime::RuntimeStatus::Installed { runtime, .. } => {
@@ -71,7 +78,7 @@ pub fn render(frame: &mut Frame, area: Rect, templates: &[Template], selected: u
         },
         crate::ui::chrome::FooterHint {
             key: "[n]",
-            label: "neu",
+            label: "leeres Formular",
             role: crate::ui::chrome::FooterRole::Plain,
         },
         crate::ui::chrome::FooterHint {
@@ -115,18 +122,27 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Row 0 (scratch) is always rendered — the picker is usable with zero
+    // templates; a hint line notes that none are loaded.
+    let mut lines = Vec::with_capacity(templates.len() * 2 + 2);
     if templates.is_empty() {
-        let p = Paragraph::new(vec![Line::from(Span::styled(
-            "  keine Templates geladen",
+        lines.push(Line::from(Span::styled(
+            "  (keine Templates geladen — nur scratch verfügbar)",
             Style::default().fg(t.muted),
-        ))])
-        .block(Block::default().style(Style::default().bg(t.panel)));
-        frame.render_widget(p, inner);
-        return;
+        )));
+        lines.push(Line::raw(""));
     }
-
-    let mut lines = Vec::with_capacity(templates.len() * 2);
-    for (i, tpl) in templates.iter().enumerate() {
+    // Row 0: the scratch pseudo-entry; then the templates, index + 1.
+    let mut rows: Vec<(&str, &str, bool)> = Vec::with_capacity(templates.len() + 1);
+    rows.push((SCRATCH_ROW.0, SCRATCH_ROW.1, false));
+    for t in templates {
+        rows.push((
+            t.meta.name.as_str(),
+            t.meta.description.as_str(),
+            t.built_in,
+        ));
+    }
+    for (i, (name, description, built_in)) in rows.iter().enumerate() {
         let is_sel = i == selected;
         let marker = if is_sel { "▶ " } else { "  " };
         let name_style = if is_sel {
@@ -136,14 +152,14 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
         };
         let mut name_spans = vec![
             Span::raw("  "),
-            Span::styled(format!("{marker}{}", tpl.meta.name), name_style),
+            Span::styled(format!("{marker}{name}"), name_style),
         ];
-        if tpl.built_in {
+        if *built_in {
             name_spans.push(Span::styled("  (built-in)", Style::default().fg(t.muted)));
         }
         lines.push(Line::from(name_spans));
         lines.push(Line::from(Span::styled(
-            format!("    {}", tpl.meta.description),
+            format!("    {description}"),
             Style::default().fg(t.muted),
         )));
     }
@@ -159,12 +175,17 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
 }
 
 /// The preview pane: effective values with `(default)` markers (Spec §3).
+/// Row 0 (scratch) has no template — a hint takes the preview's place.
 fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selected: usize) {
     let t = &THEME;
-    let name = templates
-        .get(selected)
-        .map(|tpl| tpl.meta.name.as_str())
-        .unwrap_or("—");
+    let name = if selected == 0 {
+        SCRATCH_ROW.0
+    } else {
+        templates
+            .get(selected - 1)
+            .map(|tpl| tpl.meta.name.as_str())
+            .unwrap_or("—")
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
@@ -176,7 +197,31 @@ fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selecte
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(tpl) = templates.get(selected) else {
+    if selected == 0 {
+        let p = Paragraph::new(vec![
+            Line::from(Span::styled(
+                "  Empty form with the full image picker — choose any image",
+                Style::default().fg(t.muted),
+            )),
+            Line::from(Span::styled(
+                "  from your cache, type a custom reference (e.g.",
+                Style::default().fg(t.muted),
+            )),
+            Line::from(Span::styled(
+                "  python:3.12), and set name, ports and volumes by hand.",
+                Style::default().fg(t.muted),
+            )),
+            Line::raw(""),
+            Line::from(Span::styled(
+                "  Enter opens the form.",
+                Style::default().fg(t.muted),
+            )),
+        ])
+        .block(Block::default().style(Style::default().bg(t.panel)));
+        frame.render_widget(p, inner);
+        return;
+    }
+    let Some(tpl) = templates.get(selected - 1) else {
         return;
     };
     let cwd = std::env::current_dir()
@@ -224,7 +269,7 @@ mod tests {
         let mut templates = crate::template::load_builtins();
         templates.push(user_tpl("t-z4", "Vierter", "vier"));
         templates.push(user_tpl("t-z5", "Fuenfter", "fuenfte Beschreibung"));
-        let selected = templates.len() - 1;
+        let selected = templates.len(); // last row: scratch (0) shifts + 1
 
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         terminal

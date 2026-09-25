@@ -391,12 +391,12 @@ impl App {
             AppEvent::TemplatesLoaded(templates) => {
                 self.templates = templates;
                 // Clamp a stale picker selection to the new list length
-                // (delete/reload shrink the list).
+                // (delete/reload shrink the list; + 1 for the scratch row).
                 if let Some(CreateState::Select { selected }) = &mut self.create_state {
                     if self.templates.is_empty() {
                         *selected = 0;
                     } else {
-                        *selected = (*selected).min(self.templates.len() - 1);
+                        *selected = (*selected).min(self.templates.len());
                     }
                 }
                 Action::Render
@@ -644,13 +644,34 @@ impl App {
         }
     }
 
-    /// Keys on the template picker (master-detail, Spec §3).
+    /// Keys on the template picker (master-detail, Spec §3). Row 0 is the
+    /// pseudo-entry "Create from scratch" (an empty form, not a template);
+    /// template rows sit at index + 1.
     fn handle_template_select_key(&mut self, key: KeyEvent, selected: usize) -> Action {
-        if self.templates.is_empty() {
-            self.view = View::Dashboard;
-            return Action::Render;
+        // Row 0 is the scratch pseudo-entry and is always present, so the
+        // picker is usable even with zero templates loaded.
+        if selected == 0 {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('n') => {
+                    return self.open_scratch_form();
+                }
+                KeyCode::Char('d') => {
+                    self.set_status("create-from-scratch is not a saved template");
+                    self.create_state = Some(CreateState::Select { selected });
+                    return Action::Render;
+                }
+                KeyCode::Esc => {
+                    self.view = View::Dashboard;
+                    return Action::Render;
+                }
+                _ => {
+                    self.create_state = Some(CreateState::Select { selected });
+                    return Action::Continue;
+                }
+            }
         }
-        let last = self.templates.len() - 1;
+        let tpl_index = selected - 1;
+        let last = self.templates.len(); // + 1 scratch row, -1 base 0
         match key.code {
             KeyCode::Up => {
                 self.create_state = Some(CreateState::Select {
@@ -671,7 +692,7 @@ impl App {
                     self.create_state = Some(CreateState::Select { selected });
                     return Action::Continue;
                 }
-                let Some(template) = self.templates.get(selected) else {
+                let Some(template) = self.templates.get(tpl_index) else {
                     // Stale index (list shrank): no-op with a hint, no panic.
                     self.set_status("template list changed — select again");
                     self.create_state = Some(CreateState::Select { selected: 0 });
@@ -705,7 +726,7 @@ impl App {
                 }
             }
             KeyCode::Char('e') => {
-                let Some(template) = self.templates.get(selected) else {
+                let Some(template) = self.templates.get(tpl_index) else {
                     self.set_status("template list changed — select again");
                     self.create_state = Some(CreateState::Select { selected: 0 });
                     return Action::Render;
@@ -717,15 +738,9 @@ impl App {
                 self.create_state = Some(CreateState::Form(Box::new(form)));
                 Action::Render
             }
-            KeyCode::Char('n') => {
-                let mut form = crate::ui::create::CreateForm::new(self.images.clone());
-                form.cwd = self.create_cwd();
-                form.workdir = form.cwd.clone();
-                self.create_state = Some(CreateState::Form(Box::new(form)));
-                Action::Render
-            }
+            KeyCode::Char('n') => self.open_scratch_form(),
             KeyCode::Char('d') => {
-                let Some(template) = self.templates.get(selected) else {
+                let Some(template) = self.templates.get(tpl_index) else {
                     self.set_status("template list changed — select again");
                     self.create_state = Some(CreateState::Select { selected: 0 });
                     return Action::Render;
@@ -751,6 +766,17 @@ impl App {
                 Action::Continue
             }
         }
+    }
+
+    /// Open the empty create form (the "Create from scratch" row and the
+    /// `n` key): no template, cached images seeded, CWD mount prefilled
+    /// from the dashboard process CWD.
+    fn open_scratch_form(&mut self) -> Action {
+        let mut form = crate::ui::create::CreateForm::new(self.images.clone());
+        form.cwd = self.create_cwd();
+        form.workdir = form.cwd.clone();
+        self.create_state = Some(CreateState::Form(Box::new(form)));
+        Action::Render
     }
 
     /// The CWD captured for the workspace mount when the create flow
@@ -1230,7 +1256,7 @@ mod tests {
         // A sandbox named "shell" already exists → auto suffix.
         app.sandboxes = vec![summary("shell")];
         app.view = View::Create;
-        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap();
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap() + 1;
         app.create_state = Some(CreateState::Select { selected: shell });
         assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
         let spec = app.queued_create.take().unwrap();
@@ -1246,7 +1272,7 @@ mod tests {
         let mut app = app_with_templates();
         app.busy = true;
         app.view = View::Create;
-        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap();
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap() + 1;
         app.create_state = Some(CreateState::Select { selected: shell });
         assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Continue);
         assert!(app.queued_create.is_none());
@@ -1260,7 +1286,8 @@ mod tests {
             .templates
             .iter()
             .position(|t| t.id == "opencode")
-            .unwrap();
+            .unwrap()
+            + 1; // + 1 scratch row
         app.create_state = Some(CreateState::Select { selected: opencode });
         assert_eq!(app.handle_event(key(KeyCode::Char('e'))), Action::Render);
         let Some(CreateState::Form(form)) = &app.create_state else {
@@ -1268,6 +1295,89 @@ mod tests {
         };
         assert_eq!(form.image, "node:22-alpine");
         assert_eq!(form.name, "opencode");
+    }
+
+    #[test]
+    fn select_enter_on_scratch_opens_empty_form() {
+        // The picker's first row is "Create from scratch": Enter opens the
+        // empty form (NOT a create — there is nothing to create yet).
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        let Some(CreateState::Form(form)) = &app.create_state else {
+            panic!("expected Form state");
+        };
+        assert!(form.image.is_empty(), "scratch starts with no image");
+        assert!(form.mount_cwd);
+        assert!(app.queued_create.is_none());
+        assert!(!app.busy);
+        assert_eq!(app.view, View::Create);
+    }
+
+    #[test]
+    fn select_e_on_scratch_opens_empty_form_seeded_with_images() {
+        // Like `n`, the scratch path must see the cached image list (sizes
+        // in the form's picker).
+        let mut app = app_with_templates();
+        app.images = vec![crate::models::Image {
+            architecture: "amd64".into(),
+            created_at: chrono::Utc::now(),
+            digest: "sha256:x".into(),
+            layer_count: 1,
+            os: "linux".into(),
+            reference: "alpine".into(),
+            size_bytes: 1024,
+        }];
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        assert_eq!(app.handle_event(key(KeyCode::Char('e'))), Action::Render);
+        let Some(CreateState::Form(form)) = &app.create_state else {
+            panic!("expected Form state");
+        };
+        assert!(form.image.is_empty());
+        assert_eq!(form.images.len(), 1, "cached images seeded like `n`");
+    }
+
+    #[test]
+    fn select_d_on_scratch_is_rejected() {
+        // The scratch entry is not a template — nothing to delete.
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        app.handle_event(key(KeyCode::Char('d')));
+        assert!(app.confirm.is_none());
+        assert!(matches!(
+            app.create_state,
+            Some(CreateState::Select { selected: 0 })
+        ));
+    }
+
+    #[test]
+    fn template_rows_shift_past_scratch() {
+        // Row 1 is the FIRST template (shell leads the built-ins); Enter
+        // on it creates directly, exactly like the pre-scratch row 0 did.
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap() + 1;
+        app.create_state = Some(CreateState::Select { selected: shell });
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        let spec = app.queued_create.take().unwrap();
+        let shell_tpl = app.templates.iter().find(|t| t.id == "shell").unwrap();
+        assert_eq!(spec.image, shell_tpl.spec.image);
+        assert_eq!(spec.name.as_deref(), Some("shell"));
+    }
+
+    #[test]
+    fn scratch_row_works_with_zero_templates() {
+        // The scratch pseudo-row makes the picker usable with no templates
+        // at all: Enter opens the empty form, not the dashboard.
+        let mut app = App::new(); // no templates loaded
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Select { selected: 0 });
+        assert_eq!(app.handle_event(key(KeyCode::Enter)), Action::Render);
+        assert!(matches!(app.create_state, Some(CreateState::Form(_))));
+        assert_eq!(app.view, View::Create);
     }
 
     #[test]
@@ -1300,7 +1410,8 @@ mod tests {
     fn select_d_on_builtin_shows_hint_only() {
         let mut app = app_with_templates();
         app.view = View::Create;
-        app.create_state = Some(CreateState::Select { selected: 0 }); // built-in
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap() + 1;
+        app.create_state = Some(CreateState::Select { selected: shell }); // built-in
         assert_eq!(app.handle_event(key(KeyCode::Char('d'))), Action::Render);
         assert!(app.confirm.is_none());
         assert!(
@@ -1322,7 +1433,7 @@ mod tests {
         t.id = "mine".into();
         app.templates.insert(0, t);
         app.view = View::Create;
-        app.create_state = Some(CreateState::Select { selected: 0 }); // user template
+        app.create_state = Some(CreateState::Select { selected: 1 }); // user template (after scratch)
         assert_eq!(app.handle_event(key(KeyCode::Char('d'))), Action::Render);
         assert!(matches!(
             app.confirm.as_ref(),
@@ -1413,7 +1524,8 @@ mod tests {
     #[test]
     fn templates_loaded_clamps_select_index() {
         // C2: list shrank (delete/reload) → the Select index must clamp,
-        // otherwise the next Enter/e/d indexes out of bounds.
+        // otherwise the next Enter/e/d indexes out of bounds. Rows:
+        // scratch (0) + one template (1) — a stale 2 clamps to 1.
         let mut app = app_with_templates();
         app.view = View::Create;
         app.create_state = Some(CreateState::Select { selected: 2 });
@@ -1421,7 +1533,7 @@ mod tests {
         app.handle_event(crate::event::AppEvent::TemplatesLoaded(one));
         assert!(matches!(
             app.create_state,
-            Some(CreateState::Select { selected: 0 })
+            Some(CreateState::Select { selected: 1 })
         ));
     }
 

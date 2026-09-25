@@ -698,3 +698,20 @@ official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
 - [x] Tests pin the catalog order, the `sbx/*-image` pattern, names,
       resources, and the non-collision; app tests select templates by id
       instead of hardcoded indexes.
+
+### 11.2 "Create from scratch" row in the picker
+- [x] Picker row 0 is the pseudo-entry "Create from scratch" (empty
+      form — no template): Enter/e open the form, `d` explains it is
+      not a saved template, and the busy guard does not apply (opening
+      a form queues nothing). Template rows shifted to index + 1; all
+      select handlers (`Enter`/`e`/`n`/`d`, Up/Down clamp, the
+      TemplatesLoaded clamp, the stale-index guards) moved with them.
+- [x] The picker renders the scratch row first (with a dedicated
+      preview pane hint), the preview pane reads templates at
+      `selected - 1`, and the picker stays fully usable with ZERO
+      templates loaded (the old "empty → back to dashboard" guard is
+      gone — row 0 is always present).
+- [x] Tests: scratch Enter/e open the empty form (image empty, cached
+      images seeded), `d` on scratch is rejected, the first template
+      row creates directly, and the zero-templates picker still opens
+      the form.
