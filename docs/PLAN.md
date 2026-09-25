@@ -715,3 +715,12 @@ official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
       images seeded), `d` on scratch is rejected, the first template
       row creates directly, and the zero-templates picker still opens
       the form.
+
+### 11.3 Form suggestions: sbx catalog leads the curated tail
+- [x] `SUGGESTED_IMAGES` now leads with the 19 `sbx/<name>-image`
+      harness base refs (download order, mirroring the template
+      picker's catalog) ahead of the generic distro/tool defaults;
+      local cached images still come first overall. Typing e.g. `cla`
+      surfaces `sbx/claude-image`. Distros remain reachable in the
+      tail (still the fastest way to a minimal box). The 50-entry
+      picker safety cap unchanged.

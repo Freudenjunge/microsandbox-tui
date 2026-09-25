@@ -29,7 +29,33 @@ const PICKER_WINDOW_MAX: usize = 50;
 
 /// Curated image suggestions shown when the local image list is empty or
 /// as stable defaults above it.
+/// Curated image suggestions for the picker's tail (after local images):
+/// the sbx Hub harness base images (download order — the same catalog
+/// the template picker shows as built-ins; the Hub `*-kit` repos are not
+/// bootable, the `<name>-image` bases are), then generic distro/tool
+/// defaults. Single source of truth for the display order.
 pub const SUGGESTED_IMAGES: &[&str] = &[
+    // -- sbx Hub harness catalog (kit pull count, descending) --
+    "sbx/pi-image",
+    "sbx/hermes-agent-image",
+    "sbx/openclaw-image",
+    "sbx/kiro-image",
+    "sbx/crush-image",
+    "sbx/junie-image",
+    "sbx/copilot-image",
+    "sbx/aider-image",
+    "sbx/droid-image",
+    "sbx/open-interpreter-image",
+    "sbx/openhands-image",
+    "sbx/antigravity-image",
+    "sbx/vibe-image",
+    "sbx/docker-agent-image",
+    "sbx/claude-image",
+    "sbx/opencode-image",
+    "sbx/codex-image",
+    "sbx/cursor-image",
+    "sbx/devin-image",
+    // -- generic defaults --
     "alpine",
     "debian",
     "ubuntu",
@@ -1711,6 +1737,35 @@ mod tests {
     }
 
     #[test]
+    fn suggestions_lead_with_sbx_catalog_then_distros() {
+        // Phase 2.13: the curated tail is the sbx Hub harness catalog
+        // (download order, the same list the template picker shows),
+        // then the generic distro/tool defaults.
+        let form = CreateForm::new(Vec::new());
+        let s = form.suggestions();
+        let sbx: Vec<&String> = s.iter().take_while(|r| r.starts_with("sbx/")).collect();
+        assert!(
+            sbx.len() >= 19,
+            "the 19-entry harness catalog leads the curated list: {s:?}"
+        );
+        assert_eq!(sbx[0], "sbx/pi-image", "catalog is in download order");
+        assert!(s.contains(&"sbx/claude-image".to_string()));
+        // Distros still follow (the generic defaults remain reachable).
+        assert!(s.iter().any(|r| r == "alpine"));
+    }
+
+    #[test]
+    fn suggestions_filter_matches_sbx_refs() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "cla".into();
+        let s = form.suggestions();
+        assert!(
+            s.contains(&"sbx/claude-image".to_string()),
+            "typing 'cla' suggests the Claude Code base image: {s:?}"
+        );
+    }
+
+    #[test]
     fn suggestions_filter_by_typed_text() {
         let mut form = CreateForm::new(vec![img("python:3.12")]);
         form.image = "py".into();
@@ -1743,7 +1798,8 @@ mod tests {
         let mut form = CreateForm::new(Vec::new());
         let action = form.handle_key(key(KeyCode::Enter));
         assert_eq!(action, FormAction::NextField);
-        assert_eq!(form.image, "alpine");
+        // The curated tail now leads with the sbx Hub catalog.
+        assert_eq!(form.image, "sbx/pi-image");
         assert_eq!(form.active_field, FormField::Name);
     }
 
