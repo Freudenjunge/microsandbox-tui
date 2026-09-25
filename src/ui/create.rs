@@ -1,12 +1,12 @@
-//! Create-sandbox form: quick path by default, advanced fields on demand.
+//! Create-sandbox form: one full-screen grouped form, entered from the
+//! template picker (`e` = pre-filled, `n` = empty).
 //!
-//! UX (per docs/DESIGN.md "quick + advanced"):
-//! - Quick mode shows only **Image** (with an always-visible suggestion
-//!   picker) and an optional **Name**. Everything else takes SDK defaults:
-//!   no cpus/memory limit, `public` network profile, no ports/volumes/env.
-//! - `Ctrl+A` expands the advanced fields (cpus, memory, workdir, ports,
-//!   volumes, env, labels, network profile); they are prefilled empty, and
-//!   empty means "use the runtime default".
+//! UX (per the templates spec):
+//! - All fields are visible in grouped Tab order (BASIS/RESSOURCEN/MOUNTS/
+//!   NETZWERK/SONSTIGES); empty resource/list fields mean "use the runtime
+//!   default".
+//! - `Ctrl+S` saves the current form as a template (name + description
+//!   dialog) — the authoring path writes the same TOML the picker reads.
 //! - The image picker is not a modal: typing filters it, `↑↓` moves the
 //!   highlight, `Enter` adopts the highlighted suggestion.
 
@@ -83,6 +83,12 @@ impl NetProfile {
         }
     }
 
+    /// Parse the profile from its string form (`public`, `private`, …);
+    /// unknown values yield `None` (callers default to `Public`).
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|p| p.as_str() == s)
+    }
+
     /// Cycle to the next profile (wraps around).
     pub fn next(self) -> Self {
         let idx = Self::ALL.iter().position(|&p| p == self).unwrap_or(0);
@@ -100,47 +106,48 @@ impl NetProfile {
 // FormField
 // ---------------------------------------------------------------------------
 
-/// Which form field is currently active (advanced section only; quick mode
-/// always starts on [`FormField::Image`]).
+/// Which form field is currently active, in grouped Tab order
+/// (BASIS: Image/Name · RESSOURCEN: Cpus/Memory · MOUNTS: MountCwd/Workdir/
+/// Volumes · NETZWERK: NetProfile/Ports/NetRules · SONSTIGES: EnvVars/
+/// Labels).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Image,
     Name,
-    MountCwd,
     Cpus,
     Memory,
+    MountCwd,
     Workdir,
+    Volumes,
     NetProfile,
     Ports,
-    Volumes,
-    EnvVars,
     NetRules,
+    EnvVars,
+    Labels,
 }
 
 impl FormField {
-    /// All advanced fields in Tab order.
-    pub const ALL: [Self; 11] = [
+    /// All fields in grouped Tab order.
+    pub const ALL: [Self; 12] = [
         Self::Image,
         Self::Name,
-        Self::MountCwd,
         Self::Cpus,
         Self::Memory,
+        Self::MountCwd,
         Self::Workdir,
+        Self::Volumes,
         Self::NetProfile,
         Self::Ports,
-        Self::Volumes,
-        Self::EnvVars,
         Self::NetRules,
+        Self::EnvVars,
+        Self::Labels,
     ];
-
-    /// Quick-mode fields in Tab order.
-    pub const QUICK: [Self; 3] = [Self::Image, Self::Name, Self::MountCwd];
 
     /// Whether this field is a list-type (items + input buffer).
     pub fn is_list(&self) -> bool {
         matches!(
             self,
-            Self::Ports | Self::Volumes | Self::EnvVars | Self::NetRules
+            Self::Ports | Self::Volumes | Self::EnvVars | Self::NetRules | Self::Labels
         )
     }
 
@@ -166,6 +173,7 @@ impl FormField {
             Self::Volumes => "Volumes",
             Self::EnvVars => "Env",
             Self::NetRules => "Rules",
+            Self::Labels => "Labels",
         }
     }
 }
@@ -225,10 +233,10 @@ pub struct CreateForm {
     pub volumes: Vec<String>,
     /// Environment variables in `KEY=VALUE` form.
     pub env_vars: Vec<String>,
+    /// Labels in `KEY=VALUE` form.
+    pub labels: Vec<String>,
     /// Network rule strings (e.g. `allow@api.example.com`).
     pub net_rules: Vec<String>,
-    /// Whether the advanced fields are expanded.
-    pub advanced: bool,
     /// Currently active field.
     pub active_field: FormField,
     /// Validation error to display (red line).
@@ -266,8 +274,8 @@ impl CreateForm {
             ports: Vec::new(),
             volumes: Vec::new(),
             env_vars: Vec::new(),
+            labels: Vec::new(),
             net_rules: Vec::new(),
-            advanced: false,
             active_field: FormField::Image,
             error: None,
             images,
@@ -297,26 +305,17 @@ impl CreateForm {
         }
     }
 
-    /// Index of the active field within the visible field list.
+    /// Index of the active field within the grouped field list.
     pub fn active_field_index(&self) -> usize {
-        self.visible_fields()
+        FormField::ALL
             .iter()
             .position(|&f| f == self.active_field)
             .unwrap_or(0)
     }
 
-    /// Number of visible fields (quick: 3, advanced: 11).
+    /// Number of fields in grouped Tab order.
     pub fn field_count(&self) -> usize {
-        self.visible_fields().len()
-    }
-
-    /// The fields visible in the current mode, in Tab order.
-    fn visible_fields(&self) -> &'static [FormField] {
-        if self.advanced {
-            &FormField::ALL
-        } else {
-            &FormField::QUICK
-        }
+        FormField::ALL.len()
     }
 
     /// Image suggestions for the picker: locally pulled images first (they
@@ -359,11 +358,6 @@ impl CreateForm {
 
     /// Process a key and return what the caller should do.
     pub fn handle_key(&mut self, key: KeyEvent) -> FormAction {
-        // Global keys.
-        if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.toggle_advanced();
-            return FormAction::Continue;
-        }
         match key.code {
             KeyCode::Esc => return FormAction::Cancel,
             KeyCode::Tab => {
@@ -395,33 +389,18 @@ impl CreateForm {
 
     // -- navigation --
 
-    /// Show or hide the advanced fields. Expanding keeps the focus where it
-    /// is (Image/Name exist in both modes); collapsing resets the focus to
-    /// the image picker.
-    pub fn toggle_advanced(&mut self) {
-        self.advanced = !self.advanced;
-        if !self.advanced {
-            self.set_active_field(FormField::Image);
-        } else {
-            self.list_input.clear();
-            self.list_selected = 0;
-        }
-    }
-
-    /// Advance to the next visible field (wraps around).
+    /// Advance to the next field (wraps around).
     fn next_field(&mut self) {
-        let fields = self.visible_fields();
         let idx = self.active_field_index();
-        let next = (idx + 1) % fields.len();
-        self.set_active_field(fields[next]);
+        let next = (idx + 1) % FormField::ALL.len();
+        self.set_active_field(FormField::ALL[next]);
     }
 
     /// Go back to the previous visible field (wraps around).
     fn prev_field(&mut self) {
-        let fields = self.visible_fields();
         let idx = self.active_field_index();
-        let prev = (idx + fields.len() - 1) % fields.len();
-        self.set_active_field(fields[prev]);
+        let prev = (idx + FormField::ALL.len() - 1) % FormField::ALL.len();
+        self.set_active_field(FormField::ALL[prev]);
     }
 
     /// Switch the active field and reset list-editing + picker state.
@@ -619,6 +598,7 @@ impl CreateForm {
             FormField::Volumes => &mut self.volumes,
             FormField::EnvVars => &mut self.env_vars,
             FormField::NetRules => &mut self.net_rules,
+            FormField::Labels => &mut self.labels,
             _ => unreachable!("active_list_mut on non-list field"),
         }
     }
@@ -630,6 +610,7 @@ impl CreateForm {
             FormField::Volumes => &self.volumes,
             FormField::EnvVars => &self.env_vars,
             FormField::NetRules => &self.net_rules,
+            FormField::Labels => &self.labels,
             _ => unreachable!("active_list_ref on non-list field"),
         }
     }
@@ -658,42 +639,6 @@ impl CreateForm {
             self.cwd.clone()
         } else {
             String::new()
-        }
-    }
-
-    /// One-line summary of the set advanced fields (shown in quick mode so
-    /// deliberately-set values stay visible).
-    pub fn advanced_summary(&self) -> Option<String> {
-        let mut parts: Vec<String> = Vec::new();
-        if !self.cpus.trim().is_empty() {
-            parts.push(format!("{} cpus", self.cpus.trim()));
-        }
-        if !self.memory.trim().is_empty() {
-            parts.push(self.memory.trim().to_string());
-        }
-        if !self.workdir.trim().is_empty() && self.workdir.trim() != self.auto_workdir() {
-            parts.push(format!("wd {}", self.workdir.trim()));
-        }
-        if !self.mount_cwd {
-            parts.push("no mount".to_string());
-        }
-        if self.net_profile != NetProfile::Public {
-            parts.push(self.net_profile.as_str().to_string());
-        }
-        for (items, label) in [
-            (&self.ports, "port"),
-            (&self.volumes, "volume"),
-            (&self.env_vars, "env"),
-            (&self.net_rules, "rule"),
-        ] {
-            if !items.is_empty() {
-                parts.push(format!("{} {}s", items.len(), label));
-            }
-        }
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join(" · "))
         }
     }
 
@@ -762,13 +707,8 @@ impl CreateForm {
             }
         }
 
-        // Quick mode leaves the profile at the runtime default; advanced
-        // mode applies the explicitly selected profile.
-        let net_profile = if self.advanced {
-            Some(self.net_profile.as_str().to_string())
-        } else {
-            None
-        };
+        // Grouped form: the profile is always visible and always applied.
+        let net_profile = Some(self.net_profile.as_str().to_string());
 
         crate::template::assemble_spec(crate::template::SpecInputs {
             image,
@@ -781,10 +721,78 @@ impl CreateForm {
             ports,
             volumes: self.volumes.clone(),
             env: self.env_vars.clone(),
-            labels: Vec::new(),
+            labels: crate::template::trim_filter(&self.labels),
             net_rules: self.net_rules.clone(),
             net_profile,
         })
+    }
+
+    /// Build a form pre-filled from a template (the `e`-path in the
+    /// template picker). Unset template fields fall back to the same
+    /// defaults as [`Self::new`].
+    pub fn from_template(t: &crate::template::Template, cwd: String) -> Self {
+        let s = &t.spec;
+        Self {
+            image: s.image.clone(),
+            name: s.name.clone().unwrap_or_default(),
+            cpus: s.cpus.map(|c| c.to_string()).unwrap_or_default(),
+            memory: s.memory.clone().unwrap_or_default(),
+            workdir: s.workdir.clone().unwrap_or_else(|| cwd.clone()),
+            mount_cwd: s.mount_cwd.unwrap_or(true),
+            cwd,
+            net_profile: s
+                .net_profile
+                .as_deref()
+                .and_then(NetProfile::parse)
+                .unwrap_or(NetProfile::Public),
+            ports: s.ports.clone(),
+            volumes: s.volumes.clone(),
+            env_vars: s.env.clone(),
+            labels: s.labels_vec(),
+            net_rules: s.net_rules.clone(),
+            active_field: FormField::Image,
+            error: None,
+            images: Vec::new(),
+            picker_selected: 0,
+            list_input: String::new(),
+            list_selected: 0,
+        }
+    }
+
+    /// Convert the current form state into a template (the `Ctrl+S` path).
+    /// Field parsing/validation happens again when the template is used.
+    pub fn to_template(&self, name: String, description: String) -> crate::template::Template {
+        let spec = crate::template::TemplateSpec {
+            image: self.image.trim().to_string(),
+            name: {
+                let n = self.name.trim();
+                (!n.is_empty()).then(|| n.to_string())
+            },
+            cpus: self.cpus.trim().parse::<u32>().ok(),
+            memory: (!self.memory.trim().is_empty()).then(|| self.memory.trim().to_string()),
+            workdir: (!self.workdir.trim().is_empty()).then(|| self.workdir.trim().to_string()),
+            mount_cwd: Some(self.mount_cwd),
+            ports: crate::template::trim_filter(&self.ports),
+            volumes: crate::template::trim_filter(&self.volumes),
+            env: crate::template::trim_filter(&self.env_vars),
+            labels: self
+                .labels
+                .iter()
+                .filter_map(|l| {
+                    let (k, v) = l.split_once('=')?;
+                    Some((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect(),
+            net_profile: Some(self.net_profile.as_str().to_string()),
+            net_rules: crate::template::trim_filter(&self.net_rules),
+            rootfs: None,
+        };
+        crate::template::Template {
+            id: crate::template::slugify(&name),
+            meta: crate::template::TemplateMeta { name, description },
+            spec,
+            built_in: false,
+        }
     }
 }
 
@@ -846,11 +854,10 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
     crate::ui::chrome::render_chrome(frame, &areas, &title, &tabs);
 
     let t = &THEME;
-    let mode = if form.advanced { "Advanced" } else { "Quick" };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            format!(" ⚡ QUICK CREATE MICROVM — {mode} "),
+            " ⚡ CREATE MICROVM — GROUPED ",
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
         .border_style(Style::default().fg(t.accent))
@@ -874,7 +881,7 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         &form.name,
         form.active_field == FormField::Name,
     ));
-    if form.active_field == FormField::Name || !form.advanced {
+    if form.active_field == FormField::Name {
         lines.push(Line::from(Span::styled(
             "  (auto-generated if empty)",
             Style::default().fg(t.muted),
@@ -907,32 +914,14 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         ),
     ]));
 
-    // Quick mode: summarize advanced values the user set earlier.
-    if let Some(summary) = form.advanced_summary() {
-        lines.push(Line::from(vec![
-            Span::styled("⚙ ", Style::default().fg(t.accent)),
-            Span::styled(summary, Style::default().fg(t.text)),
-        ]));
-    }
-
-    if form.advanced {
-        lines.extend(advanced_field_lines(form));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  ^a for ports, volumes, cpus, …",
-            Style::default().fg(t.muted),
-        )));
-    }
+    // All fields, grouped order (section headers come with the grouped
+    // rendering pass).
+    lines.extend(advanced_field_lines(form));
 
     // -- footer --
     lines.push(Line::raw(""));
-    let footer = if form.advanced {
-        "[Tab] next field  [Enter] create  [^a] quick  [Esc] cancel"
-    } else {
-        "[↑↓] pick image  [Enter] next  [^a] advanced  [Esc] cancel"
-    };
     lines.push(Line::from(Span::styled(
-        footer,
+        "[Tab] next field  [Enter] create  [Esc] cancel",
         Style::default().fg(t.muted),
     )));
 
@@ -955,13 +944,8 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         },
         crate::ui::chrome::FooterHint {
             key: "[Enter]",
-            label: if form.advanced { "create" } else { "next" },
+            label: "create",
             role: crate::ui::chrome::FooterRole::Accent,
-        },
-        crate::ui::chrome::FooterHint {
-            key: "[^a]",
-            label: if form.advanced { "quick" } else { "advanced" },
-            role: crate::ui::chrome::FooterRole::Warn,
         },
         crate::ui::chrome::FooterHint {
             key: "[Esc]",
@@ -1309,29 +1293,84 @@ mod tests {
         );
     }
 
+    // -- grouped field model (templates rework) --
+
+    #[test]
+    fn field_order_is_grouped() {
+        let form = CreateForm::new(Vec::new());
+        assert_eq!(form.field_count(), 12);
+        assert_eq!(FormField::ALL[0], FormField::Image);
+        assert_eq!(FormField::ALL[1], FormField::Name);
+        assert_eq!(FormField::ALL[2], FormField::Cpus);
+        assert_eq!(FormField::ALL[4], FormField::MountCwd);
+        assert_eq!(FormField::ALL[11], FormField::Labels);
+    }
+
+    #[test]
+    fn net_profile_is_always_applied() {
+        // Gruppiertes Formular hat kein Quick/Advanced mehr:
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        let spec = form.to_create_spec().unwrap();
+        assert_eq!(spec.net_profile.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn form_from_template_prefills_all_fields() {
+        let t = crate::template::parse(
+            "opencode",
+            include_str!("../fixtures/templates/valid-full.toml"),
+        )
+        .unwrap();
+        let form = CreateForm::from_template(&t, "/home/me/proj".into());
+        assert_eq!(form.image, "node:22-alpine");
+        assert_eq!(form.name, "opencode");
+        assert_eq!(form.cpus, "4");
+        assert_eq!(form.memory, "2G");
+        assert!(form.mount_cwd);
+        assert_eq!(form.workdir, "/workspace");
+        assert_eq!(form.ports, vec!["127.0.0.1:3000:3000"]);
+        assert_eq!(form.env_vars, vec!["TERM=xterm-256color"]);
+        assert_eq!(form.labels, vec!["team=infra"]);
+        assert_eq!(form.net_profile, NetProfile::Public);
+    }
+
+    #[test]
+    fn form_to_template_roundtrips_through_file() {
+        let t0 = crate::template::parse(
+            "opencode",
+            include_str!("../fixtures/templates/valid-full.toml"),
+        )
+        .unwrap();
+        let form = CreateForm::from_template(&t0, "/home/me/proj".into());
+        let t1 = form.to_template("Opencode".into(), "d".into());
+        assert_eq!(t1.spec.image, "node:22-alpine");
+        assert_eq!(t1.spec.cpus, Some(4));
+        assert_eq!(t1.spec.labels_vec(), vec!["team=infra"]);
+    }
+
     // -- quick mode --
 
     #[test]
-    fn new_starts_quick_on_image() {
+    fn new_starts_grouped_on_image() {
         let form = CreateForm::new(Vec::new());
-        assert!(!form.advanced);
         assert_eq!(form.active_field, FormField::Image);
-        assert_eq!(form.field_count(), 3);
+        assert_eq!(form.field_count(), 12);
         assert!(form.error.is_none());
     }
 
     #[test]
-    fn quick_spec_uses_runtime_defaults() {
+    fn defaults_spec_uses_runtime_defaults() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        // The sbx-style workspace mount is on by default; everything else
-        // stays at runtime defaults.
+        // The sbx-style workspace mount is on by default; cpus/memory stay
+        // at runtime defaults; the profile is always applied (grouped form).
         let spec = form.to_create_spec().unwrap();
         assert_eq!(spec.image, "alpine");
         assert_eq!(spec.cpus, None);
         assert_eq!(spec.memory, None);
         assert_eq!(spec.workdir.as_deref(), Some(form.cwd.as_str()));
-        assert_eq!(spec.net_profile, None);
+        assert_eq!(spec.net_profile.as_deref(), Some("public"));
         assert!(spec.ports.is_empty());
         assert_eq!(spec.volumes, vec![format!("{}:{}", form.cwd, form.cwd)]);
         assert!(spec.name.is_none());
@@ -1434,26 +1473,25 @@ mod tests {
     }
 
     #[test]
-    fn quick_tab_cycles_three_fields() {
+    fn tab_cycles_the_grouped_fields() {
         let mut form = CreateForm::new(Vec::new());
         form.handle_key(key(KeyCode::Tab));
         assert_eq!(form.active_field, FormField::Name);
         form.handle_key(key(KeyCode::Tab));
-        assert_eq!(form.active_field, FormField::MountCwd);
+        assert_eq!(form.active_field, FormField::Cpus);
         form.handle_key(key(KeyCode::Tab));
-        assert_eq!(form.active_field, FormField::Image);
+        assert_eq!(form.active_field, FormField::Memory);
     }
 
     #[test]
-    fn quick_enter_on_name_moves_to_mount_toggle() {
+    fn enter_on_name_moves_to_cpus() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::Name;
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
-        assert_eq!(form.active_field, FormField::MountCwd);
-        // Enter on the toggle (last quick field) submits.
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
-        // Space flips the checkbox without moving.
+        assert_eq!(form.active_field, FormField::Cpus);
+        // Space on the mount toggle flips the checkbox without moving.
+        form.active_field = FormField::MountCwd;
         assert_eq!(
             form.handle_key(key(KeyCode::Char(' '))),
             FormAction::Continue
@@ -1461,31 +1499,18 @@ mod tests {
         assert!(!form.mount_cwd);
     }
 
-    // -- advanced toggle --
+    // -- field values (grouped form; no toggle anymore) --
 
     #[test]
-    fn ctrl_a_toggles_advanced() {
-        let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
-        assert!(form.advanced);
-        assert_eq!(form.field_count(), FormField::ALL.len());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
-        assert!(!form.advanced);
-        assert_eq!(form.active_field, FormField::Image);
-    }
-
-    #[test]
-    fn typing_a_is_not_advanced_toggle() {
+    fn typing_a_types_into_the_image_field() {
         let mut form = CreateForm::new(Vec::new());
         form.handle_key(key(KeyCode::Char('a')));
-        assert!(!form.advanced);
         assert_eq!(form.image, "a");
     }
 
     #[test]
-    fn advanced_values_apply_when_set() {
+    fn values_apply_when_set() {
         let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.image = "alpine".into();
         form.active_field = FormField::Cpus;
         form.cpus = "2".into();
@@ -1500,9 +1525,8 @@ mod tests {
     }
 
     #[test]
-    fn advanced_invalid_cpus_rejected() {
+    fn invalid_cpus_rejected() {
         let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.image = "alpine".into();
         form.cpus = "abc".into();
         assert!(form.to_create_spec().is_err());
@@ -1511,35 +1535,18 @@ mod tests {
     }
 
     #[test]
-    fn advanced_invalid_memory_rejected() {
+    fn invalid_memory_rejected() {
         let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.image = "alpine".into();
         form.memory = "lots".into();
         assert!(form.to_create_spec().is_err());
     }
 
-    #[test]
-    fn advanced_summary_lists_set_fields() {
-        let mut form = CreateForm::new(Vec::new());
-        // The default state (mount cwd on, nothing else) is not "set" — the
-        // summary exists to surface *deliberate* choices only.
-        assert_eq!(form.advanced_summary(), None);
-        form.cpus = "2".into();
-        form.ports.push("8080:80".into());
-        let summary = form.advanced_summary().unwrap();
-        assert!(summary.contains("2 cpus"));
-        assert!(summary.contains("1 ports"));
-        form.toggle_mount_cwd();
-        assert!(form.advanced_summary().unwrap().contains("no mount"));
-    }
-
-    // -- advanced field behavior (unchanged semantics) --
+    // -- field behavior (semantics unchanged from the advanced form) --
 
     #[test]
-    fn advanced_net_profile_cycles() {
+    fn net_profile_cycles() {
         let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.active_field = FormField::NetProfile;
         form.handle_key(key(KeyCode::Down));
         assert_eq!(form.net_profile, NetProfile::Private);
@@ -1548,9 +1555,8 @@ mod tests {
     }
 
     #[test]
-    fn advanced_list_add_and_remove() {
+    fn list_add_and_remove() {
         let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.active_field = FormField::Ports;
         for ch in "8080:80".chars() {
             form.handle_key(key(KeyCode::Char(ch)));
@@ -1562,9 +1568,8 @@ mod tests {
     }
 
     #[test]
-    fn advanced_enter_on_last_field_submits() {
+    fn enter_on_last_field_submits() {
         let mut form = CreateForm::new(Vec::new());
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.active_field = *FormField::ALL.last().unwrap();
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
     }
@@ -1575,7 +1580,6 @@ mod tests {
     fn port_specs_parse() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.active_field = FormField::Ports;
         form.ports = vec!["8080:80".into(), "0.0.0.0:9090:90/udp".into()];
         let spec = form.to_create_spec().unwrap();
@@ -1591,7 +1595,6 @@ mod tests {
     fn empty_list_entries_are_skipped() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.toggle_mount_cwd(); // keep volumes purely what the user typed
         form.volumes = vec!["  ".into(), "./src:/app".into()];
         let spec = form.to_create_spec().unwrap();
@@ -1602,7 +1605,6 @@ mod tests {
     fn workdir_and_name_optional() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        form.handle_key(key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL));
         form.workdir = "/app".into();
         let spec = form.to_create_spec().unwrap();
         assert_eq!(spec.workdir.as_deref(), Some("/app"));
