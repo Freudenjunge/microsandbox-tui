@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -100,6 +100,37 @@ pub struct PublishedPort {
 }
 
 impl PublishedPort {
+    /// Parse a CLI/port-spec string in `HOST:GUEST` or `BIND:HOST:GUEST`
+    /// form with an optional `/udp` suffix. Unit-tested.
+    pub fn parse_cli(s: &str) -> Result<PublishedPort> {
+        let s = s.trim();
+        let (spec, protocol) = match s.split_once('/') {
+            Some((spec, proto)) => (spec, proto.to_lowercase()),
+            None => (s, "tcp".to_string()),
+        };
+        if protocol != "tcp" && protocol != "udp" {
+            bail!("invalid protocol '{protocol}', use tcp or udp");
+        }
+        let parts: Vec<&str> = spec.split(':').collect();
+        let (host_bind, host_port, guest_port) = match parts.as_slice() {
+            [port1, port2] => ("127.0.0.1", *port1, *port2),
+            [bind, port1, port2] => (*bind, *port1, *port2),
+            _ => bail!("port spec must be HOST:GUEST or BIND:HOST:GUEST"),
+        };
+        let host_port: u16 = host_port
+            .parse()
+            .map_err(|_| anyhow!("invalid host port '{host_port}'"))?;
+        let guest_port: u16 = guest_port
+            .parse()
+            .map_err(|_| anyhow!("invalid guest port '{guest_port}'"))?;
+        Ok(PublishedPort {
+            host_bind: host_bind.to_string(),
+            host_port,
+            guest_port,
+            protocol,
+        })
+    }
+
     /// Render this mapping in the CLI form `-p` expects:
     /// `HOST:GUEST`, or `BIND:HOST:GUEST` when the bind is not the loopback
     /// default, with an optional `/udp` suffix.
@@ -1012,6 +1043,22 @@ pub(crate) mod tests {
             reference: reference.into(),
             size_bytes: 1024,
         }
+    }
+
+    // ---- port spec parsing (CLI form, shared with templates) ----
+
+    #[test]
+    fn parse_cli_accepts_flag_forms() {
+        let p = PublishedPort::parse_cli("8080:80").unwrap();
+        assert_eq!(p.host_bind, "127.0.0.1");
+        assert_eq!(p.host_port, 8080);
+        assert_eq!(p.guest_port, 80);
+        let b = PublishedPort::parse_cli("0.0.0.0:8080:80/udp").unwrap();
+        assert_eq!(b.host_bind, "0.0.0.0");
+        assert_eq!(b.protocol, "udp");
+        assert!(PublishedPort::parse_cli("8080").is_err());
+        assert!(PublishedPort::parse_cli("a:b").is_err());
+        assert!(PublishedPort::parse_cli("8080:80/sctp").is_err());
     }
 }
 

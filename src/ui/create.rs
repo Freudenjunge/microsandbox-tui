@@ -736,7 +736,7 @@ impl CreateForm {
             if p.is_empty() {
                 continue;
             }
-            ports.push(parse_port_spec(p)?);
+            ports.push(PublishedPort::parse_cli(p)?);
         }
 
         // Name (optional — empty = auto-generated).
@@ -833,37 +833,6 @@ fn is_valid_memory(s: &str) -> bool {
     } else {
         s.parse::<u64>().is_ok()
     }
-}
-
-/// Parse a port spec string in `HOST:GUEST` or `BIND:HOST:GUEST` form with
-/// an optional `/udp` suffix.
-fn parse_port_spec(s: &str) -> Result<PublishedPort> {
-    let s = s.trim();
-    let (spec, protocol) = match s.split_once('/') {
-        Some((spec, proto)) => (spec, proto.to_lowercase()),
-        None => (s, "tcp".to_string()),
-    };
-    if protocol != "tcp" && protocol != "udp" {
-        bail!("invalid protocol '{protocol}', use tcp or udp");
-    }
-    let parts: Vec<&str> = spec.split(':').collect();
-    let (host_bind, host_port, guest_port) = match parts.as_slice() {
-        [port1, port2] => ("127.0.0.1", *port1, *port2),
-        [bind, port1, port2] => (*bind, *port1, *port2),
-        _ => bail!("port spec must be HOST:GUEST or BIND:HOST:GUEST"),
-    };
-    let host_port: u16 = host_port
-        .parse()
-        .map_err(|_| anyhow!("invalid host port '{host_port}'"))?;
-    let guest_port: u16 = guest_port
-        .parse()
-        .map_err(|_| anyhow!("invalid guest port '{guest_port}'"))?;
-    Ok(PublishedPort {
-        host_bind: host_bind.to_string(),
-        host_port,
-        guest_port,
-        protocol,
-    })
 }
 
 /// Trim and filter empty strings from a list.
@@ -1765,10 +1734,10 @@ mod tests {
 
     #[test]
     fn port_specs_reject_garbage() {
-        assert!(parse_port_spec("8080").is_err());
-        assert!(parse_port_spec("a:b").is_err());
-        assert!(parse_port_spec("8080:80/sctp").is_err());
-        assert!(parse_port_spec("127.0.0.1:8080:80").is_ok());
+        assert!(PublishedPort::parse_cli("8080").is_err());
+        assert!(PublishedPort::parse_cli("a:b").is_err());
+        assert!(PublishedPort::parse_cli("8080:80/sctp").is_err());
+        assert!(PublishedPort::parse_cli("127.0.0.1:8080:80").is_ok());
     }
 
     #[test]
