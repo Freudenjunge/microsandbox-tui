@@ -774,8 +774,8 @@ Plan: `docs/superpowers/plans/2026-09-26-release-readiness.md`
 - [x] Template description "official sbx hub" → "sbx org on Docker Hub".
 
 ### 2. LICENSE appendix + AGENTS.md removal
-- [ ] Appendix `Copyright [yyyy] [name]` → `Copyright 2026 Freudenjunge`.
-- [ ] AGENTS.md deleted (rules live in DESIGN.md/PLAN.md; user decision).
+- [x] Appendix `Copyright [yyyy] [name]` → `Copyright 2026 Freudenjunge`.
+- [x] AGENTS.md deleted (rules live in DESIGN.md/PLAN.md; user decision).
 
 ### 3. README rewrite (public storefront)
 - [ ] Full public README: hero+badges, why, features, screenshots (slots),
