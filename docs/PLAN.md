@@ -778,7 +778,7 @@ Plan: `docs/superpowers/plans/2026-09-26-release-readiness.md`
 - [x] AGENTS.md deleted (rules live in DESIGN.md/PLAN.md; user decision).
 
 ### 3. README rewrite (public storefront)
-- [ ] Full public README: hero+badges, why, features, screenshots (slots),
+- [x] Full public README: hero+badges, why, features, screenshots (slots),
       requirements matrix, install (3 ways), usage, keybindings, templates,
       how-it-works, development, license+disclaimer.
 
