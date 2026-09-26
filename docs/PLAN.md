@@ -783,7 +783,7 @@ Plan: `docs/superpowers/plans/2026-09-26-release-readiness.md`
       how-it-works, development, license+disclaimer.
 
 ### 4. CI workflow
-- [ ] `.github/workflows/ci.yml`: push/PR to main; fmt+clippy+test+check.
+- [x] `.github/workflows/ci.yml`: push/PR to main; fmt+clippy+test+check.
 
 ### 5. Release workflow
 - [ ] `.github/workflows/release.yml`: tag v*; gates; build matrix
