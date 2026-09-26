@@ -58,7 +58,11 @@ jobs:
           cp "target/${{ matrix.target }}/release/msb-tui" "$STAGING/"
           cp README.md LICENSE "$STAGING/"
           tar -czf "$STAGING.tar.gz" "$STAGING"
-          sha256sum "$STAGING.tar.gz" > "$STAGING.tar.gz.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$STAGING.tar.gz" > "$STAGING.tar.gz.sha256"
+          else
+            shasum -a 256 "$STAGING.tar.gz" > "$STAGING.tar.gz.sha256"
+          fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
