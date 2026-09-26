@@ -754,3 +754,38 @@ official Docker sbx Hub org (`hub.docker.com/u/sbx`), maintainer-curated.
       exactly `shell` + the 19 sbx harnesses. User TOML files still
       shadow by id, so custom variants remain possible; the old
       presets stay retrievable from git history.
+
+---
+
+# Phase 3 — Release readiness (2026-09-26)
+
+Goal: make the repo publishable as a public GitHub repo — GitHub-only for
+now (no crates.io). Design approved in-session 2026-09-26: [[bin]] msb-tui,
+LICENSE appendix fix, AGENTS.md removal, full public README, CI workflow
+(4 gates), tag-triggered release workflow (Linux x86_64/ARM64 + macOS ARM64
+binaries), repo metadata, tag v0.1.0.
+
+Plan: `docs/superpowers/plans/2026-09-26-release-readiness.md`
+
+## Task List
+
+### 1. Cargo [[bin]] msb-tui + template wording
+- [x] `[[bin]] name = "msb-tui"` — installed command matches all docs.
+- [x] Template description "official sbx hub" → "sbx org on Docker Hub".
+
+### 2. LICENSE appendix + AGENTS.md removal
+- [ ] Appendix `Copyright [yyyy] [name]` → `Copyright 2026 Freudenjunge`.
+- [ ] AGENTS.md deleted (rules live in DESIGN.md/PLAN.md; user decision).
+
+### 3. README rewrite (public storefront)
+- [ ] Full public README: hero+badges, why, features, screenshots (slots),
+      requirements matrix, install (3 ways), usage, keybindings, templates,
+      how-it-works, development, license+disclaimer.
+
+### 4. CI workflow
+- [ ] `.github/workflows/ci.yml`: push/PR to main; fmt+clippy+test+check.
+
+### 5. Release workflow
+- [ ] `.github/workflows/release.yml`: tag v*; gates; build matrix
+      (x86_64-linux-gnu, aarch64-linux-gnu, aarch64-apple-darwin);
+      tar.gz assets; GitHub Release.

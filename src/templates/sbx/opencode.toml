@@ -1,6 +1,6 @@
 [meta]
 name = "OpenCode"
-description = "OpenCode, the open-source terminal coding agent, from the official sbx hub — pulls 0.4k"
+description = "OpenCode, the open-source terminal coding agent, from the sbx org on Docker Hub — pulls 0.4k"
 
 [spec]
 image = "sbx/opencode-image"

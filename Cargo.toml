@@ -5,6 +5,10 @@ edition = "2024"
 description = "A Docker sbx-style TUI for microsandbox"
 license = "Apache-2.0"
 
+[[bin]]
+name = "msb-tui"
+path = "src/main.rs"
+
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
