@@ -3,3 +3,6 @@
 
 # brainstorming visual companion (session-local mockups)
 .superpowers/
+
+# local worktrees
+.worktrees/
