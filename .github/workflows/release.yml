@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    name: Gates (fmt + clippy + test + check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Check
+        run: cargo check
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [gates]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Pack archive
+        run: |
+          STAGING="msb-tui-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          cp "target/${{ matrix.target }}/release/msb-tui" "$STAGING/"
+          cp README.md LICENSE "$STAGING/"
+          tar -czf "$STAGING.tar.gz" "$STAGING"
+          sha256sum "$STAGING.tar.gz" > "$STAGING.tar.gz.sha256"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msb-tui-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            msb-tui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+            msb-tui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+
+  publish:
+    name: Create GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create Release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256

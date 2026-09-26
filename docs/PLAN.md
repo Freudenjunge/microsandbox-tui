@@ -786,6 +786,6 @@ Plan: `docs/superpowers/plans/2026-09-26-release-readiness.md`
 - [x] `.github/workflows/ci.yml`: push/PR to main; fmt+clippy+test+check.
 
 ### 5. Release workflow
-- [ ] `.github/workflows/release.yml`: tag v*; gates; build matrix
+- [x] `.github/workflows/release.yml`: tag v*; gates; build matrix
       (x86_64-linux-gnu, aarch64-linux-gnu, aarch64-apple-darwin);
       tar.gz assets; GitHub Release.
