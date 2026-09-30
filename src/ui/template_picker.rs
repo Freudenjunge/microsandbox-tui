@@ -65,22 +65,22 @@ pub fn render(frame: &mut Frame, area: Rect, templates: &[Template], selected: u
     let hints = vec![
         crate::ui::chrome::FooterHint {
             key: "[Enter]",
-            label: "erstellen",
+            label: "create",
             role: crate::ui::chrome::FooterRole::Accent,
         },
         crate::ui::chrome::FooterHint {
             key: "[e]",
-            label: "anpassen",
+            label: "customize",
             role: crate::ui::chrome::FooterRole::Plain,
         },
         crate::ui::chrome::FooterHint {
             key: "[n]",
-            label: "leeres Formular",
+            label: "empty form",
             role: crate::ui::chrome::FooterRole::Plain,
         },
         crate::ui::chrome::FooterHint {
             key: "[d]",
-            label: "löschen",
+            label: "delete",
             role: crate::ui::chrome::FooterRole::Warn,
         },
         crate::ui::chrome::FooterHint {
@@ -131,7 +131,7 @@ fn render_list(frame: &mut Frame, area: Rect, templates: &[Template], selected: 
     let mut lines = Vec::with_capacity(rows.len());
     if templates.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  (keine Templates geladen — nur scratch verfügbar)",
+            "  (no templates loaded — only scratch available)",
             Style::default().fg(t.muted),
         )));
     }
@@ -175,7 +175,7 @@ fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selecte
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            format!(" Vorschau: {name} "),
+            format!(" Preview: {name} "),
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
         .border_style(Style::default().fg(t.accent))
@@ -234,7 +234,7 @@ fn render_preview(frame: &mut Frame, area: Rect, templates: &[Template], selecte
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "  Enter erstellt die Sandbox direkt.",
+        "  Enter creates the sandbox directly.",
         Style::default().fg(t.muted),
     )));
     let p = Paragraph::new(lines).block(Block::default().style(Style::default().bg(t.panel)));

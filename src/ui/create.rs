@@ -1605,8 +1605,8 @@ mod tests {
 
     #[test]
     fn enter_on_name_submits_the_form() {
-        // A: Enter erstellt (Footer „[Enter] create“) — es wandert nicht
-        // wie Tab durch die Felder (User-Feedback nach dem Smoke-Test).
+        // A: Enter submits (footer "[Enter] create") — it does NOT cycle
+        // through the fields like Tab (user feedback after the smoke test).
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::Name;
@@ -1631,9 +1631,9 @@ mod tests {
 
     #[test]
     fn enter_on_list_field_with_empty_input_advances() {
-        // A-Followup (User-Feedback): im Ports-Feld darf leeres Enter NICHT
-        // die Sandbox erstellen — es navigiert weiter (wie Tab); sonst
-        // führt „Port committen, noch einen tippen“ zur Früh-Erstellung.
+        // A-Followup (user feedback): in the Ports field an empty Enter must
+        // NOT submit the sandbox — it advances (like Tab); otherwise
+        // "commit one port, type another" would create prematurely.
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::Ports;
