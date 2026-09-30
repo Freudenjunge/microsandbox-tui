@@ -66,7 +66,7 @@ Goal: a working dashboard with live sandbox cards, create form, lifecycle action
 - [x] Update this plan: mark all tasks `[x]` and write a brief Phase 1 completion note.
 
 **Phase 1 complete.** 136 unit tests, all gates green. Deviations recorded:
-- msb 0.7.2 has no `create --replace`; recreate = stop → rm → create → start (updated in AGENTS.md/DESIGN.md).
+- msb 0.7.2 has no `create --replace`; recreate = stop → rm → create → start (recorded in DESIGN.md).
 - Exec in Phase 1 runs a demo command via the confirm dialog; free-form exec input is Phase 2.
 - Log tail task is spawned when the Logs view opens and aborted on leave (one sandbox at a time).
 
