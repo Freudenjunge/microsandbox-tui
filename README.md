@@ -37,15 +37,17 @@ what the API knows.
 
 ## Screenshots
 
-> 📸 Captures coming soon — the TUI in action:
->
-> | Capture | What it shows |
-> |---|---|
-> | dashboard | sandbox rail + detail tabs |
-> | create | template picker |
-> | ports | ports tab |
->
-> PRs adding captures under `docs/img/` are welcome.
+**Dashboard** — a live sandbox card (CPU gauge, memory, network, workdir, mounts, uptime, state-gated actions) beside the Overview pane with metrics and published ports.
+
+![Dashboard — sandbox card and overview pane](images/msb-dashboard.png)
+
+**Create** — the template picker: *Create from scratch*, Shell, and the AI-agent harness catalog from the sbx org on Docker Hub, with a live values preview.
+
+![Create — template picker](images/msb-creation-menue.png)
+
+**Ports** — the host⇄guest port matrix for the selected sandbox, with publish/unpublish behind the snapshot-preserving recreate flow.
+
+![Ports — host⇄guest matrix](images/msb-ports.png)
 
 ## Requirements
 
