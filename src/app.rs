@@ -458,6 +458,11 @@ impl App {
 
         match self.view {
             View::Dashboard => {
+                // The LOGS detail tab owns its keys (follow/grep/source,
+                // scroll): its state exists only while the tab is open.
+                if self.detail == DetailTab::Logs && self.logs_state.is_some() {
+                    return self.handle_logs_key(key);
+                }
                 // The PORTS detail tab owns its keys (publish form etc.).
                 if self.detail == DetailTab::Ports && self.ports_state.is_some() {
                     return self.handle_ports_key(key);
@@ -2073,5 +2078,33 @@ mod tests {
             Action::Render
         );
         assert_eq!(app.logs_state.as_ref().unwrap().lines.len(), 1);
+    }
+
+    #[test]
+    fn logs_detail_tab_routes_keys_to_the_logs_widget() {
+        // Key `2` opens the LOGS detail tab and creates its state.
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("web")]);
+        assert_eq!(app.handle_event(key(KeyCode::Char('2'))), Action::Render);
+        assert_eq!(app.detail, DetailTab::Logs);
+        assert!(app.logs_state.is_some());
+
+        // The dashboard handler must not swallow the widget's keys (same
+        // class of bug as the Phase 2.9 ports dispatch): `f` toggles
+        // follow, `s` cycles the source filter instead of falling through
+        // to the dashboard's start/stop confirm, and `g` enters the
+        // widget's grep mode.
+        assert_eq!(app.handle_event(key(KeyCode::Char('f'))), Action::Render);
+        assert!(!app.logs_state.as_ref().unwrap().follow);
+
+        assert_eq!(app.handle_event(key(KeyCode::Char('s'))), Action::Render);
+        assert!(app.confirm.is_none());
+        assert_eq!(
+            app.logs_state.as_ref().unwrap().source_filter.as_deref(),
+            Some("stdout")
+        );
+
+        assert_eq!(app.handle_event(key(KeyCode::Char('g'))), Action::Render);
+        assert!(app.logs_state.as_ref().unwrap().grep_mode);
     }
 }
