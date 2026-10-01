@@ -1197,6 +1197,52 @@ mod tests {
         assert_eq!(report, AutostartReport::default());
     }
 
+    #[tokio::test]
+    async fn restore_pass_handles_a_fleet_of_more_than_twenty_sandboxes() {
+        // Review fix C1: the SDK pages its fleet (first page = 20 rows).
+        // Whatever delivers rows to this pass must not cap them: marks on
+        // older sandboxes would land in `missing` and never start at boot.
+        let b = FakeBackend::new();
+        let mut names = Vec::new();
+        for i in 0..25u32 {
+            let name = format!("sbx-{i:02}");
+            insert(&b, &name, SandboxState::Stopped).await;
+            names.push(name);
+        }
+        let report = restore_pass(&b, &["sbx-00".into(), "sbx-19".into(), "sbx-24".into()]).await;
+        assert_eq!(
+            report.started.len(),
+            3,
+            "all marked sandboxes start regardless of fleet size: {report:?}"
+        );
+        assert!(report.missing.is_empty(), "{report:?}");
+        assert_eq!(report.started, vec!["sbx-00", "sbx-19", "sbx-24"]);
+    }
+
+    #[tokio::test]
+    async fn restore_pass_reports_a_failed_fleet_list_and_starts_nothing() {
+        // Review fix I2: the failed-list path (SDK init/DB unavailable at
+        // boot) is what systemd's Restart=on-failure keys off — it must
+        // keep the pass failed (exit 1) and start nothing.
+        let b = FakeBackend::new();
+        insert(&b, "a", SandboxState::Stopped).await;
+        b.fail_next_list().await;
+        let report = restore_pass(&b, &["a".into()]).await;
+        assert_eq!(
+            report.failed.len(),
+            1,
+            "one failed entry, the list itself: {report:?}"
+        );
+        assert_eq!(report.failed[0].0, "list");
+        assert!(
+            report.failed[0].1.contains("injected list failure"),
+            "{report:?}"
+        );
+        assert!(report.started.is_empty(), "{report:?}");
+        assert!(no_start_calls(&b).await);
+        assert_eq!(autostart_exit_code(&report), 1);
+    }
+
     #[test]
     fn report_summary_lines_describe_each_outcome() {
         let report = AutostartReport {

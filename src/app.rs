@@ -2260,9 +2260,51 @@ mod tests {
         let change = app
             .take_autostart_change()
             .expect("prune must persist the new set");
-        assert_eq!(change.names, vec!["a".to_string(), "keep".to_string()]);
+        // HashSet snapshot order is process-random — compare as sets.
+        let mut names = change.names;
+        names.sort();
+        assert_eq!(names, vec!["a".to_string(), "keep".to_string()]);
         // A list without disappearances does not persist again.
         app.update_sandboxes(vec![summary("a"), summary("keep")]);
         assert_eq!(app.take_autostart_change(), None);
+    }
+
+    #[test]
+    fn update_sandboxes_keeps_all_marks_for_fleets_larger_than_the_sdk_page() {
+        // Review fix C1: the SDK's list endpoint paginates (20-row first
+        // page). Pruning against a sliced fleet deletes marks of older
+        // (but real) sandboxes — permanent data loss. A 25-sandbox list
+        // must keep a mark on the oldest record.
+        let mut app = App::new();
+        app.init_autostart(vec!["sbx-24".into(), "first".into()], true);
+        let fleet: Vec<SandboxSummary> = (0..25)
+            .map(|i| {
+                if i == 0 {
+                    summary("first")
+                } else {
+                    summary(&format!("sbx-{i:02}"))
+                }
+            })
+            .collect();
+        app.update_sandboxes(fleet);
+        assert!(app.autostart.contains("first"), "{:?}", app.autostart);
+        assert!(app.autostart.contains("sbx-24"));
+        assert_eq!(app.autostart.len(), 2);
+        assert_eq!(app.take_autostart_change(), None, "nothing vanished");
+    }
+
+    #[test]
+    fn update_sandboxes_with_an_empty_list_wipes_all_marks() {
+        // Documented policy: an empty fleet means the DB was wiped;
+        // keeping marks would leave ghosts the boot pass reports as
+        // missing. Pin the deliberate wipe + persist.
+        let mut app = App::new();
+        app.init_autostart(vec!["one".into(), "two".into()], true);
+        app.update_sandboxes(vec![]);
+        assert!(app.autostart.is_empty());
+        let change = app
+            .take_autostart_change()
+            .expect("the wipe must be persisted");
+        assert_eq!(change.names, Vec::<String>::new());
     }
 }

@@ -441,6 +441,16 @@ async fn run(cli: Cli) -> Result<()> {
         let _ = abort.send(());
     }
 
+    // Flush a pending autostart write synchronously: `shutdown_background`
+    // discards unpolled tasks, and losing the last `a` toggle would
+    // silently undo the user's mark (review fix M8).
+    if let Some(change) = app.take_autostart_change() {
+        let path = autostart::autostart_path();
+        if let Err(e) = autostart::save(&path, &change.names) {
+            eprintln!("autostart: save {e:#}");
+        }
+    }
+
     // TerminalGuard::drop restores the terminal.
     Ok(())
 }

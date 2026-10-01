@@ -79,14 +79,18 @@ pub(crate) fn load(path: &Path) -> (Vec<String>, Vec<String>) {
     }
 }
 
-/// Save `names` to `path`, creating parent directories.
+/// Save `names` to `path`, creating parent directories. Writes through a
+/// temp file + rename so a torn write (crash mid-save) can never leave a
+/// truncated document: `load` would then report empty marks + warning.
 pub(crate) fn save(path: &Path, names: &[String]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serialize(names))?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, serialize(names))?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -115,13 +119,18 @@ pub(crate) fn hint_text(marked: usize, installed: bool) -> Option<String> {
 /// `Type=exec` + `RemainAfterExit` (a oneshot cannot carry `Restart=` on
 /// older systemd): the pass starts the marked sandboxes and exits; when
 /// it *fails* (e.g. the SDK raced early boot), systemd retries after 30 s
-/// — self-healing, no host-side ordering unit dance needed.
+/// — bounded by `StartLimit*` so a permanently failing pass (corrupt
+/// config, gone image) stops after a handful of retries and stays
+/// visible via `systemctl status`. User units cannot order against
+/// system targets, so there is deliberately no `network-online` line:
+/// the Restart loop is the safety net, not dependency ordering.
 pub(crate) fn unit_contents(exe: &Path) -> String {
+    // Systemd treats a bare `%` as a unit specifier; escape it, and quote
+    // the path so binaries under directories with spaces parse cleanly.
+    let quoted = format!("\"{}\"", exe.to_string_lossy().replace('%', "%%"));
     format!(
         "[Unit]
 Description=msb-tui boot autostart: start marked microsandbox sandboxes
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=exec
@@ -129,6 +138,8 @@ ExecStart={} autostart
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=8
 # The SDK locates the msb runtime in the SDK home; at boot the user
 # manager's PATH is minimal, so make the common install locations visible.
 Environment=PATH=%h/.microsandbox/bin:%h/.local/bin:%h/.cargo/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
@@ -136,7 +147,7 @@ Environment=PATH=%h/.microsandbox/bin:%h/.local/bin:%h/.cargo/bin:%h/bin:/usr/lo
 [Install]
 WantedBy=default.target
 ",
-        exe.display()
+        quoted
     )
 }
 
@@ -158,8 +169,7 @@ fn config_dir() -> PathBuf {
     Path::new(&home).join(".config")
 }
 
-/// Whether the unit file exists ([`is_installed_at`] is the tested core).
-#[cfg_attr(test, allow(dead_code))]
+/// Whether the unit file exists (main.rs consumes this directly).
 pub(crate) fn is_installed() -> bool {
     is_installed_at(&config_dir())
 }
@@ -209,7 +219,12 @@ pub(crate) fn install() -> anyhow::Result<Vec<String>> {
         ran.push(args.join(" "));
     }
     let user = std::env::var("USER").unwrap_or_default();
-    match run_quiet(&["loginctl", "enable-linger", &user]) {
+    let linger_result = if user.is_empty() {
+        run_quiet(&["loginctl", "enable-linger"])
+    } else {
+        run_quiet(&["loginctl", "enable-linger", &user])
+    };
+    match linger_result {
         Ok(()) => ran.push("loginctl enable-linger".to_string()),
         Err(e) => ran.push(format!(
             "loginctl enable-linger needs root (run it once with sudo) to start sandboxes\
@@ -343,10 +358,35 @@ mod tests {
         assert!(exec_line.ends_with("autostart"), "{exec_line}");
         // Boot wiring + retry safety net.
         assert!(text.contains("WantedBy=default.target"), "{text}");
-        assert!(text.contains("network-online"), "{text}");
         assert!(text.contains("Restart=on-failure"), "{text}");
+        // User units cannot order against system targets — the Restart=
+        // loop is the real safety net; don't pretend otherwise.
+        assert!(
+            !text.contains("network-online"),
+            "inert user-manager ordering removed: {text}"
+        );
         // A oneshot cannot carry Restart= on older systemd.
         assert!(!text.contains("Type=oneshot"), "{text}");
+        // Failure is bounded: a permanently failing pass must stop being
+        // retried (and stay visible via systemctl status) instead of
+        // retrying every 30 s forever.
+        assert!(text.contains("StartLimitIntervalSec="), "{text}");
+        assert!(text.contains("StartLimitBurst="), "{text}");
+    }
+
+    #[test]
+    fn unit_contents_quotes_and_escapes_the_exe_path() {
+        let text = unit_contents(Path::new("/opt/my tools/msb%t-ui"));
+        let exec_line = text
+            .lines()
+            .find(|l| l.starts_with("ExecStart="))
+            .expect("ExecStart line");
+        // Path quoted (spaces survive) and systemd `%` doubled (`%%`),
+        // because a bare `%` is a unit specifier and breaks parsing.
+        assert!(
+            exec_line.contains("\"/opt/my tools/msb%%t-ui\""),
+            "{exec_line}"
+        );
     }
 
     #[test]
