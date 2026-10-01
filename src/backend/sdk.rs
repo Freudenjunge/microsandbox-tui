@@ -577,9 +577,22 @@ fn parse_volume_string(s: &str) -> Option<ParsedMount> {
     })
 }
 
+/// Combine parsed rows with per-sandbox degradation (unreadable stored
+/// configs): rows stay listed, failures surface as warnings alongside —
+/// 2.8 finding 2. Pure helper (unit-tested below); `list_sandboxes` applies
+/// it. The earlier variant returned `Err` on any bad config and thereby
+/// discarded every good row, leaving the dashboard stuck on its loading
+/// state (colleague home-lab report, 2026-10-01).
+pub(crate) fn list_with_degraded(
+    out: Vec<SandboxSummary>,
+    warnings: Vec<String>,
+) -> Result<(Vec<SandboxSummary>, Vec<String>)> {
+    Ok((out, warnings))
+}
+
 #[async_trait]
 impl MsbBackend for SdkBackend {
-    async fn list_sandboxes(&self) -> Result<Vec<SandboxSummary>> {
+    async fn list_sandboxes(&self) -> Result<(Vec<SandboxSummary>, Vec<String>)> {
         let page = microsandbox::Sandbox::list().await?;
         let mut out = Vec::with_capacity(page.sandboxes.len());
         let mut degraded = Vec::new();
@@ -608,17 +621,15 @@ impl MsbBackend for SdkBackend {
             });
         }
         if !degraded.is_empty() {
-            // Surface the first parse failure so the user knows why a card
-            // shows incomplete data.
-            return Err(anyhow!(
-                "some sandboxes have unreadable configs: {}",
-                degraded.join("; ")
-            ));
+            // Surface the parse failures as warnings; the rows themselves
+            // (degraded ones with image "?") are still returned — see
+            // `list_with_degraded`.
+            return list_with_degraded(out, degraded);
         }
         // SDK lists newest first; the dashboard is not order-sensitive but
         // keep a stable, human-friendly order.
         out.sort_by_key(|s| std::cmp::Reverse(s.created_at));
-        Ok(out)
+        list_with_degraded(out, Vec::new())
     }
 
     async fn status(&self, name: &str) -> Result<SandboxStatusRow> {
@@ -911,6 +922,53 @@ impl MsbBackend for SdkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- sandbox list degrade (unreadable stored configs) ----
+
+    fn summary(name: &str) -> SandboxSummary {
+        SandboxSummary {
+            created_at: chrono::Utc::now(),
+            image: "alpine".into(),
+            name: name.into(),
+            status: SandboxState::Running,
+            workdir: None,
+            mounts: vec![],
+        }
+    }
+
+    #[test]
+    fn unreadable_configs_keep_rows_and_surface_warnings() {
+        // Regression: the colleague-report path returned Err when any
+        // sandbox's stored config failed to parse, which DISCARDED every
+        // successfully parsed row (dashboard stuck on "Loading sandboxes…"
+        // with just the error). The 2.8 design (7113c22) degrades
+        // per-sandbox: rows stay listed, the parse failure surfaces as a
+        // warning alongside them.
+        let mut degraded = summary("hermes");
+        degraded.image = "?".into(); // mirrors the list_sandboxes degraded row
+        let rows = vec![summary("opencode"), degraded, summary("debian")];
+        let warnings = vec![
+            "hermes: stored config for 'hermes' does not match the expected schema".to_string(),
+        ];
+        let (rows, warnings) =
+            list_with_degraded(rows, warnings).expect("degraded rows still list");
+        assert_eq!(warnings.len(), 1, "warning surfaces alongside the rows");
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["opencode", "hermes", "debian"]);
+        // Rows pass through unchanged with their degraded image marker.
+        assert_eq!(
+            rows[1].image, "?",
+            "degraded row passes through with image ?"
+        );
+    }
+
+    #[test]
+    fn clean_list_yields_no_warnings() {
+        let rows = vec![summary("a"), summary("b")];
+        let (rows, warnings) = list_with_degraded(rows, Vec::new()).expect("clean list");
+        assert!(warnings.is_empty());
+        assert_eq!(rows.len(), 2);
+    }
 
     // ---- image digest dedupe (snapshot-restores materialize duplicates) ----
 

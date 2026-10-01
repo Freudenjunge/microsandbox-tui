@@ -319,27 +319,70 @@ pub struct PauseInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SandboxConfig {
     pub deployment_profile: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub env: Vec<EnvVar>,
     pub external_mount_policy: String,
     pub image: ImageSpec,
     pub init: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub labels: HashMap<String, String>,
     pub lifecycle: Lifecycle,
+    #[serde(default, deserialize_with = "null_to_default")]
     pub manifest_digest: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub mounts: Vec<Mount>,
     pub name: String,
     pub network: NetworkConfig,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub patches: Vec<serde_json::Value>,
     pub pull_policy: String,
     pub resources: Resources,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub rlimits: Vec<serde_json::Value>,
     pub runtime: RuntimeConfig,
     pub security_profile: String,
+}
+
+/// Deserialize an explicit JSON `null` as the field's default value.
+///
+/// msb 0.7.2 persists unset optional fields as explicit `null`s (not absent
+/// keys): `"workdir": null`, `"hostname": null`, — and, for CLI-created
+/// sandboxes whose image resolves no workload, `runtime.cmd: null`
+/// (`SandboxRuntimeOptions.cmd` is `Option<Vec<String>>`). `#[serde(default)]`
+/// alone only covers *absent* keys, so an explicit null fails the DTO parse
+/// with "invalid type: null, expected a sequence/column…" and (pre-2.8
+/// semantics) took the whole sandbox list down. The SDK's spec mapper treats
+/// these nulls as "unset" (`unwrap_or_default`); mirroring that at the
+/// deserialization boundary keeps the JSON and the typed mapper consistent.
+pub(crate) fn null_to_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    let v: Option<T> = serde::Deserialize::deserialize(d)?;
+    Ok(v.unwrap_or_default())
+}
+
+/// `shell: null` → the SDK default shell, mirroring the spec mapper's
+/// `unwrap_or_else(|| "/bin/sh".to_string())` (`SandboxRuntimeOptions.shell`
+/// is `Option<String>` and persists unset as null).
+pub(crate) fn null_to_shell<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<String> = serde::Deserialize::deserialize(d)?;
+    Ok(v.unwrap_or_else(|| "/bin/sh".to_string()))
+}
+
+/// `metrics_sample_interval_ms: null` → the SDK default (1000 ms), mirroring
+/// the spec mapper's `unwrap_or(1000)` (SDK `None` means "disable sampling";
+/// the DTO field is display-only).
+pub(crate) fn null_to_metrics_interval<'de, D>(d: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<u64> = serde::Deserialize::deserialize(d)?;
+    Ok(v.unwrap_or(1000))
 }
 
 /// `KEY=VALUE` entry from sandbox config.
@@ -465,9 +508,9 @@ pub struct MountOptions {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub max_connections: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub ports: Vec<PublishedPort>,
     #[serde(default)]
     pub strict: bool,
@@ -493,19 +536,23 @@ pub struct Resources {
 /// sandbox created without an explicit workdir (smoke-test finding 2.8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    #[serde(default)]
+    /// Image/command workload; CLI-created sandboxes without a resolvable
+    /// command persist `cmd: null` (SDK `Option<Vec<String>>`).
+    #[serde(default, deserialize_with = "null_to_default")]
     pub cmd: Vec<String>,
     #[serde(default)]
     pub disable_metrics_sample: bool,
+    #[serde(default)]
     pub entrypoint: Option<serde_json::Value>,
     #[serde(default)]
     pub hostname: Option<String>,
     #[serde(default)]
     pub log_level: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_metrics_interval")]
     pub metrics_sample_interval_ms: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub scripts: HashMap<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "null_to_shell")]
     pub shell: String,
     #[serde(default)]
     pub user: Option<String>,
@@ -628,6 +675,9 @@ pub(crate) mod tests {
             "sandbox-inspect" => include_str!("fixtures/sandbox-inspect.json"),
             "sandbox-stored-null-workdir" => {
                 include_str!("fixtures/sandbox-stored-null-workdir.json")
+            }
+            "sandbox-stored-cli-null-cmd" => {
+                include_str!("fixtures/sandbox-stored-cli-null-cmd.json")
             }
             "metrics" => include_str!("fixtures/metrics.json"),
             "volumes" => include_str!("fixtures/volumes.json"),
@@ -874,6 +924,102 @@ pub(crate) mod tests {
         assert_eq!(cfg.runtime.shell, "/bin/sh");
         assert_eq!(cfg.runtime.cmd, vec!["bash".to_string()]);
         assert_eq!(cfg.resources.memory_mib, 512);
+    }
+
+    #[test]
+    fn stored_cli_config_with_null_cmd_and_entrypoint_parses() {
+        // Regression (colleague home-lab report, 2026-10-01): a CLI-created
+        // sandbox from an image whose CMD/ENTRYPOINT resolve to no workload
+        // persists `runtime.cmd: null` / `entrypoint: null` (the 0.7.2
+        // schema serializes unset `Option`s explicitly as null — same
+        // mechanism as the null workdir above). The fleet-wide error was
+        //  "sandbox list: … 'hermes': stored config for 'hermes' does not
+        //   match the expected schema: invalid type: null, expected a
+        //   sequence at line 1 column 344"
+        let raw = fixture("sandbox-stored-cli-null-cmd");
+        let cfg: SandboxConfig =
+            serde_json::from_str(raw).expect("CLI-created config with null cmd must parse");
+        assert_eq!(cfg.name, "hermes");
+        assert_eq!(
+            cfg.image.reference(),
+            "nousresearch/hermes-agent:v2026.9.21"
+        );
+        assert!(
+            cfg.runtime.cmd.is_empty(),
+            "null cmd maps to empty (CLI semantics: no workload)"
+        );
+        assert_eq!(cfg.runtime.entrypoint, None, "null entrypoint maps to None");
+        // Mounts survive: the sandbox carries two `--mount-dir` mounts.
+        assert_eq!(cfg.mounts.len(), 2);
+        // Networking enabled with no published ports.
+        assert!(cfg.network.enabled);
+        assert!(cfg.network.ports.is_empty());
+    }
+
+    #[test]
+    fn stored_config_null_sequences_map_to_empty() {
+        // Any sequence/map field the persisted schema can carry as an
+        // explicit null must deserialize to its empty default — the SDK
+        // writes nulls, not absent keys, and `#[serde(default)]` alone
+        // only covers absent keys.
+        let template: serde_json::Value =
+            serde_json::from_str(fixture("sandbox-stored-null-workdir")).unwrap();
+        for (label, field, is_empty) in [
+            ("env", &["env"] as &[&str], true),
+            ("mounts", &["mounts"], true),
+            ("patches", &["patches"], true),
+            ("rlimits", &["rlimits"], true),
+            ("cmd", &["runtime", "cmd"], true),
+            ("scripts", &["runtime", "scripts"], true),
+            ("ports", &["network", "ports"], true),
+        ] {
+            let mut v = template.clone();
+            let target = field.iter().fold(&mut v, |node, key| &mut node[*key]);
+            *target = serde_json::Value::Null;
+            let cfg: SandboxConfig = serde_json::from_value(v)
+                .unwrap_or_else(|e| panic!("{label}: null {label} must parse: {e}"));
+            let empty = match label {
+                "env" => cfg.env.is_empty(),
+                "mounts" => cfg.mounts.is_empty(),
+                "patches" => cfg.patches.is_empty(),
+                "rlimits" => cfg.rlimits.is_empty(),
+                "cmd" => cfg.runtime.cmd.is_empty(),
+                "scripts" => cfg.runtime.scripts.is_empty(),
+                "ports" => cfg.network.ports.is_empty(),
+                _ => unreachable!(),
+            };
+            assert!(is_empty == empty, "{label}: null maps to empty");
+        }
+        // And everything at once still parses to the defaults.
+        let mut v = template.clone();
+        let null = serde_json::Value::Null;
+        v["env"] = null.clone();
+        v["mounts"] = null.clone();
+        v["patches"] = null.clone();
+        v["rlimits"] = null.clone();
+        v["runtime"]["cmd"] = null.clone();
+        v["runtime"]["scripts"] = null.clone();
+        v["network"]["ports"] = null;
+        let cfg: SandboxConfig = serde_json::from_value(v).expect("all-null sequences parse");
+        assert!(cfg.env.is_empty() && cfg.mounts.is_empty() && cfg.patches.is_empty());
+        assert!(cfg.rlimits.is_empty() && cfg.runtime.cmd.is_empty());
+        assert!(cfg.runtime.scripts.is_empty() && cfg.network.ports.is_empty());
+    }
+
+    #[test]
+    fn stored_config_null_scalars_map_to_sdk_defaults() {
+        // Scalar fields mirror the SDK spec mapper's unwrap-ors: a persisted
+        // null maps to the same default the typed conversion produces
+        // (shell "/bin/sh", sampling 1000 ms, absent digest "").
+        let mut v: serde_json::Value =
+            serde_json::from_str(fixture("sandbox-stored-null-workdir")).unwrap();
+        v["runtime"]["shell"] = serde_json::Value::Null;
+        v["runtime"]["metrics_sample_interval_ms"] = serde_json::Value::Null;
+        v["manifest_digest"] = serde_json::Value::Null;
+        let cfg: SandboxConfig = serde_json::from_value(v).expect("null scalars parse");
+        assert_eq!(cfg.runtime.shell, "/bin/sh");
+        assert_eq!(cfg.runtime.metrics_sample_interval_ms, 1000);
+        assert_eq!(cfg.manifest_digest, "");
     }
 
     #[test]

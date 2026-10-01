@@ -123,30 +123,37 @@ async fn run(cli: Cli) -> Result<()> {
     // ---- spawn background pollers ----
 
     // Sandbox list poller: `msb ls` every 5 s.
-    spawn_poller(
-        event_tx.clone(),
-        SANDBOX_POLL_INTERVAL,
-        backend.clone(),
-        |b| {
-            Box::pin(async move {
-                let list = b.list_sandboxes().await?;
-                Ok(AppEvent::SandboxesUpdated(list))
-            })
-        },
-        "sandbox list",
-    );
+    {
+        let tx = event_tx.clone();
+        spawn_poller(
+            event_tx.clone(),
+            SANDBOX_POLL_INTERVAL,
+            backend.clone(),
+            Box::new(move |b| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    let (list, warnings) = b.list_sandboxes().await?;
+                    for w in warnings {
+                        let _ = tx.send(AppEvent::Error(w)).await;
+                    }
+                    Ok(AppEvent::SandboxesUpdated(list))
+                })
+            }),
+            "sandbox list",
+        );
+    }
 
     // Metrics poller: `msb metrics --all` every 1 s.
     spawn_poller(
         event_tx.clone(),
         METRICS_POLL_INTERVAL,
         backend.clone(),
-        |b| {
+        Box::new(|b| {
             Box::pin(async move {
                 let samples = b.metrics().await?;
                 Ok(AppEvent::MetricsUpdated(samples))
             })
-        },
+        }),
         "metrics",
     );
 
@@ -302,7 +309,12 @@ async fn run(cli: Cli) -> Result<()> {
             let backend = backend.clone();
             tokio::spawn(async move {
                 let names = match backend.list_sandboxes().await {
-                    Ok(list) => list.into_iter().map(|s| s.name).collect::<Vec<_>>(),
+                    Ok((list, warnings)) => {
+                        for w in warnings {
+                            let _ = tx.send(AppEvent::Error(w)).await;
+                        }
+                        list.into_iter().map(|s| s.name).collect::<Vec<_>>()
+                    }
                     Err(e) => {
                         let _ = tx.send(AppEvent::Error(format!("ports: {e:#}"))).await;
                         return;
@@ -520,7 +532,12 @@ fn run_save_template(t: crate::template::Template, tx: mpsc::Sender<AppEvent>) {
 /// Future returned by a poller closure.
 type PollFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppEvent>> + Send>>;
 /// Poller closure: takes the backend and produces an event future.
-type PollFn = fn(Arc<SdkBackend>) -> PollFuture;
+/// A poller step: run against the backend, produce zero or more events
+/// (warnings first, then the result — see the sandbox-list poller), or a
+/// failure the poller reports as an error event. Boxed (rather than a fn
+/// pointer) so the sandbox-list poller can capture the event channel and
+/// emit per-sandbox degradation warnings alongside the list.
+type PollFn = Box<dyn Fn(Arc<SdkBackend>) -> PollFuture + Send + Sync>;
 
 /// Spawn a periodic poller that calls `f` on the backend at `interval`,
 /// sending the resulting `AppEvent` into `tx`. Errors are surfaced as

@@ -37,8 +37,10 @@ pub struct LogLine {
 pub trait MsbBackend: Send + Sync {
     // ---- read ----
 
-    /// All sandboxes, newest first.
-    async fn list_sandboxes(&self) -> Result<Vec<SandboxSummary>>;
+    /// All sandboxes, newest first, plus per-sandbox warnings for rows whose
+    /// stored config could not be parsed (such rows are still listed, with
+    /// image "?"); the caller surfaces the warnings (e.g. as error events).
+    async fn list_sandboxes(&self) -> Result<(Vec<SandboxSummary>, Vec<String>)>;
 
     /// Status row for one sandbox.
     async fn status(&self, name: &str) -> Result<SandboxStatusRow>;

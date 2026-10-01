@@ -376,12 +376,12 @@ pub fn spec_from_config(cfg: &SandboxConfig, ports: Vec<PublishedPort>) -> Creat
 
 #[async_trait]
 impl MsbBackend for FakeBackend {
-    async fn list_sandboxes(&self) -> Result<Vec<SandboxSummary>> {
+    async fn list_sandboxes(&self) -> Result<(Vec<SandboxSummary>, Vec<String>)> {
         let mut g = self.inner.lock().await;
         g.calls.push(Call::ListSandboxes);
         let mut rows: Vec<SandboxSummary> = g.sandboxes.values().map(summary_from).collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(rows)
+        Ok((rows, Vec::new()))
     }
 
     async fn status(&self, name: &str) -> Result<SandboxStatusRow> {
@@ -739,7 +739,8 @@ mod tests {
         assert_eq!(named.name.as_deref(), Some("data"));
         assert_eq!(named.guest, "/data");
         // The card display shows the mounts (map_mounts via summary).
-        let rows = b.list_sandboxes().await.unwrap();
+        let (rows, warnings) = b.list_sandboxes().await.unwrap();
+        assert!(warnings.is_empty());
         let row = rows.iter().find(|r| r.name == name).unwrap();
         assert_eq!(
             row.mounts,
