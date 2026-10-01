@@ -450,6 +450,7 @@ struct Image {
 | `s` | dashboard | start/stop toggle for the selected sandbox (state-dependent) |
 | `r` | dashboard | restart sandbox (running/stalled) |
 | `Del` | dashboard | remove sandbox (confirm) |
+| `a` | dashboard | toggle boot-autostart for the sandbox (persists to `~/.config/microsandbox-tui/autostart.toml`) |
 | `U` | dashboard | install/update runtime (confirm) |
 | `f` | logs | toggle follow |
 | `g` / `/` | logs | grep filter |
@@ -516,6 +517,7 @@ microsandbox-tui/
     │   ├── sdk.rs           # SdkBackend (typed microsandbox 0.7.2 SDK)
     │   └── fake.rs          # in-memory FakeBackend for action-layer tests
     ├── runtime.rs           # msb version detect + install/update (banner)
+    ├── autostart.rs         # boot-autostart marks (TOML) + systemd unit installer
     ├── models.rs            # SandboxSummary, SandboxConfig, Metrics, etc.
     ├── actions.rs           # high-level ops: create, stop, publish_port, etc.
     ├── fixtures/            # captured JSON for model-layer unit tests

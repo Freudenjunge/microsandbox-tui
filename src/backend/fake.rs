@@ -90,6 +90,8 @@ struct FakeBackendInner {
     snapshots: HashMap<String, FakeSandbox>,
     /// When set, the next `restore_with_ports` fails (error injection).
     fail_next_restore: bool,
+    /// When set, the next `start` fails once (error injection).
+    fail_next_start: bool,
 }
 
 impl FakeBackend {
@@ -149,6 +151,7 @@ impl FakeBackend {
                 auto_name_counter: 0,
                 snapshots: HashMap::new(),
                 fail_next_restore: false,
+                fail_next_start: false,
             })),
         }
     }
@@ -166,6 +169,12 @@ impl FakeBackend {
     /// Make the next `restore_with_ports` fail (error injection).
     pub async fn fail_next_restore(&self) {
         self.inner.lock().await.fail_next_restore = true;
+    }
+
+    /// Make the next `start` call fail (error injection for the
+    /// boot-autostart pass tests).
+    pub async fn fail_next_start(&self) {
+        self.inner.lock().await.fail_next_start = true;
     }
 
     /// Insert a sandbox directly (bypassing `create`).
@@ -435,6 +444,11 @@ impl MsbBackend for FakeBackend {
     async fn start(&self, name: &str) -> Result<()> {
         let mut g = self.inner.lock().await;
         g.calls.push(Call::Start(name.to_string()));
+        // One-shot failure injection (autostart pass tests).
+        if g.fail_next_start {
+            g.fail_next_start = false;
+            return Err(anyhow!("injected start failure for {name}"));
+        }
         let sbx = g
             .sandboxes
             .get_mut(name)

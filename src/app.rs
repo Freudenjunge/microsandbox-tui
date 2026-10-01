@@ -279,6 +279,16 @@ pub struct App {
     /// True until the FIRST sandbox-list refresh arrives (drives the
     /// dashboard's loading placeholder — smoke-test finding 2.8).
     pub initial_list_loaded: bool,
+    /// Sandboxes marked for boot autostart (persisted in
+    /// `~/.config/microsandbox-tui/autostart.toml`; the main loop owns
+    /// the file I/O, App holds the in-memory truth).
+    pub autostart: std::collections::HashSet<String>,
+    /// Whether the boot-autostart systemd unit is installed (one-time
+    /// main-loop read; drives the banner hint).
+    pub autostart_installed: bool,
+    /// Set when the autostart set changed and needs persisting; consumed
+    /// by the main loop's writer via [`App::take_autostart_change`].
+    autostart_dirty: bool,
 }
 
 impl App {
@@ -312,6 +322,9 @@ impl App {
             ports_primed: false,
             busy: false,
             initial_list_loaded: false,
+            autostart: std::collections::HashSet::new(),
+            autostart_installed: false,
+            autostart_dirty: false,
         }
     }
 
@@ -582,6 +595,8 @@ impl App {
             }
             KeyCode::Char('r') => self.confirm_gated(CardAction::Restart, Op::Restart),
             KeyCode::Delete => self.confirm_named(Op::Remove),
+            // `a`: mark/unmark the selected sandbox for boot autostart.
+            KeyCode::Char('a') => self.toggle_autostart(),
             KeyCode::Char('?') => {
                 self.view = View::Help;
                 Action::Render
@@ -1106,6 +1121,18 @@ impl App {
         };
         // Keep the preview target in sync with the (possibly changed) list.
         self.reset_preview_if_moved();
+        // Prune autostart marks whose sandbox vanished from the fleet
+        // (removed via `Del`, or dropped on the CLI side). A mark without
+        // a sandbox is dead weight: the boot pass would only report it
+        // missing. An empty list wipes every mark — a wiped DB must not
+        // leave ghost marks around.
+        let before = self.autostart.len();
+        let known: std::collections::HashSet<&str> =
+            self.sandboxes.iter().map(|s| s.name.as_str()).collect();
+        self.autostart.retain(|n| known.contains(n.as_str()));
+        if self.autostart.len() != before {
+            self.autostart_dirty = true;
+        }
     }
 
     /// Replace the metrics map, keyed by sandbox name.
@@ -1127,6 +1154,50 @@ impl App {
     pub fn selected_metrics(&self) -> Option<&Metrics> {
         let name = self.selected_sandbox()?.name.as_str();
         self.metrics.get(name)
+    }
+
+    /// Seed the boot-autostart state (fresh read at startup). The main
+    /// loop owns the file — this takes plain data, App stays I/O-free.
+    pub fn init_autostart(&mut self, marked: Vec<String>, installed: bool) {
+        self.autostart = marked
+            .into_iter()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect();
+        self.autostart_installed = installed;
+        self.autostart_dirty = false;
+    }
+
+    /// Toggle the boot-autostart mark for the selected sandbox (dashboard
+    /// key `a`). Marks survive regardless of the sandbox's current state:
+    /// marking a stopped VM is the whole point ("starts next boot").
+    pub fn toggle_autostart(&mut self) -> Action {
+        let Some(sbx) = self.selected_sandbox().map(|s| s.name.clone()) else {
+            // Empty rail: nothing to mark, nothing to queue.
+            return Action::Render;
+        };
+        if self.autostart.remove(&sbx) {
+            self.set_status(format!("{sbx}: removed from boot autostart"));
+        } else {
+            self.autostart.insert(sbx.clone());
+            self.set_status(format!("{sbx}: start at boot (autostart)"));
+        }
+        self.autostart_dirty = true;
+        Action::Render
+    }
+
+    /// Consume the pending autostart change for the main loop's writer:
+    /// a full-set snapshot (rapid toggles may write more than once — the
+    /// file is tiny and idempotent). `None` when nothing changed since
+    /// the last take.
+    pub fn take_autostart_change(&mut self) -> Option<crate::autostart::AutostartChange> {
+        if !self.autostart_dirty {
+            return None;
+        }
+        self.autostart_dirty = false;
+        Some(crate::autostart::AutostartChange {
+            names: self.autostart.iter().cloned().collect(),
+        })
     }
 }
 
@@ -2106,5 +2177,92 @@ mod tests {
 
         assert_eq!(app.handle_event(key(KeyCode::Char('g'))), Action::Render);
         assert!(app.logs_state.as_ref().unwrap().grep_mode);
+    }
+
+    // ---- boot autostart (dashboard `a` toggle) ----
+
+    #[test]
+    fn a_key_marks_selected_sandbox_for_boot_autostart() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("claude"), summary("devin")]);
+        app.handle_event(key(KeyCode::Char('a')));
+        assert!(app.autostart.contains("claude"), "{:?}", app.autostart);
+        assert_eq!(app.autostart.len(), 1);
+        assert_eq!(
+            app.take_autostart_change(),
+            Some(crate::autostart::AutostartChange {
+                names: vec!["claude".to_string()]
+            }),
+            "the full new set is queued for the main loop's writer"
+        );
+        assert!(app.take_autostart_change().is_none(), "consumed once");
+        assert!(
+            app.status.as_deref().unwrap_or("").contains("claude"),
+            "status names the toggle: {:?}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_key_toggles_the_mark_off_again() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("claude")]);
+        app.handle_event(key(KeyCode::Char('a')));
+        app.take_autostart_change();
+        app.handle_event(key(KeyCode::Char('a')));
+        assert!(!app.autostart.contains("claude"), "{:?}", app.autostart);
+        assert_eq!(
+            app.take_autostart_change(),
+            Some(crate::autostart::AutostartChange { names: vec![] }),
+            "empty set is persisted too"
+        );
+    }
+
+    #[test]
+    fn a_key_without_selection_is_a_no_op() {
+        let mut app = App::new();
+        app.handle_event(key(KeyCode::Char('a')));
+        assert!(app.autostart.is_empty());
+        assert!(app.take_autostart_change().is_none());
+    }
+
+    #[test]
+    fn init_autostart_seeds_marks_and_install_flag() {
+        let mut app = App::new();
+        assert!(app.autostart.is_empty());
+        assert!(!app.autostart_installed);
+        app.init_autostart(vec!["claude".into()], false);
+        assert_eq!(
+            app.autostart.iter().cloned().collect::<Vec<_>>(),
+            vec!["claude".to_string()]
+        );
+        assert!(!app.autostart_installed);
+        // Re-init (the main loop re-reads at start) replaces the set.
+        app.init_autostart(vec![], true);
+        assert!(app.autostart.is_empty(), "{:?}", app.autostart);
+        assert!(app.autostart_installed);
+    }
+
+    #[test]
+    fn update_sandboxes_prunes_marks_of_removed_sandboxes() {
+        let mut app = App::new();
+        app.init_autostart(vec!["a".into(), "gone".into(), "keep".into()], true);
+        app.update_sandboxes(vec![summary("a"), summary("keep")]);
+        assert!(
+            app.autostart.contains("a") && app.autostart.contains("keep"),
+            "{:?}",
+            app.autostart
+        );
+        assert!(
+            !app.autostart.contains("gone"),
+            "mark of a removed sandbox goes"
+        );
+        let change = app
+            .take_autostart_change()
+            .expect("prune must persist the new set");
+        assert_eq!(change.names, vec!["a".to_string(), "keep".to_string()]);
+        // A list without disappearances does not persist again.
+        app.update_sandboxes(vec![summary("a"), summary("keep")]);
+        assert_eq!(app.take_autostart_change(), None);
     }
 }

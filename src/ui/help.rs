@@ -69,6 +69,10 @@ static DASHBOARD_KEYS: &[KeyRow] = &[
         action: "remove sandbox (confirm)",
     },
     KeyRow {
+        keys: "a",
+        action: "boot autostart toggle (start a marked sandbox on boot)",
+    },
+    KeyRow {
         keys: "U",
         action: "install/update microsandbox runtime",
     },
@@ -197,4 +201,34 @@ fn center_rect(area: Rect, w: u16, h: u16) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn help_text(width: u16, height: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area()))
+            .expect("help renders");
+        let buf = terminal.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn help_lists_the_boot_autostart_toggle() {
+        let text = help_text(80, 40);
+        assert!(text.contains("boot autostart"), "{text}");
+    }
 }
