@@ -254,8 +254,7 @@ cargo test
 cargo check
 ```
 
-The suite currently has 277 passing unit tests. Release planning and task history are
-tracked in [docs/PLAN.md](docs/PLAN.md).
+Release planning and task history are tracked in [docs/PLAN.md](docs/PLAN.md).
 
 ## License
 
