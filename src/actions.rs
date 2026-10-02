@@ -137,6 +137,107 @@ pub async fn restart_sandbox(backend: &dyn MsbBackend, name: &str) -> Result<()>
     backend.restart(name).await
 }
 
+/// Outcome of one boot-autostart pass over the sandbox list.
+#[derive(Debug, Default, PartialEq)]
+pub struct AutostartReport {
+    /// Marked sandboxes whose start succeeded.
+    pub started: Vec<String>,
+    /// Marked sandboxes that were already running (left untouched).
+    pub already_running: Vec<String>,
+    /// Marked sandboxes that no longer exist (removed since marking).
+    pub missing: Vec<String>,
+    /// Marked but non-startable, non-running sandboxes with the reason.
+    pub skipped: Vec<(String, String)>,
+    /// Marked startable sandboxes whose start failed, with the error.
+    pub failed: Vec<(String, String)>,
+}
+
+impl AutostartReport {
+    /// Human-readable lines for the CLI/journal output.
+    pub fn summary(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.started.is_empty()
+            && self.already_running.is_empty()
+            && self.missing.is_empty()
+            && self.skipped.is_empty()
+            && self.failed.is_empty()
+        {
+            return vec!["nothing marked for boot autostart".to_string()];
+        }
+        for s in &self.started {
+            lines.push(format!("started {s}"));
+        }
+        for s in &self.already_running {
+            lines.push(format!("{s}: already running"));
+        }
+        for s in &self.missing {
+            lines.push(format!("{s}: not found (removed?)"));
+        }
+        for (name, why) in &self.skipped {
+            lines.push(format!("{name}: skipped ({why})"));
+        }
+        for (name, err) in &self.failed {
+            lines.push(format!("{name}: failed ({err})"));
+        }
+        lines
+    }
+}
+
+/// One boot-autostart pass: start every marked, startable sandbox.
+///
+/// A single `list_sandboxes()` decides what to do with each mark — the
+/// SDK reconciles dead `Running` rows into `Stopped`/`Crashed` on list,
+/// so after a reboot startable is the common case. Failures are
+/// collected, not fatal: one broken sandbox must not stop the rest, and
+/// even a failed list is just one `failed` entry (the caller exits
+/// non-zero when any failure is present).
+pub async fn restore_pass(backend: &dyn MsbBackend, marked: &[String]) -> AutostartReport {
+    let mut report = AutostartReport::default();
+    if marked.is_empty() {
+        return report;
+    }
+    let sandboxes: Vec<crate::models::SandboxSummary> = match backend.list_sandboxes().await {
+        Ok((out, _)) => out,
+        Err(e) => {
+            report
+                .failed
+                .push(("list".to_string(), format!("listing sandboxes: {e:#}")));
+            return report;
+        }
+    };
+    // Marks drive the loop (in their stored order); the list only answers
+    // "state?" for each.
+    let state_of: std::collections::HashMap<&str, &crate::models::SandboxState> = sandboxes
+        .iter()
+        .map(|s| (s.name.as_str(), &s.status))
+        .collect();
+    for mark in marked {
+        match state_of.get(mark.as_str()) {
+            None => report.missing.push(mark.clone()),
+            Some(state) if state.is_running() => report.already_running.push(mark.clone()),
+            Some(state) if state.is_startable() => {
+                if let Err(e) = start_sandbox(backend, mark).await {
+                    report.failed.push((mark.clone(), format!("{e:#}")));
+                } else {
+                    report.started.push(mark.clone());
+                }
+            }
+            Some(state) => {
+                report
+                    .skipped
+                    .push((mark.clone(), format!("status {state}")));
+            }
+        }
+    }
+    report
+}
+
+/// Exit code for the `msb-tui autostart` headless pass: 0 unless any
+/// sandbox failed — systemd's `Restart=on-failure` keys off this.
+pub(crate) fn autostart_exit_code(report: &AutostartReport) -> i32 {
+    if report.failed.is_empty() { 0 } else { 1 }
+}
+
 /// Remove a sandbox: stop it first (ignoring stop errors if already stopped),
 /// then remove.
 pub async fn remove_sandbox(backend: &dyn MsbBackend, name: &str) -> Result<()> {
@@ -996,5 +1097,212 @@ mod tests {
         crate::actions::remove_sandbox(b, &name)
             .await
             .expect("remove");
+    }
+
+    // ---- restore_pass (boot autostart) ----
+
+    async fn insert(b: &FakeBackend, name: &str, state: SandboxState) {
+        let mut sbx = FakeBackend::make_sandbox(name, "debian", Vec::new());
+        sbx.state = state;
+        b.insert_sandbox(sbx).await;
+    }
+
+    async fn no_start_calls(b: &FakeBackend) -> bool {
+        b.calls().await.iter().all(|c| !matches!(c, Call::Start(_)))
+    }
+
+    #[tokio::test]
+    async fn restore_pass_starts_marked_startable_sandboxes() {
+        let b = FakeBackend::new();
+        insert(&b, "claude", SandboxState::Stopped).await;
+        insert(&b, "devin", SandboxState::Created).await;
+        insert(&b, "other", SandboxState::Stopped).await; // unmarked
+        let report = restore_pass(&b, &["devin".into(), "claude".into()]).await;
+        assert_eq!(
+            report.started,
+            vec!["devin".to_string(), "claude".to_string()],
+            "marked order, startables only: {report:?}"
+        );
+        assert!(report.already_running.is_empty(), "{report:?}");
+        assert!(report.missing.is_empty(), "{report:?}");
+        assert!(report.skipped.is_empty(), "{report:?}");
+        assert!(report.failed.is_empty(), "{report:?}");
+        let calls = b.calls().await;
+        let starts: Vec<&String> = calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::Start(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            vec!["devin", "claude"],
+            "exactly the marked startables, marked order"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_pass_leaves_already_running_sandboxes_untouched() {
+        let b = FakeBackend::new();
+        insert(&b, "claude", SandboxState::Running).await;
+        let report = restore_pass(&b, &["claude".into()]).await;
+        assert_eq!(report.already_running, vec!["claude".to_string()]);
+        assert!(no_start_calls(&b).await, "running sandbox: no start call");
+    }
+
+    #[tokio::test]
+    async fn restore_pass_reports_missing_marks() {
+        let b = FakeBackend::new();
+        let report = restore_pass(&b, &["gone".into()]).await;
+        assert_eq!(report.missing, vec!["gone".to_string()]);
+        assert!(no_start_calls(&b).await);
+    }
+
+    #[tokio::test]
+    async fn restore_pass_skips_non_startable_states_with_reason() {
+        let b = FakeBackend::new();
+        insert(&b, "p", SandboxState::Paused).await;
+        insert(&b, "u", SandboxState::Unknown("weird".into())).await;
+        let report = restore_pass(&b, &["p".into(), "u".into()]).await;
+        assert_eq!(report.skipped.len(), 2, "{report:?}");
+        assert_eq!(report.skipped[0].0, "p");
+        assert!(
+            report.skipped.iter().all(|(_, why)| why.contains("status")),
+            "reason names the status: {report:?}"
+        );
+        assert!(no_start_calls(&b).await);
+    }
+
+    #[tokio::test]
+    async fn restore_pass_collects_start_failures_and_continues() {
+        let b = FakeBackend::new();
+        insert(&b, "a", SandboxState::Stopped).await;
+        insert(&b, "b", SandboxState::Stopped).await;
+        b.fail_next_start().await;
+        let report = restore_pass(&b, &["a".into(), "b".into()]).await;
+        assert_eq!(
+            report.started,
+            vec!["b".to_string()],
+            "one broken sandbox must not stop the rest: {report:?}"
+        );
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, "a");
+    }
+
+    #[tokio::test]
+    async fn restore_pass_with_no_marks_is_an_empty_report() {
+        let b = FakeBackend::new();
+        let report = restore_pass(&b, &[]).await;
+        assert_eq!(report, AutostartReport::default());
+    }
+
+    #[tokio::test]
+    async fn restore_pass_handles_a_fleet_of_more_than_twenty_sandboxes() {
+        // Review fix C1: the SDK pages its fleet (first page = 20 rows).
+        // Whatever delivers rows to this pass must not cap them: marks on
+        // older sandboxes would land in `missing` and never start at boot.
+        let b = FakeBackend::new();
+        let mut names = Vec::new();
+        for i in 0..25u32 {
+            let name = format!("sbx-{i:02}");
+            insert(&b, &name, SandboxState::Stopped).await;
+            names.push(name);
+        }
+        let report = restore_pass(&b, &["sbx-00".into(), "sbx-19".into(), "sbx-24".into()]).await;
+        assert_eq!(
+            report.started.len(),
+            3,
+            "all marked sandboxes start regardless of fleet size: {report:?}"
+        );
+        assert!(report.missing.is_empty(), "{report:?}");
+        assert_eq!(report.started, vec!["sbx-00", "sbx-19", "sbx-24"]);
+    }
+
+    #[tokio::test]
+    async fn restore_pass_reports_a_failed_fleet_list_and_starts_nothing() {
+        // Review fix I2: the failed-list path (SDK init/DB unavailable at
+        // boot) is what systemd's Restart=on-failure keys off — it must
+        // keep the pass failed (exit 1) and start nothing.
+        let b = FakeBackend::new();
+        insert(&b, "a", SandboxState::Stopped).await;
+        b.fail_next_list().await;
+        let report = restore_pass(&b, &["a".into()]).await;
+        assert_eq!(
+            report.failed.len(),
+            1,
+            "one failed entry, the list itself: {report:?}"
+        );
+        assert_eq!(report.failed[0].0, "list");
+        assert!(
+            report.failed[0].1.contains("injected list failure"),
+            "{report:?}"
+        );
+        assert!(report.started.is_empty(), "{report:?}");
+        assert!(no_start_calls(&b).await);
+        assert_eq!(autostart_exit_code(&report), 1);
+    }
+
+    #[test]
+    fn report_summary_lines_describe_each_outcome() {
+        let report = AutostartReport {
+            started: vec!["claude".into()],
+            already_running: vec!["devin".into()],
+            missing: vec!["gone".into()],
+            skipped: vec![("p".into(), "status: paused".into())],
+            failed: vec![("x".into(), "boom".into())],
+        };
+        let lines = report.summary();
+        assert!(
+            lines.iter().any(|l| l.contains("started claude")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("devin") && l.contains("already running")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("gone") && l.contains("not found")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("p") && l.contains("paused")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("x") && l.contains("boom")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn empty_report_summary_says_nothing_marked() {
+        let lines = AutostartReport::default().summary();
+        assert!(!lines.is_empty(), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("nothing marked")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn restore_exit_code_is_nonzero_only_with_failures() {
+        assert_eq!(autostart_exit_code(&AutostartReport::default()), 0);
+        let failed = AutostartReport {
+            started: vec!["a".into()],
+            failed: vec![("b".into(), "boom".into())],
+            ..AutostartReport::default()
+        };
+        assert_eq!(
+            autostart_exit_code(&failed),
+            1,
+            "a failure must fail the pass"
+        );
     }
 }
