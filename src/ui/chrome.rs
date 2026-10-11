@@ -145,7 +145,9 @@ fn tab_bar_line(tabs: &[Tab<'_>]) -> Line<'static> {
 
 // ---------- banner ----------
 
-/// Render the runtime update/missing banner as a full-width warn band.
+/// Render the banner line as a full-width warn band. The text carries its
+/// own key hint ("press [U]… " for the runtime, "press [V]…" for the
+/// self-update); render_banner adds none.
 pub fn render_banner(frame: &mut Frame, text: &str, area: Rect) {
     let t = &THEME;
     let line = Line::from(vec![
@@ -156,10 +158,7 @@ pub fn render_banner(frame: &mut Frame, text: &str, area: Rect) {
                 .bg(t.warn)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("{text}  [U] update/install"),
-            Style::default().fg(t.warn),
-        ),
+        Span::styled(text.to_string(), Style::default().fg(t.warn)),
     ]);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(t.panel)),
