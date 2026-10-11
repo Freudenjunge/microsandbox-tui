@@ -135,6 +135,10 @@ pub enum Op {
     DeleteTemplate(String),
     /// Write a template file over an existing one (confirmed).
     OverwriteTemplate(Box<crate::template::Template>),
+    /// Update the TUI itself to the detected newer stable release
+    /// (downloads the release tarball, sha256-verified, replaces the
+    /// binary; applies on relaunch).
+    UpdateSelf(Box<crate::selfupdate::UpdateInfo>),
 }
 
 impl Op {
@@ -174,6 +178,10 @@ impl Op {
                     slug = crate::template::slugify(&t.meta.name)
                 )
             }
+            Op::UpdateSelf(u) => format!(
+                "Update msb-tui v{} → v{}? (downloads the release tarball, sha256-verified, replaces this binary — relaunch to apply)",
+                u.current, u.latest
+            ),
         }
     }
 
@@ -289,6 +297,10 @@ pub struct App {
     /// Set when the autostart set changed and needs persisting; consumed
     /// by the main loop's writer via [`App::take_autostart_change`].
     autostart_dirty: bool,
+    /// A newer **stable** release of msb-tui itself, detected by the
+    /// one-shot startup check (`None` = no update known). Drives the
+    /// dashboard banner and the `V` key; the main loop runs the op.
+    pub update: Option<crate::selfupdate::UpdateInfo>,
 }
 
 impl App {
@@ -325,6 +337,7 @@ impl App {
             autostart: std::collections::HashSet::new(),
             autostart_installed: false,
             autostart_dirty: false,
+            update: None,
         }
     }
 
@@ -441,6 +454,21 @@ impl App {
             AppEvent::ExecDone { .. } => {
                 // Legacy captured-exec event (confirm-dialog demo path).
                 self.busy = false;
+                Action::Render
+            }
+            AppEvent::UpdateAvailable(update) => {
+                self.update = Some(update);
+                Action::Render
+            }
+            AppEvent::UpdateInstalled(version) => {
+                // Binary swapped on disk; the banner must not offer the
+                // same update again. Relaunch applies it.
+                self.update = None;
+                self.busy = false;
+                self.status = Some(format!(
+                    "updated to v{version} — exit and relaunch to run it"
+                ));
+                self.status_age_ticks = 0;
                 Action::Render
             }
         }
@@ -605,6 +633,15 @@ impl App {
             // Uppercase U: install/update the host runtime (confirm dialog).
             KeyCode::Char('U') => {
                 self.confirm = Some(Op::InstallRuntime);
+                Action::Render
+            }
+            // `v`/`V`: update msb-tui itself when the startup check found a
+            // newer stable release (caps parity with s/S and a/A). Key is
+            // inert while no update is known.
+            KeyCode::Char('v') | KeyCode::Char('V') => {
+                if let Some(info) = self.update.clone() {
+                    self.confirm = Some(Op::UpdateSelf(Box::new(info)));
+                }
                 Action::Render
             }
             KeyCode::Esc => Action::Continue,
@@ -1983,6 +2020,77 @@ mod tests {
         // U works even with an empty list (runtime may be missing entirely).
         assert_eq!(app.handle_event(key(KeyCode::Char('U'))), Action::Render);
         assert_eq!(app.confirm, Some(Op::InstallRuntime));
+    }
+
+    // ---- self-update flow (startup check → banner → V key → confirm) ----
+
+    fn update_info() -> crate::selfupdate::UpdateInfo {
+        crate::selfupdate::UpdateInfo {
+            current: semver::Version::new(0, 2, 0),
+            latest: semver::Version::new(0, 2, 1),
+            tarball_url: "https://example.com/t.tar.gz".into(),
+            sha256_url: "https://example.com/t.tar.gz.sha256".into(),
+        }
+    }
+
+    #[test]
+    fn update_available_event_sets_the_prompt_state() {
+        let mut app = App::new();
+        assert!(app.update.is_none());
+        assert_eq!(
+            app.handle_event(AppEvent::UpdateAvailable(update_info())),
+            Action::Render
+        );
+        assert!(app.update.is_some(), "the update drives banner + V key");
+    }
+
+    #[test]
+    fn v_key_opens_the_update_confirm_only_when_an_update_is_known() {
+        let mut app = App::new();
+        app.view = View::Dashboard;
+        // No update detected yet: inert.
+        assert_eq!(app.handle_event(key(KeyCode::Char('v'))), Action::Render);
+        assert!(app.confirm.is_none());
+        // Caps parity with s/S and a/A.
+        app.handle_event(AppEvent::UpdateAvailable(update_info()));
+        assert_eq!(app.handle_event(key(KeyCode::Char('V'))), Action::Render);
+        assert!(
+            matches!(app.confirm, Some(Op::UpdateSelf(_))),
+            "V opens the update confirm: {:?}",
+            app.confirm
+        );
+    }
+
+    #[test]
+    fn confirming_the_update_queues_the_op_for_the_main_loop() {
+        let mut app = App::new();
+        app.handle_event(AppEvent::UpdateAvailable(update_info()));
+        app.handle_event(key(KeyCode::Char('v')));
+        app.handle_event(key(KeyCode::Char('y')));
+        let op = app.take_op().expect("queued op");
+        match op {
+            Op::UpdateSelf(u) => {
+                assert_eq!(u.latest, semver::Version::new(0, 2, 1));
+                assert_eq!(u.current, semver::Version::new(0, 2, 0));
+            }
+            other => panic!("expected UpdateSelf, got {other:?}"),
+        }
+        assert!(app.busy, "Working… until the update task reports back");
+    }
+
+    #[test]
+    fn update_installed_clears_the_prompt_and_reports_relaunch() {
+        let mut app = App::new();
+        app.handle_event(AppEvent::UpdateAvailable(update_info()));
+        app.busy = true;
+        app.handle_event(AppEvent::UpdateInstalled("0.2.1".into()));
+        assert!(app.update.is_none(), "no stale banner after the swap");
+        assert!(!app.busy);
+        let status = app.status.clone().unwrap_or_default();
+        assert!(
+            status.contains("0.2.1") && status.contains("relaunch"),
+            "status must tell the user to relaunch: {status}"
+        );
     }
 
     #[test]

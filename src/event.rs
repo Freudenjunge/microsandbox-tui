@@ -64,6 +64,13 @@ pub enum AppEvent {
         args: Vec<String>,
         res: std::result::Result<ExecOutput, String>,
     },
+    /// A newer **stable** msb-tui release was found by the one-shot
+    /// startup check (never fires for prerelease tags).
+    UpdateAvailable(crate::selfupdate::UpdateInfo),
+    /// The confirmed self-update finished: the binary on disk was swapped
+    /// (the running process keeps the old inode until relaunch). Carries
+    /// the installed version.
+    UpdateInstalled(String),
 }
 
 /// What the main loop should do after handling an event.

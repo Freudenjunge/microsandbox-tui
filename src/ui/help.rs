@@ -76,6 +76,10 @@ static DASHBOARD_KEYS: &[KeyRow] = &[
         keys: "U",
         action: "install/update microsandbox runtime",
     },
+    KeyRow {
+        keys: "v",
+        action: "update msb-tui to the latest stable release",
+    },
 ];
 
 static LOGS_KEYS: &[KeyRow] = &[

@@ -37,6 +37,10 @@ what the API knows.
   (Linux; enable lingering to survive without an active login).
 - **In-TUI runtime install** — no `msb` binary at startup? The banner offers a one-key
   install/update of the microsandbox runtime.
+- **Self-update** — at startup the TUI checks GitHub Releases for a newer **stable**
+  msb-tui (prereleases never nag). When one exists, a banner offers `[V]`: confirm,
+  and the release tarball is downloaded, sha256-verified, and swapped in place —
+  relaunch to run the new version.
 - **Polished dark theme** — responsive layout from small terminals to wide desktops.
 
 ## Screenshots
@@ -149,6 +153,7 @@ A typical round trip:
 | `r` | Restart |
 | `Del` | Remove sandbox (confirm) |
 | `U` | Install/update the microsandbox runtime |
+| `v` | Update msb-tui when a newer stable release exists (confirm) |
 
 ### Logs tab
 
