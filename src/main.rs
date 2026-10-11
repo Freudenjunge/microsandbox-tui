@@ -16,7 +16,7 @@
 use std::io::{Stdout, stdout};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
@@ -31,6 +31,7 @@ use tokio_stream::StreamExt as _;
 
 mod actions;
 mod app;
+mod autostart;
 mod backend;
 mod event;
 mod models;
@@ -57,6 +58,28 @@ struct Cli {
     /// Open the create-sandbox form directly.
     #[arg(short, long)]
     create: bool,
+    /// Headless commands (no terminal UI).
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+/// Headless subcommands. `msb-tui` with none opens the TUI.
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// Start every sandbox marked for boot autostart (one headless pass,
+    /// exit status 1 when any mark failed — pairs with the unit's
+    /// `Restart=on-failure`). With `install`, set up + enable the systemd
+    /// user unit running this pass at boot.
+    Autostart {
+        #[command(subcommand)]
+        cmd: Option<AutostartCmd>,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum AutostartCmd {
+    /// Install + enable the systemd user unit (Linux only).
+    Install,
 }
 
 /// RAII guard that restores the terminal on drop, even if the main loop
@@ -88,6 +111,22 @@ impl Drop for TerminalGuard {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Headless branches never touch the terminal; they do their own SDK
+    // init + runtime setup. The TUI path below is unchanged.
+    if let Some(command) = &cli.command {
+        match command {
+            Commands::Autostart {
+                cmd: Some(AutostartCmd::Install),
+            } => {
+                for line in autostart::install()? {
+                    println!("{line}");
+                }
+            }
+            Commands::Autostart { cmd: None } => run_autostart_restore()?,
+        }
+        return Ok(());
+    }
+
     // Fail cleanly before touching the terminal if the SDK cannot initialize.
     if let Err(e) = SdkBackend::new() {
         eprintln!("failed to initialize microsandbox SDK: {e:#}");
@@ -107,18 +146,57 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// The `msb-tui autostart` headless restore pass: load the marks, start
+/// every startable one. Prints one summary line per outcome; exits 1 when
+/// anything failed (systemd retries via `Restart=on-failure`).
+fn run_autostart_restore() -> Result<()> {
+    let (marked, warnings) = autostart::load(&autostart::autostart_path());
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    let backend = SdkBackend::new().context("initialize microsandbox SDK")?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let report = rt.block_on(async { actions::restore_pass(&backend, &marked).await });
+    rt.shutdown_background();
+    for line in report.summary() {
+        println!("{line}");
+    }
+    let code = actions::autostart_exit_code(&report);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 /// Run the TUI: set up the terminal, spawn pollers, and enter the event loop.
 async fn run(cli: Cli) -> Result<()> {
     let backend = Arc::new(SdkBackend::new()?);
 
+    // Boot-autostart marks: one fresh read before anything else; install
+    // state feeds the banner hint. I/O lives here only — App takes data.
+    let (autostart_marks, autostart_warnings) = autostart::load(&autostart::autostart_path());
+
     let mut guard = TerminalGuard::enter()?;
     let mut app = App::new();
+    app.init_autostart(autostart_marks, autostart::is_installed());
     if cli.create {
         app.view = View::Create;
     }
 
     // Channel: background pollers + input reader → main loop.
     let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
+
+    // Surface autostart load problems like list warnings (status line).
+    if !autostart_warnings.is_empty() {
+        let tx = event_tx.clone();
+        tokio::spawn(async move {
+            for w in autostart_warnings {
+                let _ = tx.send(AppEvent::Error(w)).await;
+            }
+        });
+    }
 
     // ---- spawn background pollers ----
 
@@ -204,6 +282,11 @@ async fn run(cli: Cli) -> Result<()> {
         // Ctrl+S with a fresh name: write the template file off-thread.
         if let Some(t) = app.take_save_template() {
             run_save_template(t, event_tx.clone());
+        }
+        // Autostart set changes (toggle on `a`, prune on fleet update):
+        // persist the full set off-thread.
+        if let Some(change) = app.take_autostart_change() {
+            run_persist_autostart(change, event_tx.clone());
         }
         // (The captured-exec path from the removed EXEC tab is gone; `e`
         // now opens the interactive shell window below.)
@@ -356,6 +439,16 @@ async fn run(cli: Cli) -> Result<()> {
     // Stop the log task on exit.
     if let Some((_, abort)) = log_task.take() {
         let _ = abort.send(());
+    }
+
+    // Flush a pending autostart write synchronously: `shutdown_background`
+    // discards unpolled tasks, and losing the last `a` toggle would
+    // silently undo the user's mark (review fix M8).
+    if let Some(change) = app.take_autostart_change() {
+        let path = autostart::autostart_path();
+        if let Err(e) = autostart::save(&path, &change.names) {
+            eprintln!("autostart: save {e:#}");
+        }
     }
 
     // TerminalGuard::drop restores the terminal.
@@ -529,6 +622,19 @@ fn run_save_template(t: crate::template::Template, tx: mpsc::Sender<AppEvent>) {
     });
 }
 
+/// Persist an autostart set change off-thread (App stays I/O-free; the
+/// failure surfaces on the status line like other backend errors).
+fn run_persist_autostart(change: crate::autostart::AutostartChange, tx: mpsc::Sender<AppEvent>) {
+    tokio::spawn(async move {
+        let path = autostart::autostart_path();
+        if let Err(e) = autostart::save(&path, &change.names) {
+            let _ = tx
+                .send(AppEvent::Error(format!("autostart: save {e:#}")))
+                .await;
+        }
+    });
+}
+
 /// Future returned by a poller closure.
 type PollFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppEvent>> + Send>>;
 /// Poller closure: takes the backend and produces an event future.
@@ -596,6 +702,7 @@ fn render_view(
                 &app.sandboxes,
                 &app.metrics,
                 &app.ports,
+                &app.autostart,
                 app.selected,
                 ui::dashboard::StatusLines {
                     banner,
@@ -631,6 +738,7 @@ fn render_view(
                 &app.sandboxes,
                 &app.metrics,
                 &app.ports,
+                &app.autostart,
                 app.selected,
                 ui::dashboard::StatusLines {
                     banner,
@@ -656,7 +764,10 @@ fn render_view(
 fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
-        let banner = crate::runtime::banner_text();
+        // Runtime banner first; otherwise the boot-autostart hint nags
+        // only when marks wait without the systemd unit.
+        let banner = runtime::banner_text()
+            .or_else(|| autostart::hint_text(app.autostart.len(), app.autostart_installed));
         // Opaque base layer first (see render_view), then the view itself.
         frame.render_widget(
             Block::default().style(Style::default().bg(ui::theme::THEME.bg)),

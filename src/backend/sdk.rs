@@ -593,10 +593,31 @@ pub(crate) fn list_with_degraded(
 #[async_trait]
 impl MsbBackend for SdkBackend {
     async fn list_sandboxes(&self) -> Result<(Vec<SandboxSummary>, Vec<String>)> {
-        let page = microsandbox::Sandbox::list().await?;
-        let mut out = Vec::with_capacity(page.sandboxes.len());
+        // Page to completion (review fix C1): the default builder returns
+        // the 20-row FIRST page only — treating that slice as the fleet
+        // would hide older sandboxes from the dashboard, drop their
+        // autostart marks (data loss) and never start them at boot.
+        // 100-row requests following `next_cursor` until `None`; the
+        // helper's page cap guards against a cursor that never ends.
+        let handles = crate::backend::list_all_pages(
+            |cursor| async move {
+                let mut list = microsandbox::SandboxListBuilder::default()
+                    .limit(microsandbox::sandbox::MAX_SANDBOX_LIST_LIMIT);
+                if let Some(c) = cursor {
+                    list = list.cursor(c);
+                }
+                let page = microsandbox::Sandbox::list_with(|_| list).await?;
+                Ok::<_, microsandbox::MicrosandboxError>(crate::backend::ListPage {
+                    items: page.sandboxes,
+                    next: page.next_cursor,
+                })
+            },
+            10_000,
+        )
+        .await?;
+        let mut out = Vec::with_capacity(handles.len());
         let mut degraded = Vec::new();
-        for handle in &page.sandboxes {
+        for handle in &handles {
             let Some(local) = handle.local() else {
                 continue;
             };

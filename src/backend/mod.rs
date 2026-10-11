@@ -149,3 +149,134 @@ pub struct CreateSpec {
 
 /// A follow stream of log lines for one sandbox.
 pub type LogStream = std::pin::Pin<Box<dyn tokio_stream::Stream<Item = LogLine> + Send>>;
+
+/// One page of a cursor-keyed list endpoint (backend-agnostic twin of the
+/// SDK's `SandboxPage`).
+pub struct ListPage<T> {
+    /// Items in this page.
+    pub items: Vec<T>,
+    /// Opaque continuation, `None` when this is the final page.
+    pub next: Option<String>,
+}
+
+/// Page a cursor-keyed list endpoint **to completion**.
+///
+/// The SDK answers cursor-keyed list requests in pages (a default builder
+/// request delivers 20 rows — the first page only). Treating a single
+/// page as the whole fleet silently hides everything older: the dashboard
+/// misses cards, the autostart prune drops marks of unknown-but-real
+/// sandboxes (data loss), and the boot pass never starts them. `fetch`
+/// receives the previous page's cursor (`None` = first page). A backend
+/// that never answers `next: None` stops after `max_pages` pages with an
+/// error instead of looping forever.
+pub(crate) async fn list_all_pages<T, E, Fut, F>(
+    mut fetch: F,
+    max_pages: u32,
+) -> anyhow::Result<Vec<T>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<ListPage<T>, E>>,
+    E: std::fmt::Display,
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..max_pages {
+        let page = fetch(cursor.take())
+            .await
+            .map_err(|e| anyhow::anyhow!("list pages failed: {e}"))?;
+        out.extend(page.items);
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => return Ok(out),
+        }
+    }
+    anyhow::bail!("list cursor never ends after {max_pages} pages — aborting")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type FutBox = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<ListPage<u32>, String>>>,
+    >;
+
+    fn page(items: &[u32], next: Option<&str>) -> ListPage<u32> {
+        ListPage {
+            items: items.to_vec(),
+            next: next.map(String::from),
+        }
+    }
+
+    /// A ready future resolving to `r`, typed for the fetch closure.
+    fn fut(r: std::result::Result<ListPage<u32>, String>) -> FutBox {
+        Box::pin(std::future::ready(r))
+    }
+
+    #[tokio::test]
+    async fn follows_cursors_until_exhausted() {
+        // Chain: [1] --c1--> [2] --c2--> [3] --None. Each call receives
+        // exactly the previous page's cursor; the first gets none.
+        let mut received: Vec<Option<String>> = Vec::new();
+        let mut chain = std::collections::VecDeque::new();
+        chain.push_back(Ok(page(&[1], Some("c1"))));
+        chain.push_back(Ok(page(&[2], Some("c2"))));
+        chain.push_back(Ok(page(&[3], None)));
+        let items = list_all_pages(
+            |cursor: Option<String>| {
+                received.push(cursor);
+                fut(chain.pop_front().expect("canned chain covers every call"))
+            },
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(items, vec![1, 2, 3]);
+        assert_eq!(
+            received,
+            vec![None, Some("c1".into()), Some("c2".into())],
+            "cursor must be threaded through every request"
+        );
+    }
+
+    #[tokio::test]
+    async fn stops_on_a_cursorless_final_page() {
+        let items = list_all_pages(|_| fut(Ok(page(&[7], None))), 100)
+            .await
+            .unwrap();
+        assert_eq!(items, vec![7]);
+    }
+
+    #[tokio::test]
+    async fn first_page_failure_bubbles() {
+        let err = list_all_pages::<u32, String, _, _>(|_| fut(Err("boom".to_string())), 100)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn later_page_failure_bubbles() {
+        let mut chain = std::collections::VecDeque::new();
+        chain.push_back(Ok(page(&[1], Some("c1"))));
+        chain.push_back(Err("mid-flight".to_string()));
+        let err = list_all_pages::<u32, String, _, _>(
+            |_| fut(chain.pop_front().expect("canned chain covers every call")),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("mid-flight"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_repeating_cursor_stops_at_the_cap_instead_of_looping() {
+        let items = list_all_pages::<u32, String, _, _>(|_| fut(Ok(page(&[1], Some("same")))), 3)
+            .await
+            .expect_err("must not loop forever");
+        assert!(
+            items.to_string().contains("3"),
+            "cap must be part of the error: {items}"
+        );
+    }
+}

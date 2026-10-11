@@ -90,6 +90,10 @@ struct FakeBackendInner {
     snapshots: HashMap<String, FakeSandbox>,
     /// When set, the next `restore_with_ports` fails (error injection).
     fail_next_restore: bool,
+    /// When set, the next `start` fails once (error injection).
+    fail_next_start: bool,
+    /// When set, the next `list_sandboxes` fails once (error injection).
+    fail_next_list: bool,
 }
 
 impl FakeBackend {
@@ -149,6 +153,8 @@ impl FakeBackend {
                 auto_name_counter: 0,
                 snapshots: HashMap::new(),
                 fail_next_restore: false,
+                fail_next_start: false,
+                fail_next_list: false,
             })),
         }
     }
@@ -166,6 +172,17 @@ impl FakeBackend {
     /// Make the next `restore_with_ports` fail (error injection).
     pub async fn fail_next_restore(&self) {
         self.inner.lock().await.fail_next_restore = true;
+    }
+
+    /// Make the next `start` call fail (error injection for the
+    /// boot-autostart pass tests).
+    pub async fn fail_next_start(&self) {
+        self.inner.lock().await.fail_next_start = true;
+    }
+
+    /// Make the next `list_sandboxes` call fail (error injection).
+    pub async fn fail_next_list(&self) {
+        self.inner.lock().await.fail_next_list = true;
     }
 
     /// Insert a sandbox directly (bypassing `create`).
@@ -379,6 +396,11 @@ impl MsbBackend for FakeBackend {
     async fn list_sandboxes(&self) -> Result<(Vec<SandboxSummary>, Vec<String>)> {
         let mut g = self.inner.lock().await;
         g.calls.push(Call::ListSandboxes);
+        // One-shot failure injection (autostart pass tests).
+        if g.fail_next_list {
+            g.fail_next_list = false;
+            return Err(anyhow!("injected list failure"));
+        }
         let mut rows: Vec<SandboxSummary> = g.sandboxes.values().map(summary_from).collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         Ok((rows, Vec::new()))
@@ -435,6 +457,11 @@ impl MsbBackend for FakeBackend {
     async fn start(&self, name: &str) -> Result<()> {
         let mut g = self.inner.lock().await;
         g.calls.push(Call::Start(name.to_string()));
+        // One-shot failure injection (autostart pass tests).
+        if g.fail_next_start {
+            g.fail_next_start = false;
+            return Err(anyhow!("injected start failure for {name}"));
+        }
         let sbx = g
             .sandboxes
             .get_mut(name)

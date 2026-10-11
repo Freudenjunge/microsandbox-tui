@@ -31,6 +31,10 @@ what the API knows.
   `~/.config/microsandbox-tui/templates/` shadow built-ins by id.
 - **Snapshot-preserving port publishing** — publish/unpublish recreates the sandbox
   through a snapshot/restore cycle, so your data survives the change.
+- **Boot autostart** — mark any sandbox (`a` in the dashboard) and it starts at every
+  system boot: the headless `msb-tui autostart` pass starts all marked sandboxes, and
+  `msb-tui autostart install` sets up the systemd user service that runs it at boot
+  (Linux; enable lingering to survive without an active login).
 - **In-TUI runtime install** — no `msb` binary at startup? The banner offers a one-key
   install/update of the microsandbox runtime.
 - **Polished dark theme** — responsive layout from small terminals to wide desktops.

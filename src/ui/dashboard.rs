@@ -82,6 +82,7 @@ pub fn render(
     sandboxes: &[SandboxSummary],
     metrics: &HashMap<String, Metrics>,
     ports: &HashMap<String, Vec<PublishedPort>>,
+    autostart: &std::collections::HashSet<String>,
     selected: usize,
     status: StatusLines<'_>,
     detail: DetailTab,
@@ -147,7 +148,7 @@ pub fn render(
     } else if sandboxes.is_empty() {
         render_empty(frame, rail);
     } else {
-        render_rail(frame, sandboxes, metrics, ports, selected, rail);
+        render_rail(frame, sandboxes, metrics, ports, autostart, selected, rail);
     }
 
     // Detail pane: header (selected sandbox) + tab content.
@@ -194,6 +195,11 @@ pub fn render(
         FooterHint {
             key: "[Tab]",
             label: "Next tab",
+            role: FooterRole::Plain,
+        },
+        FooterHint {
+            key: "[a]",
+            label: "Autostart",
             role: FooterRole::Plain,
         },
         FooterHint {
@@ -244,6 +250,7 @@ fn render_rail(
     sandboxes: &[SandboxSummary],
     metrics: &HashMap<String, Metrics>,
     ports: &HashMap<String, Vec<PublishedPort>>,
+    autostart: &std::collections::HashSet<String>,
     selected: usize,
     area: Rect,
 ) {
@@ -264,6 +271,7 @@ fn render_rail(
             sbx,
             metrics.get(&sbx.name),
             ports.get(&sbx.name),
+            autostart.contains(&sbx.name),
             idx == selected,
             *row,
         );
@@ -483,6 +491,17 @@ fn card_action_line(state: &SandboxState) -> Line<'static> {
             None => spans.push(Span::styled(label.to_string(), key_style)),
         }
     }
+    // The boot-autostart toggle (`a`) is state-independent — always offered
+    // so the feature is discoverable before its first use. The marked state
+    // itself shows as the ⟲ badge in the title row.
+    if !spans.is_empty() {
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::styled(
+        "A",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled("utostart", Style::default().fg(t.text)));
     Line::from(spans)
 }
 
@@ -492,6 +511,7 @@ fn render_card(
     sbx: &SandboxSummary,
     metrics: Option<&Metrics>,
     _ports: Option<&Vec<PublishedPort>>,
+    marked: bool,
     selected: bool,
     area: Rect,
 ) {
@@ -521,10 +541,23 @@ fn render_card(
         Span::raw(" "),
         Span::styled(sbx.image.clone(), Style::default().fg(t.muted)),
     ];
+    if marked {
+        // Boot-autostart mark (the `a` toggle): a small ⟲ next to the
+        // image chip.
+        title.push(Span::raw(" "));
+        title.push(Span::styled(
+            "⟲",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ));
+    }
     // Right-side status pill, padded so it hugs the right edge on typical
     // card widths (>= 24 cols). Paragraph clips rather than wraps.
     let status_label = status_pill_label(&sbx.status);
-    let used: usize = symbol.len() + sbx.name.chars().count() + 1 + sbx.image.chars().count();
+    let used: usize = symbol.len()
+        + sbx.name.chars().count()
+        + 1
+        + sbx.image.chars().count()
+        + if marked { 2 } else { 0 };
     let pad = (usize::from(inner.width)).saturating_sub(used + status_label.len() + 1);
     title.push(Span::raw(" ".repeat(pad + 1)));
     title.push(Span::styled(
@@ -860,6 +893,7 @@ mod tests {
                     &sandboxes,
                     &HashMap::new(),
                     &HashMap::new(),
+                    &std::collections::HashSet::new(),
                     0,
                     StatusLines {
                         banner: Some("msb v0.7.1 installed, v0.7.2 available — press [U]"),
@@ -967,6 +1001,12 @@ mod tests {
                     if offered { "missing" } else { "present" }
                 );
             }
+            // The boot-autostart toggle is state-independent: always offered
+            // on every card (UX fix: the feature was invisible pre-first-use).
+            assert!(
+                text.contains("Autostart"),
+                "state {state}: no Autostart toggle hint in {text:?}"
+            );
             // The key substring is a highlighted span (bold), the rest is not.
             for action in &expected {
                 assert!(
@@ -981,12 +1021,32 @@ mod tests {
 
     #[test]
     fn card_action_line_fits_rail_width() {
-        // Rail inner width is 42 cols; the widest state (Running) must fit.
+        // Rail inner width is 42 cols; the widest state (Running, now with
+        // the always-on Autostart toggle word) must fit.
         let line = card_action_line(&SandboxState::Running);
-        let width: usize = line.spans.iter().map(|s| s.content.len()).sum();
+        let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert!(
             width <= 42,
             "action row needs {width} cols, rail inner is 42"
+        );
+    }
+
+    #[test]
+    fn dashboard_footer_offers_the_autostart_hint() {
+        let text = offscreen_card_text(
+            &[SandboxSummary {
+                created_at: chrono::Utc::now(),
+                image: "alpine".into(),
+                name: "alpha".into(),
+                status: SandboxState::Stopped,
+                workdir: None,
+                mounts: Vec::new(),
+            }],
+            &std::collections::HashSet::new(),
+        );
+        assert!(
+            text.contains("[a]") && text.contains("Autostart"),
+            "footer must surface the a toggle:\n{text}"
         );
     }
 
@@ -1023,6 +1083,7 @@ mod tests {
                     &sandboxes,
                     &HashMap::new(),
                     &HashMap::new(),
+                    &std::collections::HashSet::new(),
                     0,
                     StatusLines {
                         banner: None,
@@ -1056,5 +1117,80 @@ mod tests {
             !text.contains("Start"),
             "start must not show for running sandbox:\n{text}"
         );
+    }
+
+    fn offscreen_card_text(
+        sandboxes: &[SandboxSummary],
+        marked: &std::collections::HashSet<String>,
+    ) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    sandboxes,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    marked,
+                    0,
+                    StatusLines {
+                        banner: None,
+                        error: None,
+                        status_text: None,
+                    },
+                    DetailTab::Overview,
+                    None,
+                    None,
+                    &[],
+                    false,
+                    f.area(),
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn marked_card_wears_the_boot_marker() {
+        let sandboxes = vec![SandboxSummary {
+            created_at: chrono::Utc::now(),
+            image: "alpine".into(),
+            name: "alpha".into(),
+            status: SandboxState::Stopped,
+            workdir: Some("/app".into()),
+            mounts: Vec::new(),
+        }];
+        let mut marked = std::collections::HashSet::new();
+        marked.insert("alpha".to_string());
+        let text = offscreen_card_text(&sandboxes, &marked);
+        assert!(
+            text.contains("⟲"),
+            "marked card lacks the boot marker:\n{text}"
+        );
+    }
+
+    #[test]
+    fn unmarked_card_has_no_boot_marker() {
+        let sandboxes = vec![SandboxSummary {
+            created_at: chrono::Utc::now(),
+            image: "alpine".into(),
+            name: "alpha".into(),
+            status: SandboxState::Stopped,
+            workdir: Some("/app".into()),
+            mounts: Vec::new(),
+        }];
+        let text = offscreen_card_text(&sandboxes, &std::collections::HashSet::new());
+        assert!(!text.contains("⟲"), "unmarked card shows a marker:\n{text}");
     }
 }
