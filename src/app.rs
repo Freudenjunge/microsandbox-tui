@@ -595,8 +595,9 @@ impl App {
             }
             KeyCode::Char('r') => self.confirm_gated(CardAction::Restart, Op::Restart),
             KeyCode::Delete => self.confirm_named(Op::Remove),
-            // `a`: mark/unmark the selected sandbox for boot autostart.
-            KeyCode::Char('a') => self.toggle_autostart(),
+            // `a`/`A`: mark/unmark the selected sandbox for boot autostart
+            // (s/S parity: caps-lock must not hide the feature).
+            KeyCode::Char('a') | KeyCode::Char('A') => self.toggle_autostart(),
             KeyCode::Char('?') => {
                 self.view = View::Help;
                 Action::Render
@@ -2224,6 +2225,17 @@ mod tests {
         app.handle_event(key(KeyCode::Char('a')));
         assert!(app.autostart.is_empty());
         assert!(app.take_autostart_change().is_none());
+    }
+
+    #[test]
+    fn uppercase_a_toggles_too() {
+        // Caps/Shift must not hide the feature (s/S parity).
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("claude")]);
+        app.handle_event(key(KeyCode::Char('A')));
+        assert!(app.autostart.contains("claude"), "{:?}", app.autostart);
+        app.handle_event(key(KeyCode::Char('A')));
+        assert!(!app.autostart.contains("claude"), "{:?}", app.autostart);
     }
 
     #[test]

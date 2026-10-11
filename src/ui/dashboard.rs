@@ -198,6 +198,11 @@ pub fn render(
             role: FooterRole::Plain,
         },
         FooterHint {
+            key: "[a]",
+            label: "Autostart",
+            role: FooterRole::Plain,
+        },
+        FooterHint {
             key: "[?]",
             label: "Help",
             role: FooterRole::Accent,
@@ -486,6 +491,17 @@ fn card_action_line(state: &SandboxState) -> Line<'static> {
             None => spans.push(Span::styled(label.to_string(), key_style)),
         }
     }
+    // The boot-autostart toggle (`a`) is state-independent — always offered
+    // so the feature is discoverable before its first use. The marked state
+    // itself shows as the ⟲ badge in the title row.
+    if !spans.is_empty() {
+        spans.push(Span::raw("  "));
+    }
+    spans.push(Span::styled(
+        "A",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled("utostart", Style::default().fg(t.text)));
     Line::from(spans)
 }
 
@@ -985,6 +1001,12 @@ mod tests {
                     if offered { "missing" } else { "present" }
                 );
             }
+            // The boot-autostart toggle is state-independent: always offered
+            // on every card (UX fix: the feature was invisible pre-first-use).
+            assert!(
+                text.contains("Autostart"),
+                "state {state}: no Autostart toggle hint in {text:?}"
+            );
             // The key substring is a highlighted span (bold), the rest is not.
             for action in &expected {
                 assert!(
@@ -999,12 +1021,32 @@ mod tests {
 
     #[test]
     fn card_action_line_fits_rail_width() {
-        // Rail inner width is 42 cols; the widest state (Running) must fit.
+        // Rail inner width is 42 cols; the widest state (Running, now with
+        // the always-on Autostart toggle word) must fit.
         let line = card_action_line(&SandboxState::Running);
-        let width: usize = line.spans.iter().map(|s| s.content.len()).sum();
+        let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert!(
             width <= 42,
             "action row needs {width} cols, rail inner is 42"
+        );
+    }
+
+    #[test]
+    fn dashboard_footer_offers_the_autostart_hint() {
+        let text = offscreen_card_text(
+            &[SandboxSummary {
+                created_at: chrono::Utc::now(),
+                image: "alpine".into(),
+                name: "alpha".into(),
+                status: SandboxState::Stopped,
+                workdir: None,
+                mounts: Vec::new(),
+            }],
+            &std::collections::HashSet::new(),
+        );
+        assert!(
+            text.contains("[a]") && text.contains("Autostart"),
+            "footer must surface the a toggle:\n{text}"
         );
     }
 
