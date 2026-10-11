@@ -34,6 +34,17 @@ anyhow = "1"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 unicode-width = "0.2"
+# Self-update: check GitHub Releases for a newer stable msb-tui, download
+# the platform tarball, sha256-verify it, and swap the running binary.
+# reqwest 0.13 renamed the `rustls-tls` feature to `rustls`; default
+# features stay off so TLS comes from rustls (matching the SDK tree).
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+] }
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
 
 [profile.release]
 opt-level = 2

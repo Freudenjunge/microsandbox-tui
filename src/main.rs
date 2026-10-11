@@ -36,6 +36,7 @@ mod backend;
 mod event;
 mod models;
 mod runtime;
+mod selfupdate;
 mod shell_window;
 mod template;
 mod ui;
@@ -255,6 +256,19 @@ async fn run(cli: Cli) -> Result<()> {
             let _ = tx.send(AppEvent::TemplatesLoaded(templates)).await;
             for w in warnings {
                 let _ = tx.send(AppEvent::Error(w)).await;
+            }
+        });
+    }
+
+    // One-shot stable-release check: a newer stable msb-tui becomes the
+    // dashboard banner ([V] to update). Best-effort — offline, air-gapped,
+    // or rate-limited starts stay silent; only the API endpoint is hit (no
+    // downloads until the user confirms).
+    {
+        let tx = event_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(update)) = selfupdate::check().await {
+                let _ = tx.send(AppEvent::UpdateAvailable(update)).await;
             }
         });
     }
@@ -547,6 +561,20 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                         }
                     })
             }
+            Op::UpdateSelf(update) => {
+                // The swap must clear the banner (otherwise the UI keeps
+                // offering the now-installed update), so this arm reports
+                // its own event instead of the generic OpDone.
+                match crate::selfupdate::perform(update).await {
+                    Ok(()) => {
+                        let _ = tx
+                            .send(AppEvent::UpdateInstalled(update.latest.to_string()))
+                            .await;
+                        return;
+                    }
+                    Err(e) => Err(anyhow::anyhow!("{e:#}")),
+                }
+            }
             Op::DeleteTemplate(id) => {
                 // Remove the user file and reload the list (restores
                 // unshadowed built-ins); built-ins have no file and
@@ -764,9 +792,11 @@ fn render_view(
 fn render(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
-        // Runtime banner first; otherwise the boot-autostart hint nags
-        // only when marks wait without the systemd unit.
+        // Runtime banner first; then the self-update prompt ([V]), then
+        // the boot-autostart hint nags only when marks wait without the
+        // systemd unit. One banner line — highest priority wins.
         let banner = runtime::banner_text()
+            .or_else(|| app.update.as_ref().map(selfupdate::banner_text))
             .or_else(|| autostart::hint_text(app.autostart.len(), app.autostart_installed));
         // Opaque base layer first (see render_view), then the view itself.
         frame.render_widget(

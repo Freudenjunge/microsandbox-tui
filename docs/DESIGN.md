@@ -452,6 +452,7 @@ struct Image {
 | `Del` | dashboard | remove sandbox (confirm) |
 | `a` | dashboard | toggle boot-autostart for the sandbox (persists to `~/.config/microsandbox-tui/autostart.toml`) |
 | `U` | dashboard | install/update runtime (confirm) |
+| `v` | dashboard | update msb-tui itself when a newer stable release exists (confirm) |
 | `f` | logs | toggle follow |
 | `g` / `/` | logs | grep filter |
 | `s` | logs | cycle source filter |
@@ -517,6 +518,7 @@ microsandbox-tui/
     │   ├── sdk.rs           # SdkBackend (typed microsandbox 0.7.2 SDK)
     │   └── fake.rs          # in-memory FakeBackend for action-layer tests
     ├── runtime.rs           # msb version detect + install/update (banner)
+    ├── selfupdate.rs        # GitHub stable-release check + in-place binary swap ([V])
     ├── autostart.rs         # boot-autostart marks (TOML) + systemd unit installer
     ├── models.rs            # SandboxSummary, SandboxConfig, Metrics, etc.
     ├── actions.rs           # high-level ops: create, stop, publish_port, etc.
