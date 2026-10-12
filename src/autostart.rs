@@ -1,6 +1,6 @@
 //! Boot-autostart registry: which sandboxes start when the system boots.
 //!
-//! microsandbox has no built-in restart-on-boot (0.7.2): a boot kills the
+//! microsandbox has no built-in restart-on-boot (0.7.8): a boot kills the
 //! detached `msb machine` processes; only each sandbox's config record
 //! survives. This module marks the restart-worthy ones in
 //! `~/.config/microsandbox-tui/autostart.toml` — a human-editable list —

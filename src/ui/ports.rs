@@ -567,7 +567,7 @@ fn render_inspector(
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "0.7.2 binds ports at boot; publish/unpublish",
+                "ports bind at boot; publish/unpublish",
                 Style::default().fg(t.muted),
             )),
             Line::from(Span::styled(

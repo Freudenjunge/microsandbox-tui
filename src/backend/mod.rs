@@ -89,8 +89,8 @@ pub trait MsbBackend: Send + Sync {
     async fn remove_snapshot(&self, snapshot_ref: &str) -> Result<()>;
 
     /// Reapply a sandbox's env/workdir/labels after a restore (persisted
-    /// for the next start; the running VM is not restarted). The 0.7.2
-    /// RestoreBuilder cannot set these itself.
+    /// for the next start; the running VM is not restarted). The pinned
+    /// SDK's (0.7.8) RestoreBuilder cannot set these itself.
     async fn reapply_config(&self, name: &str, spec: &CreateSpec) -> Result<()>;
 
     // ---- creation ----

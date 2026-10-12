@@ -1,8 +1,8 @@
 //! High-level user-facing operations.
 //!
 //! These wrap the [`MsbBackend`] trait and add the recreate flow for port
-//! changes (microsandbox 0.7.2 binds ports at boot time, so publish/unpublish
-//! requires stop → recreate → start).
+//! changes (the pinned msb SDK, 0.7.8, binds ports at boot time, so
+//! publish/unpublish requires a snapshot-restore recreate).
 //!
 //! NOTE(dead_code): callers arrive in Task 4 (app). Remove this allow once the
 //! event loop wires these up.
@@ -246,8 +246,9 @@ pub async fn remove_sandbox(backend: &dyn MsbBackend, name: &str) -> Result<()> 
     backend.remove(name).await
 }
 
-/// Publish a port on a sandbox via the snapshot-restore flow (msb 0.7.2
-/// binds ports at boot time, so a port change requires a recreate).
+/// Publish a port on a sandbox via the snapshot-restore flow (the pinned
+/// msb SDK, 0.7.8, binds ports at boot time, so a port change requires a
+/// recreate).
 ///
 /// 1. `inspect` to read current config.
 /// 2. If the port already exists (same host_port, guest_port, protocol), return
@@ -341,9 +342,10 @@ pub async fn exec_sandbox(
 
 // ---- internal helpers ----
 
-/// Shared recreate logic for msb 0.7.2, which has no `create --replace` flag
-/// (verified: name collisions always error). The flow is therefore:
-/// stop → remove → create (same name) → start.
+/// Shared recreate logic for the pinned SDK (0.7.8), which still has no
+/// modify operation for ports or network rules (upstream #1789 unreleased):
+/// a change requires rebuilding the sandbox from a snapshot so rootfs data
+/// survives.
 ///
 /// Recreate a sandbox with a different port set WITHOUT losing its disk
 /// data (Docker-sbx ports parity, adapted to microsandbox's boot-time
@@ -351,8 +353,9 @@ pub async fn exec_sandbox(
 ///
 /// 1. `snapshot_disk` — capture the current disk content (running sources
 ///    supported)
-/// 2. `stop` + `remove` — free the name (0.7.2 has no create-with-replace
-///    in this flow)
+/// 2. `stop` + `remove` — free the name (a restore cannot create over an
+///    existing sandbox: the RestoreBuilder has no replace option; the
+///    image-based `SandboxBuilder::replace()` exists but resets the rootfs)
 /// 3. `restore_with_ports` — cold-boot a new sandbox from the snapshot with
 ///    the new port set; env/volumes/workdir come from the inspected config
 /// 4. `remove_snapshot` — clean up the temporary snapshot (only after a
@@ -386,9 +389,10 @@ async fn recreate_with_ports(
         .await;
     match restored {
         Ok(()) => {
-            // The 0.7.2 RestoreBuilder has no env/workdir/label setters —
-            // re-apply them so the sandbox is configured like before. This
-            // persists for the next start and does not restart the VM. A
+            // The pinned (0.7.8) RestoreBuilder has no env/workdir/label
+            // setters — re-apply them so the sandbox is configured like
+            // before. This persists for the next start and does not
+            // restart the VM. A
             // failure here is not data loss (disk + ports are already
             // restored), so it only warns via the snapshot cleanup path.
             if let Err(e) = backend.reapply_config(name, &spec).await {
@@ -640,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn fake_backend_matches_sdk_start_invariant() {
-        // SDK invariant (0.7.2): `start` on a Running sandbox errors with
+        // SDK invariant (0.7.8): `start` on a Running sandbox errors with
         // SandboxStillRunning ("cannot start sandbox: already running") —
         // the FakeBackend must model that so the recreate flow's tests can
         // catch a redundant start.
@@ -657,7 +661,7 @@ mod tests {
 
     #[tokio::test]
     async fn fake_backend_create_leaves_sandbox_running() {
-        // SDK invariant (0.7.2): create_detached boots the VM fully and
+        // SDK invariant (0.7.8): create_detached boots the VM fully and
         // leaves the sandbox Running ("sandbox ready" is awaited inside
         // create); the FakeBackend must model that.
         let b = FakeBackend::new();
@@ -800,7 +804,8 @@ mod tests {
 
     #[tokio::test]
     async fn publish_port_reapplies_env_workdir_labels_after_restore() {
-        // The 0.7.2 RestoreBuilder has no env/workdir/label setters — the
+        // The pinned (0.7.8) RestoreBuilder has no env/workdir/label
+        // setters — the
         // flow must reapply them via the modification API (persisted for
         // the next start, no extra restart) so the sandbox is bit-identical
         // to before the publish.

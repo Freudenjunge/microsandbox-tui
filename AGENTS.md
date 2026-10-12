@@ -4,7 +4,7 @@
 
 Single-crate Rust binary: `msb-tui`, a ratatui/crossterm dashboard for
 microsandbox microVMs. Rust 2024 edition. It talks to microsandbox
-**exclusively through the typed `microsandbox` 0.7.2 Rust SDK**
+**exclusively through the typed `microsandbox` 0.7.8 Rust SDK**
 (`src/backend/sdk.rs`) — no subprocess calls to the `msb` CLI, no JSON
 scraping. This is a deliberate design decision, not an accident; see
 `docs/DESIGN.md` for architecture, trade-offs, and the recreate flow.
@@ -39,10 +39,16 @@ build time without it.
   through the `MsbBackend` trait (`src/backend/mod.rs`); never call SDK types
   from views or actions directly. Add new capabilities to the trait, then
   implement in `sdk.rs` and `fake.rs`.
-- **Port/network changes require a full recreate**: SDK 0.7.2 cannot modify
-  ports or network rules on a live VM. The flow is stop → remove → create →
-  start, and the remove must come first (name collisions error). Don't try to
-  "optimize" this into an SDK call that doesn't exist.
+- **Port/network changes require a recreate-from-snapshot**: the pinned SDK
+  0.7.8 still cannot modify ports or network rules on a live VM. The flow is
+  snapshot → stop → remove → restore-with-new-ports → re-apply
+  env/workdir/labels (details in `docs/DESIGN.md`, "Port Publish/Unpublish").
+  The remove must come first: the RestoreBuilder has no replace option (the
+  image-based `SandboxBuilder::replace()` exists but resets the rootfs).
+  Upstream PR #1789 (unreleased; merged after v0.7.8) adds
+  modify-based port changes — adopt it and retire the snapshot-recreate
+  port flow when that SDK release lands; network rules stay recreate-only
+  (upstream #1538 open).
 - **Theme is the single color source**: view code uses `ui::theme::THEME` and
   shared chrome (`ui/chrome.rs`); no hardcoded `Color::` values anywhere else.
 - **The UI never blocks**: event loop is `tokio::select!` over input + pollers;

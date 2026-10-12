@@ -244,7 +244,7 @@ All `[spec]` keys are optional except `image`. Two conventions worth knowing:
 
 ## How it works
 
-msb-tui talks to microsandbox exclusively through the typed `microsandbox` 0.7.2 Rust
+msb-tui talks to microsandbox exclusively through the typed `microsandbox` 0.7.8 Rust
 SDK — there is no CLI scraping and no guessed JSON. Sandboxes are created and started
 detached, so they survive the TUI process; close the dashboard, reopen it, and your fleet
 is still running. Port changes ride a snapshot-preserving recreate: the sandbox disk is

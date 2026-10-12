@@ -21,7 +21,7 @@ one-key access to exec/logs/ssh.
 ### Backend: microsandbox Rust SDK (Phase 2)
 
 The TUI talks to microsandbox exclusively through the typed `microsandbox`
-0.7.2 SDK (`SdkBackend` wrapping `LocalBackend`). The earlier `msb`
+0.7.8 SDK (`SdkBackend` wrapping `LocalBackend`). The earlier `msb`
 CLI/JSON approach (spawn `msb`, parse `--format json`) was replaced because:
 
 1. **Typed API** — no stringly-typed JSON parsing at runtime; SDK structs are
@@ -37,7 +37,7 @@ CLI/JSON approach (spawn `msb`, parse `--format json`) was replaced because:
    version-locked; the banner warns on drift instead of silently mis-parsing.
 
 Trade-offs accepted: the binary now links `libkrun`-adjacent crates (needs
-`libcap-ng` at build time) and is bound to the 0.7.2 SDK API surface.
+`libcap-ng` at build time) and is bound to the pinned 0.7.8 SDK API surface.
 
 ### Detached mode (policy)
 
@@ -85,7 +85,7 @@ session info, clock), tab bar with filled-pill active tab
 (`[1] SANDBOXES  [2] LOGS  [3] PORTS`, number keys switch), full-width warn
 banner for runtime updates, and a footer keyhint bar. Mockup-only telemetry
 (firecracker/eBPF/cgroupv2/iptables strings, per-port traffic counters,
-security policies) is deliberately **not** rendered — the 0.7.2 SDK provides
+security policies) is deliberately **not** rendered — the 0.7.8 SDK provides
 none of it; panels show only real backend data.
 
 ### 1. Dashboard (default view)
@@ -239,9 +239,11 @@ sidebar on the right.
 - **Unpublish** (`-`): confirm dialog, then the recreate flow (see below)
 - **Publish**: recreate flow with confirm (see "Port Publish/Unpublish —
   Implementation Detail" below; a dedicated bind-new-port form is future work)
-  - ⚠️ Warns that recreation is required (microsandbox 0.7.2 can't modify ports live).
-    Volume data survives; rootfs state resets unless snapshotted.
-- Future: if the SDK gains live port modification, switch to live modify
+  - ⚠️ Warns that recreation is required (the pinned 0.7.8 SDK can't modify
+    ports on a live VM). The flow snapshots the disk first, so rootfs state
+    survives; volume data always persists.
+- Future: replace the recreate flow with SDK port modify (upstream PR #1789,
+  not yet released) when that release ships — see "Upstream status" below
 
 ### 4. Network Rules editor
 
@@ -264,8 +266,8 @@ sidebar on the right.
 - Visual editor for network rule strings
 - Fields: action (allow/deny), direction (egress/ingress/any), target (domain/IP/
   CIDR/suffix/group), protocol (tcp/udp/icmpv4/icmpv6/any), ports (single/range/any)
-- Apply uses the same recreate flow as port changes (network rules also require
-  boot-time configuration in 0.7.2)
+- Apply uses the same recreate flow as port changes (network-rule changes also
+  require boot-time configuration in 0.7.8 — upstream #1538 is still open)
 
 ### 5. Volumes view
 
@@ -469,7 +471,7 @@ key shows an explanatory status line instead.
 
 ## Port Publish/Unpublish — Implementation Detail
 
-Microsandbox 0.7.2 binds published ports at VM boot time (the libkrun process opens
+Microsandbox 0.7.8 binds published ports at VM boot time (the libkrun process opens
 host-side TCP/UDP listeners). `SandboxModificationBuilder` cannot change ports or
 network rules — only CPUs, memory, env, labels, secrets, and workdir.
 
@@ -478,16 +480,31 @@ driven entirely through `SdkBackend`):
 
 1. `inspect(name)` → read the full active config
 2. Compute new config (add/remove port, add/remove rule)
-3. `stop(name)`
-4. `remove(name)` (0.7.2 has no create-with-replace; a name collision errors out)
-5. `create(spec)` with all original settings plus the change (detached)
-6. `start(name)` (detached)
-7. Warn user: rootfs state resets on recreate. Volume data persists. To preserve
-   rootfs state, snapshot first.
+3. `snapshot_disk(name)` → full-disk snapshot (its own `tui-pre-publish`
+   member, so it survives the teardown below; removed again after success)
+4. `stop(name)` + `remove(name)` — the remove must come first: a restore
+   cannot create over an existing sandbox (the RestoreBuilder has no
+   replace option; the image-based `SandboxBuilder::replace()` exists but
+   resets the rootfs, which is exactly what this flow avoids)
+5. `restore_with_ports` → `Sandbox::restore(snapshot)` with the new port set:
+   the RestoreBuilder clears ports, so the desired set is declared explicitly
+   (volumes re-bind their same host sources). Restore boots the sandbox
+   **detached** and returns once it is ready — no separate start step.
+6. `reapply_config` → env/workdir/labels via the modification API (the
+   RestoreBuilder has no setters for those; persisted for the next start,
+   the already-running VM is not restarted)
+7. Remove the temporary snapshot. On a restore failure the snapshot is **kept** —
+   rootfs + data are recoverable manually with `msb restore`.
 
-This is a known limitation. If the SDK gains live port / network-rule
-modification in a future release, the TUI will switch to live modification
-without recreation.
+**Upstream status**: PR #1789 was merged Oct 9 2026 — after the v0.7.8 tag,
+so it is not in the 0.7.8 crate; it awaits a future release (likely 0.7.9).
+It adds add/update/remove of published ports via `Sandbox::modify`, with
+restart / next-start policies, host-bind conflict preflight, and a dry-run
+plan; it explicitly rejects port changes on older native runtimes. When
+that SDK release ships, the TUI will replace the snapshot-recreate port
+flow with modify-based editing. Network-rule modification is still open
+upstream (#1538, maintainer WIP as of Oct 2026), so network-rule changes
+keep requiring the recreate flow.
 
 ## Default Network Profile
 
@@ -515,7 +532,7 @@ microsandbox-tui/
     ├── event.rs             # crossterm input handling
     ├── backend/
     │   ├── mod.rs           # MsbBackend trait, CreateSpec, LogLine
-    │   ├── sdk.rs           # SdkBackend (typed microsandbox 0.7.2 SDK)
+    │   ├── sdk.rs           # SdkBackend (typed microsandbox 0.7.8 SDK)
     │   └── fake.rs          # in-memory FakeBackend for action-layer tests
     ├── runtime.rs           # msb version detect + install/update (banner)
     ├── selfupdate.rs        # GitHub stable-release check + in-place binary swap ([V])

@@ -1,5 +1,5 @@
 //! SDK backend: talks to the local microsandbox runtime through the typed
-//! `microsandbox` 0.7.2 SDK instead of shelling out to the `msb` CLI.
+//! `microsandbox` 0.7.8 SDK instead of shelling out to the `msb` CLI.
 //!
 //! Mapping contract: the SDK's rich types (`SandboxConfig`, `SandboxMetrics`,
 //! `PublishedPort`, `LogEntry`, …) are converted at this boundary into the
@@ -18,8 +18,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::Utc;
+use microsandbox::sandbox::{PortProtocol, PublishedPort as SdkPort};
 use microsandbox::sandbox::{SandboxBuilder, SandboxHandle, SandboxSpec, SandboxStatus};
-use microsandbox_network::config::PortProtocol;
 use microsandbox_types::{LogSource, NetworkSpec, RootfsSource, VolumeMount};
 use tokio_stream::StreamExt as _;
 
@@ -45,7 +45,10 @@ impl SdkBackend {
     /// Construct from the ambient default local configuration
     /// (`~/.microsandbox/config.json` or defaults, honoring `MSB_CONFIG_PATH`).
     pub fn new() -> Result<Self> {
-        let local = microsandbox::LocalBackend::lazy();
+        // 0.7.8: `lazy()` resolves the ambient config itself and returns a
+        // `Result` instead of the infallible `Self` of 0.7.2.
+        let local =
+            microsandbox::LocalBackend::lazy().context("init local microsandbox backend")?;
         Ok(Self {
             local: Arc::new(local),
         })
@@ -136,34 +139,47 @@ pub(crate) fn map_metrics_state(state: microsandbox::SandboxMetricsState) -> San
 }
 
 /// Convert SDK published-port data (IpAddr bind) into our string-bind DTO.
-pub(crate) fn map_port(p: &microsandbox_network::config::PublishedPort) -> PublishedPort {
+///
+/// 0.7.8 note: `microsandbox::sandbox::PublishedPort` is the network crate's
+/// `PublishedPort`, whose `protocol` field is the network crate's own
+/// `PortProtocol` enum. The SDK does not re-export that enum (the
+/// `microsandbox::sandbox::PortProtocol` re-export is the distinct
+/// `microsandbox_types` one that `PublishedPortSpec` uses), so the protocol is
+/// read through its `"tcp"`/`"udp"` serde representation, matching the
+/// reverse direction in [`sdk_port`].
+pub(crate) fn map_port(p: &SdkPort) -> PublishedPort {
     PublishedPort {
         host_bind: p.host_bind.to_string(),
         host_port: p.host_port,
         guest_port: p.guest_port,
-        protocol: match p.protocol {
-            PortProtocol::Udp => "udp".to_string(),
-            PortProtocol::Tcp => "tcp".to_string(),
+        protocol: match serde_json::to_value(p.protocol) {
+            Ok(serde_json::Value::String(s)) => s,
+            _ => "tcp".to_string(),
         },
     }
 }
 
 /// Convert our DTO back into the SDK's typed port (used by create + recreate).
-pub(crate) fn sdk_port(p: &PublishedPort) -> Result<microsandbox_network::config::PublishedPort> {
-    Ok(microsandbox_network::config::PublishedPort {
-        host_bind: p.host_bind.parse::<IpAddr>().map_err(|_| {
-            anyhow!(
-                "invalid host bind address '{}' for port {}",
-                p.host_bind,
-                p.host_port
-            )
-        })?,
-        host_port: p.host_port,
-        guest_port: p.guest_port,
-        protocol: match p.protocol.as_str() {
-            "udp" => PortProtocol::Udp,
-            _ => PortProtocol::Tcp,
-        },
+pub(crate) fn sdk_port(p: &PublishedPort) -> Result<SdkPort> {
+    let host_bind: IpAddr = p.host_bind.parse::<IpAddr>().map_err(|_| {
+        anyhow!(
+            "invalid host bind address '{}' for port {}",
+            p.host_bind,
+            p.host_port
+        )
+    })?;
+    // serde bridge as in `map_port`; non-"udp" protocols normalize to tcp.
+    let protocol = &p.protocol;
+    serde_json::from_value(serde_json::json!({
+        "host_bind": host_bind,
+        "host_port": p.host_port,
+        "guest_port": p.guest_port,
+        "protocol": if p.protocol == "udp" { "udp" } else { "tcp" },
+    }))
+    .with_context(|| {
+        format!(
+            "network PublishedPort serde bridge rejected protocol '{protocol}' — SDK schema change?"
+        )
     })
 }
 
@@ -301,8 +317,8 @@ fn map_port_spec(p: &microsandbox_types::PublishedPortSpec) -> PublishedPort {
         host_port: p.host_port,
         guest_port: p.guest_port,
         protocol: match p.protocol {
-            microsandbox_types::PortProtocol::Udp => "udp".to_string(),
-            microsandbox_types::PortProtocol::Tcp => "tcp".to_string(),
+            PortProtocol::Udp => "udp".to_string(),
+            PortProtocol::Tcp => "tcp".to_string(),
         },
     }
 }
@@ -505,9 +521,12 @@ pub(crate) fn apply_spec_to_builder(builder: SandboxBuilder, spec: &CreateSpec) 
         };
         for p in &spec.ports {
             if let Ok(sp) = sdk_port(p) {
-                n = match sp.protocol {
-                    PortProtocol::Udp => n.port_udp_bind(sp.host_bind, sp.host_port, sp.guest_port),
-                    PortProtocol::Tcp => n.port_bind(sp.host_bind, sp.host_port, sp.guest_port),
+                // The DTO's protocol string selects the builder method (the
+                // network `PortProtocol` enum itself is not re-exported by the
+                // SDK; `sdk_port` already normalized it from this string).
+                n = match p.protocol.as_str() {
+                    "udp" => n.port_udp_bind(sp.host_bind, sp.host_port, sp.guest_port),
+                    _ => n.port_bind(sp.host_bind, sp.host_port, sp.guest_port),
                 };
             }
         }
@@ -862,7 +881,7 @@ impl MsbBackend for SdkBackend {
     }
 
     async fn reapply_config(&self, name: &str, spec: &CreateSpec) -> Result<()> {
-        // The 0.7.2 RestoreBuilder has no env/workdir/label setters, so the
+        // The pinned (0.7.8) RestoreBuilder has no env/workdir/label setters, so the
         // flow re-applies them through the modification API (persisted for
         // the next start; the restored VM keeps running).
         let handle = microsandbox::Sandbox::get(name).await?;
@@ -1082,11 +1101,10 @@ mod tests {
         let sdk = sdk_port(&ours).unwrap();
         assert_eq!(sdk.host_port, 9090);
         assert_eq!(sdk.guest_port, 90);
-        assert!(matches!(sdk.protocol, PortProtocol::Udp));
         assert_eq!(sdk.host_bind, "0.0.0.0".parse::<IpAddr>().unwrap());
 
         let back = map_port(&sdk);
-        assert_eq!(back, ours);
+        assert_eq!(back, ours, "protocol roundtrips as udp");
     }
 
     #[test]
