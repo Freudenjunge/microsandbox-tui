@@ -129,16 +129,21 @@ fn main() -> Result<()> {
     }
 
     // Fail cleanly before touching the terminal if the SDK cannot initialize.
-    if let Err(e) = SdkBackend::new() {
-        eprintln!("failed to initialize microsandbox SDK: {e:#}");
-        std::process::exit(1);
-    }
+    // Built once here — `run` takes it — so DB init/migrations are paid a
+    // single time (a second `SdkBackend::new()` used to run inside `run`).
+    let backend = match SdkBackend::new() {
+        Ok(backend) => Arc::new(backend),
+        Err(e) => {
+            eprintln!("failed to initialize microsandbox SDK: {e:#}");
+            std::process::exit(1);
+        }
+    };
 
     // tokio runtime drives the pollers + event loop.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run(cli))?;
+    rt.block_on(run(cli, backend))?;
     // The SDK's LocalBackend parks blocking threads (sqlx/SQLite workers,
     // migration locks) that never complete on their own. A plain drop of
     // `rt` would wait on them forever and the TUI would never exit; shut
@@ -172,9 +177,7 @@ fn run_autostart_restore() -> Result<()> {
 }
 
 /// Run the TUI: set up the terminal, spawn pollers, and enter the event loop.
-async fn run(cli: Cli) -> Result<()> {
-    let backend = Arc::new(SdkBackend::new()?);
-
+async fn run(cli: Cli, backend: Arc<SdkBackend>) -> Result<()> {
     // Boot-autostart marks: one fresh read before anything else; install
     // state feeds the banner hint. I/O lives here only — App takes data.
     let (autostart_marks, autostart_warnings) = autostart::load(&autostart::autostart_path());
@@ -201,7 +204,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     // ---- spawn background pollers ----
 
-    // Sandbox list poller: `msb ls` every 5 s.
+    // Sandbox list poller: immediate first load, then `msb ls` every 5 s.
     {
         let tx = event_tx.clone();
         spawn_poller(
@@ -222,7 +225,7 @@ async fn run(cli: Cli) -> Result<()> {
         );
     }
 
-    // Metrics poller: `msb metrics --all` every 1 s.
+    // Metrics poller: immediate first sample, then every 1 s.
     spawn_poller(
         event_tx.clone(),
         METRICS_POLL_INTERVAL,
@@ -676,6 +679,12 @@ type PollFn = Box<dyn Fn(Arc<SdkBackend>) -> PollFuture + Send + Sync>;
 /// Spawn a periodic poller that calls `f` on the backend at `interval`,
 /// sending the resulting `AppEvent` into `tx`. Errors are surfaced as
 /// [`AppEvent::Error`].
+///
+/// The first poll fires immediately (`interval`'s first tick completes
+/// inline): the dashboard gets its initial load at startup instead of
+/// sitting behind the loading placeholder for a full `interval`. The send
+/// cannot race the loop — `event_rx` already exists when this runs and the
+/// buffered channel holds the event until `recv` starts.
 fn spawn_poller(
     tx: mpsc::Sender<AppEvent>,
     interval: Duration,
@@ -685,8 +694,6 @@ fn spawn_poller(
 ) {
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(interval);
-        // Discard the immediate first tick so we don't fire before the loop is ready.
-        timer.tick().await;
         loop {
             timer.tick().await;
             match f(backend.clone()).await {
