@@ -1,0 +1,7 @@
+[meta]
+name = "BadDisk"
+description = "root disk string does not parse"
+
+[spec]
+image = "alpine"
+root_disk = "big"

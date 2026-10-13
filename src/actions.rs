@@ -137,6 +137,13 @@ pub async fn restart_sandbox(backend: &dyn MsbBackend, name: &str) -> Result<()>
     backend.restart(name).await
 }
 
+/// Grow a sandbox's root disk. Grow-only: shrinking is rejected by the
+/// backend (the SDK's managed/flat roots cannot shrink; the data is
+/// preserved through the restart the growth may perform).
+pub async fn resize_root_disk(backend: &dyn MsbBackend, name: &str, size_mib: u32) -> Result<()> {
+    backend.resize_root_disk(name, size_mib).await
+}
+
 /// Outcome of one boot-autostart pass over the sandbox list.
 #[derive(Debug, Default, PartialEq)]
 pub struct AutostartReport {

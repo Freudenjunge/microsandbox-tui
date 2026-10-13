@@ -496,6 +496,9 @@ pub(crate) fn apply_spec_to_builder(builder: SandboxBuilder, spec: &CreateSpec) 
     if let Some(mib) = spec.memory.as_deref().and_then(parse_memory_mib) {
         builder = builder.memory(mib);
     }
+    if let Some(mib) = spec.root_disk.as_deref().and_then(parse_memory_mib) {
+        builder = builder.root_disk(mib);
+    }
     if let Some(wd) = &spec.workdir {
         builder = builder.workdir(wd);
     }
@@ -795,6 +798,21 @@ impl MsbBackend for SdkBackend {
             .await
             .map(|_| ())
             .with_context(|| format!("restart {name}"))
+    }
+
+    async fn resize_root_disk(&self, name: &str, size_mib: u32) -> Result<()> {
+        // Grow-only (the SDK rejects a shrink). `restart` policy: online when
+        // the runtime supports it, else stop + start around the growth —
+        // the sandbox's data survives both paths.
+        let handle = microsandbox::Sandbox::get(name).await?;
+        handle
+            .modify()
+            .restart()
+            .root_disk_size(size_mib)
+            .apply()
+            .await
+            .map(|_| ())
+            .with_context(|| format!("resize root disk of {name} to {size_mib} MiB"))
     }
 
     async fn remove(&self, name: &str) -> Result<()> {

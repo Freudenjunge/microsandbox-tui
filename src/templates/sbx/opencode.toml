@@ -7,4 +7,7 @@ image = "sbx/opencode-image"
 name = "opencode"
 cpus = 2
 memory = "4G"
+# 16G writable root disk: the ~4G managed default fills up fast once the
+# agent installs toolchains (rustup + cargo target/ alone can top 4G).
+root_disk = "16G"
 mount_cwd = true

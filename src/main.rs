@@ -552,6 +552,14 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
                     .await
                     .map(|_| format!("unpublished {}:{name}", port.host_port))
             }
+            Op::ResizeDisk { name, mib } => actions::resize_root_disk(backend.as_ref(), name, *mib)
+                .await
+                .map(|_| {
+                    format!(
+                        "root disk of {name} grown to {}",
+                        crate::ui::dashboard::format_bytes(u64::from(*mib) * 1024 * 1024)
+                    )
+                }),
             Op::InstallRuntime => {
                 crate::runtime::install_or_update()
                     .await
@@ -788,6 +796,12 @@ fn render_view(
                 area,
             );
         }
+    }
+
+    // Root-disk resize prompt overlays the dashboard (below the confirm
+    // dialog, which renders after it).
+    if let Some(prompt) = &app.resize_prompt {
+        ui::render_resize_prompt(frame, &prompt.name, prompt.input.trim(), area);
     }
 
     // Confirmation dialog overlays any view.

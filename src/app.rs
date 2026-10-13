@@ -129,6 +129,9 @@ pub enum Op {
     PublishPort { name: String, port: PublishedPort },
     /// Unpublish a port from the named sandbox (recreate flow).
     UnpublishPort { name: String, port: PublishedPort },
+    /// Grow the named sandbox's root disk to `mib` MiB (grow-only; the
+    /// backend restarts the VM when the growth cannot be applied online).
+    ResizeDisk { name: String, mib: u32 },
     /// Install or update the host microsandbox runtime to the SDK version.
     InstallRuntime,
     /// Delete a user template file (built-ins cannot be deleted).
@@ -160,6 +163,12 @@ impl Op {
                 format!(
                     "Unpublish {}:{} from '{name}'? (snapshots the disk, recreates from it — your data is preserved, processes restart)",
                     port.host_port, port.guest_port
+                )
+            }
+            Op::ResizeDisk { name, mib } => {
+                format!(
+                    "Grow root disk of '{name}' to {}? (grow-only — data is preserved; the sandbox restarts if the runtime cannot grow it online)",
+                    crate::ui::dashboard::format_bytes(u64::from(*mib) * 1024 * 1024)
                 )
             }
             Op::InstallRuntime => {
@@ -196,6 +205,17 @@ impl Op {
 pub struct PendingOp {
     /// The operation to perform.
     pub op: Op,
+}
+
+/// One-field input prompt for growing a sandbox's root disk (`g` on the
+/// dashboard). Enter validates and queues [`Op::ResizeDisk`] for the usual
+/// confirm dialog; Esc cancels.
+#[derive(Debug)]
+pub struct ResizePrompt {
+    /// Target sandbox name.
+    pub name: String,
+    /// Typed size string (e.g. `16G`).
+    pub input: String,
 }
 
 /// Maximum lines kept for the dashboard sidebar log preview.
@@ -248,6 +268,8 @@ pub struct App {
     error_age_ticks: u32,
     /// Operation awaiting confirmation (`y`/`n`), if any.
     pub confirm: Option<Op>,
+    /// Open root-disk size prompt (`g` on the dashboard), if any.
+    pub resize_prompt: Option<ResizePrompt>,
     /// Confirmed op queued for the main loop; consumed via [`App::take_op`].
     pub queued_op: Option<Op>,
     /// Validated create spec queued by the form, consumed via
@@ -317,6 +339,7 @@ impl App {
             status_age_ticks: 0,
             error_age_ticks: 0,
             confirm: None,
+            resize_prompt: None,
             queued_op: None,
             queued_create: None,
             create_state: None,
@@ -492,9 +515,13 @@ impl App {
 
     /// Key handling for the current view.
     fn handle_key(&mut self, key: KeyEvent) -> Action {
-        // Confirmation dialog takes precedence over everything.
+        // Confirmation dialog takes precedence over everything; the disk
+        // resize prompt sits directly below it.
         if self.confirm.is_some() {
             return self.handle_confirm_key(key);
+        }
+        if self.resize_prompt.is_some() {
+            return self.handle_resize_key(key);
         }
 
         match self.view {
@@ -534,6 +561,43 @@ impl App {
                 self.set_status("Cancelled");
                 Action::Render
             }
+        }
+    }
+
+    /// Keys while the root-disk resize prompt is open. Enter validates the
+    /// size (`parse_memory_mib`) and hands the op to the confirm dialog;
+    /// anything else keeps typing, with Backspace editing and Esc cancelling.
+    fn handle_resize_key(&mut self, key: KeyEvent) -> Action {
+        let Some(prompt) = self.resize_prompt.as_mut() else {
+            return Action::Render;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                let mib = crate::backend::sdk::parse_memory_mib(prompt.input.trim());
+                match mib {
+                    Some(mib) if mib > 0 => {
+                        let name = prompt.name.clone();
+                        self.resize_prompt = None;
+                        self.confirm = Some(Op::ResizeDisk { name, mib });
+                    }
+                    _ => self.set_error("Disk size must be like '4G' or '16G'"),
+                }
+                Action::Render
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.resize_prompt = None;
+                self.set_status("Cancelled");
+                Action::Render
+            }
+            KeyCode::Backspace => {
+                prompt.input.pop();
+                Action::Render
+            }
+            KeyCode::Char(c) => {
+                prompt.input.push(c);
+                Action::Render
+            }
+            _ => Action::Render,
         }
     }
 
@@ -622,6 +686,18 @@ impl App {
                 }
             }
             KeyCode::Char('r') => self.confirm_gated(CardAction::Restart, Op::Restart),
+            // `g`: grow the selected sandbox's root disk (grow-only, data
+            // preserved). Opens the size prompt; the SDK restarts the VM
+            // when it cannot grow online.
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                if let Some(sbx) = self.selected_sandbox() {
+                    self.resize_prompt = Some(ResizePrompt {
+                        name: sbx.name.clone(),
+                        input: String::new(),
+                    });
+                }
+                Action::Render
+            }
             KeyCode::Delete => self.confirm_named(Op::Remove),
             // `a`/`A`: mark/unmark the selected sandbox for boot autostart
             // (s/S parity: caps-lock must not hide the feature).
@@ -1115,6 +1191,12 @@ impl App {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status = Some(msg.into());
         self.status_age_ticks = 0;
+    }
+
+    /// Set the transient error message, restarting its TTL clock.
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.error = Some(msg.into());
+        self.error_age_ticks = 0;
     }
 
     /// Age the transient status/error messages on each tick; returns whether
@@ -1917,6 +1999,57 @@ mod tests {
             let op = app.confirm.take().expect("s opens the start confirm");
             assert_eq!(op, Op::Start("api".into()), "key {k}");
         }
+    }
+
+    // ---- root-disk resize (`g`) ----
+
+    #[test]
+    fn g_opens_size_prompt_and_enter_confirms_resize() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("web")]);
+        // 16G typed through the prompt → confirm dialog carries the op.
+        assert_eq!(app.handle_event(key(KeyCode::Char('g'))), Action::Render);
+        let name = app
+            .resize_prompt
+            .as_ref()
+            .expect("prompt open")
+            .name
+            .clone();
+        assert_eq!(name, "web");
+        app.handle_event(key(KeyCode::Char('1')));
+        app.handle_event(key(KeyCode::Char('6')));
+        app.handle_event(key(KeyCode::Char('G')));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(app.resize_prompt.is_none(), "prompt closed on submit");
+        assert_eq!(
+            app.confirm,
+            Some(Op::ResizeDisk {
+                name: "web".into(),
+                mib: 16 * 1024
+            })
+        );
+    }
+
+    #[test]
+    fn resize_prompt_rejects_bad_size_and_esc_cancels() {
+        let mut app = App::new();
+        app.update_sandboxes(vec![summary("web")]);
+        app.handle_event(key(KeyCode::Char('g')));
+        // Bad size: prompt stays open with an error line.
+        app.handle_event(key(KeyCode::Char('h')));
+        app.handle_event(key(KeyCode::Enter));
+        assert!(app.resize_prompt.is_some(), "prompt stays open");
+        assert!(app.confirm.is_none());
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Disk size")
+        );
+        // Esc cancels cleanly.
+        app.handle_event(key(KeyCode::Esc));
+        assert!(app.resize_prompt.is_none());
+        assert!(app.confirm.is_none());
     }
 
     // ---- state-gated lifecycle keys (Docker-sbx parity) ----

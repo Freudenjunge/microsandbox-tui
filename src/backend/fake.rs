@@ -43,6 +43,11 @@ pub enum Call {
     Start(String),
     Stop(String),
     Restart(String),
+    /// Grow the root disk; grow-only on the real backend.
+    ResizeRootDisk {
+        name: String,
+        size_mib: u32,
+    },
     Remove(String),
     Create(Box<CreateSpec>),
     LogsFollow(String),
@@ -366,6 +371,9 @@ pub fn spec_from_config(cfg: &SandboxConfig, ports: Vec<PublishedPort>) -> Creat
         name: Some(cfg.name.clone()),
         cpus: Some(cfg.resources.cpus),
         memory: Some(format!("{}M", cfg.resources.memory_mib)),
+        // The disk rides along in the snapshot — the RestoreBuilder rebuilds
+        // it from the captured content; a size here would be dead weight.
+        root_disk: None,
         workdir: cfg.runtime.workdir.clone().filter(|w| !w.is_empty()),
         ports,
         volumes: cfg
@@ -662,6 +670,19 @@ impl MsbBackend for FakeBackend {
             sbx.config.resources.memory_mib = mib;
             sbx.config.resources.max_memory_mib = mib;
         }
+        // Root disk size ("4G"/"16G" → MiB); empty = fake default (4096).
+        if let Some(disk) = &spec.root_disk {
+            let mib = if let Some(num) = disk.strip_suffix('M') {
+                num.parse::<u64>().unwrap_or(4096)
+            } else if let Some(num) = disk.strip_suffix('G') {
+                num.parse::<u64>().unwrap_or(4) * 1024
+            } else {
+                disk.parse::<u64>().unwrap_or(4096)
+            };
+            if let Some(oci) = &mut sbx.config.image.oci {
+                oci.root_disk.size_mib = Some(mib);
+            }
+        }
 
         // Apply workdir.
         if let Some(wd) = &spec.workdir {
@@ -671,6 +692,29 @@ impl MsbBackend for FakeBackend {
         sbx.metrics.name = name.clone();
         g.sandboxes.insert(name.clone(), sbx);
         Ok(name)
+    }
+
+    async fn resize_root_disk(&self, name: &str, size_mib: u32) -> Result<()> {
+        let mut g = self.inner.lock().await;
+        g.calls.push(Call::ResizeRootDisk {
+            name: name.to_string(),
+            size_mib,
+        });
+        let sbx = g
+            .sandboxes
+            .get_mut(name)
+            .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
+        // Grow-only, mirroring the SDK: a shrink is rejected.
+        if let Some(oci) = &mut sbx.config.image.oci {
+            let current = oci.root_disk.size_mib.unwrap_or(4096);
+            if u64::from(size_mib) < current {
+                anyhow::bail!(
+                    "shrinking the root disk ({current} MiB → {size_mib} MiB) is not supported"
+                );
+            }
+            oci.root_disk.size_mib = Some(u64::from(size_mib));
+        }
+        Ok(())
     }
 
     async fn logs_follow(&self, name: &str) -> Result<LogStream> {
@@ -706,6 +750,38 @@ impl MsbBackend for FakeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fake_backend_create_applies_root_disk() {
+        let b = FakeBackend::new();
+        let spec = CreateSpec {
+            image: "alpine".into(),
+            name: Some("big-disk".into()),
+            root_disk: Some("16G".into()),
+            ..Default::default()
+        };
+        let _name = b.create(&spec).await.unwrap();
+        let insp = b.inspect("big-disk").await.unwrap();
+        let oci = insp.active_config.image.oci.expect("oci spec");
+        assert_eq!(oci.root_disk.size_mib, Some(16 * 1024));
+    }
+
+    #[tokio::test]
+    async fn fake_backend_resize_grows_and_rejects_shrink() {
+        let b = FakeBackend::with_fixture_sandbox();
+        // Grow: recorded + applied.
+        use crate::backend::MsbBackend;
+        b.resize_root_disk("tui-fixture", 16 * 1024).await.unwrap();
+        let calls = b.calls().await;
+        assert!(matches!(&calls[0], Call::ResizeRootDisk { name, size_mib }
+                if name == "tui-fixture" && *size_mib == 16 * 1024));
+        let insp = b.inspect("tui-fixture").await.unwrap();
+        let oci = insp.active_config.image.oci.expect("oci spec");
+        assert_eq!(oci.root_disk.size_mib, Some(16 * 1024));
+        // Shrink: rejected (SDK managed roots are grow-only).
+        let err = b.resize_root_disk("tui-fixture", 1024).await;
+        assert!(err.is_err());
+    }
 
     #[tokio::test]
     async fn fake_backend_lifecycle() {

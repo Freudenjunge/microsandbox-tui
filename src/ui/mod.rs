@@ -117,6 +117,57 @@ pub fn render_confirm(frame: &mut Frame, message: &str, area: Rect) {
     frame.render_widget(Paragraph::new(text).block(block), horiz[1]);
 }
 
+/// Render a modal one-field input prompt for the root-disk resize (`g`).
+pub fn render_resize_prompt(frame: &mut Frame, name: &str, input: &str, area: Rect) {
+    let t = &THEME;
+    let (width, height) = (40, 7);
+    let vert = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+    let horiz = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .split(vert[1]);
+
+    frame.render_widget(
+        Block::default().style(Style::default().bg(THEME.bg)),
+        horiz[1],
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Grow root disk ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(t.accent));
+    let text = vec![
+        Line::from(Span::raw(format!("Sandbox: {name}"))),
+        Line::from(Span::styled(
+            "Grow-only — data is preserved.",
+            Style::default().fg(t.muted),
+        )),
+        Line::from(vec![
+            Span::styled(
+                "New size: ",
+                Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(input, Style::default().fg(t.accent)),
+            Span::styled("█", Style::default().fg(t.accent)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "e.g. 16G   Enter = confirm   Esc = cancel",
+            Style::default().fg(t.muted),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(text).block(block), horiz[1]);
+}
+
 /// Dialog dimensions for a confirm message: wraps `message` into
 /// `CONFIRM_MAX_WIDTH`-wide lines (border + padding subtracted), so the
 /// whole text is visible. Height grows with the wrapped line count and

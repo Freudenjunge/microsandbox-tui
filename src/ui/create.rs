@@ -133,7 +133,7 @@ impl NetProfile {
 // ---------------------------------------------------------------------------
 
 /// Which form field is currently active, in grouped Tab order
-/// (BASIS: Image/Name · RESSOURCEN: Cpus/Memory · MOUNTS: MountCwd/Workdir/
+/// (BASIS: Image/Name · RESSOURCEN: Cpus/Memory/Disk · MOUNTS: MountCwd/Workdir/
 /// Volumes · NETZWERK: NetProfile/Ports/NetRules · SONSTIGES: EnvVars/
 /// Labels).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +142,7 @@ pub enum FormField {
     Name,
     Cpus,
     Memory,
+    RootDisk,
     MountCwd,
     Workdir,
     Volumes,
@@ -154,11 +155,12 @@ pub enum FormField {
 
 impl FormField {
     /// All fields in grouped Tab order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Image,
         Self::Name,
         Self::Cpus,
         Self::Memory,
+        Self::RootDisk,
         Self::MountCwd,
         Self::Workdir,
         Self::Volumes,
@@ -181,7 +183,7 @@ impl FormField {
     fn is_text(&self) -> bool {
         matches!(
             self,
-            Self::Image | Self::Name | Self::Cpus | Self::Memory | Self::Workdir
+            Self::Image | Self::Name | Self::Cpus | Self::Memory | Self::RootDisk | Self::Workdir
         )
     }
 
@@ -193,6 +195,7 @@ impl FormField {
             Self::MountCwd => "Mount current dir",
             Self::Cpus => "CPUs",
             Self::Memory => "Memory",
+            Self::RootDisk => "Disk",
             Self::Workdir => "Workdir",
             Self::NetProfile => "Profile",
             Self::Ports => "Ports",
@@ -244,6 +247,8 @@ pub struct CreateForm {
     pub cpus: String,
     /// Memory limit string (e.g. `512M`); empty = runtime default.
     pub memory: String,
+    /// Root disk size string (e.g. `16G`); empty = runtime default (~4G overlay).
+    pub root_disk: String,
     /// Working directory inside the sandbox.
     pub workdir: String,
     /// Whether to bind-mount the TUI's current working directory into the
@@ -316,6 +321,7 @@ impl CreateForm {
             name: String::new(),
             cpus: String::new(),
             memory: String::new(),
+            root_disk: String::new(),
             workdir: cwd.clone(),
             mount_cwd: true,
             cwd,
@@ -626,6 +632,7 @@ impl CreateForm {
             FormField::Name => &mut self.name,
             FormField::Cpus => &mut self.cpus,
             FormField::Memory => &mut self.memory,
+            FormField::RootDisk => &mut self.root_disk,
             FormField::Workdir => &mut self.workdir,
             _ => unreachable!("active_text_buf on non-text field"),
         }
@@ -807,6 +814,13 @@ impl CreateForm {
             _ => bail!("Memory must be like '512M' or '1G'"),
         };
 
+        // Root disk — empty means runtime default (~4G managed overlay).
+        let root_disk = match self.root_disk.trim() {
+            "" => None,
+            s if is_valid_memory(s) => Some(s.to_string()),
+            _ => bail!("Disk must be like '4G' or '16G'"),
+        };
+
         // Ports
         let mut ports = Vec::new();
         for p in &self.ports {
@@ -848,6 +862,7 @@ impl CreateForm {
             name,
             cpus,
             memory,
+            root_disk,
             workdir: Some(self.workdir.clone()),
             mount_cwd: self.mount_cwd,
             cwd: self.cwd.trim(),
@@ -871,6 +886,7 @@ impl CreateForm {
             name: s.name.clone().unwrap_or_default(),
             cpus: s.cpus.map(|c| c.to_string()).unwrap_or_default(),
             memory: s.memory.clone().unwrap_or_default(),
+            root_disk: s.root_disk.clone().unwrap_or_default(),
             // Mount coherence (same rule as toggle_mount_cwd): with the
             // mount off there is no host CWD to prefill — the SDK stats
             // explicit workdirs inside the guest rootfs.
@@ -914,6 +930,8 @@ impl CreateForm {
             },
             cpus: self.cpus.trim().parse::<u32>().ok(),
             memory: (!self.memory.trim().is_empty()).then(|| self.memory.trim().to_string()),
+            root_disk: (!self.root_disk.trim().is_empty())
+                .then(|| self.root_disk.trim().to_string()),
             workdir: (!self.workdir.trim().is_empty()).then(|| self.workdir.trim().to_string()),
             mount_cwd: Some(self.mount_cwd),
             ports: crate::template::trim_filter(&self.ports),
@@ -1164,6 +1182,12 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         field_label_span("Memory", form.active_field == FormField::Memory),
         Span::raw(" "),
         text_value_span(&form.memory, form.active_field == FormField::Memory),
+    ]));
+    // Disk on its own line (root disk size; empty = ~4G managed default).
+    lines.push(Line::from(vec![
+        field_label_span("Disk", form.active_field == FormField::RootDisk),
+        Span::raw(" "),
+        text_value_span(&form.root_disk, form.active_field == FormField::RootDisk),
     ]));
 
     // -- MOUNTS --
@@ -1514,12 +1538,12 @@ mod tests {
     #[test]
     fn field_order_is_grouped() {
         let form = CreateForm::new(Vec::new());
-        assert_eq!(form.field_count(), 12);
+        assert_eq!(form.field_count(), 13);
         assert_eq!(FormField::ALL[0], FormField::Image);
         assert_eq!(FormField::ALL[1], FormField::Name);
         assert_eq!(FormField::ALL[2], FormField::Cpus);
-        assert_eq!(FormField::ALL[4], FormField::MountCwd);
-        assert_eq!(FormField::ALL[11], FormField::Labels);
+        assert_eq!(FormField::ALL[5], FormField::MountCwd);
+        assert_eq!(FormField::ALL[12], FormField::Labels);
     }
 
     #[test]
@@ -1543,6 +1567,7 @@ mod tests {
         assert_eq!(form.name, "opencode");
         assert_eq!(form.cpus, "4");
         assert_eq!(form.memory, "2G");
+        assert_eq!(form.root_disk, "16G");
         assert!(form.mount_cwd);
         assert_eq!(form.workdir, "/workspace");
         assert_eq!(form.ports, vec!["127.0.0.1:3000:3000"]);
@@ -1562,6 +1587,7 @@ mod tests {
         let t1 = form.to_template("Opencode".into(), "d".into());
         assert_eq!(t1.spec.image, "node:22-alpine");
         assert_eq!(t1.spec.cpus, Some(4));
+        assert_eq!(t1.spec.root_disk.as_deref(), Some("16G"));
         assert_eq!(t1.spec.labels_vec(), vec!["team=infra"]);
     }
 
@@ -1688,7 +1714,7 @@ mod tests {
     fn new_starts_grouped_on_image() {
         let form = CreateForm::new(Vec::new());
         assert_eq!(form.active_field, FormField::Image);
-        assert_eq!(form.field_count(), 12);
+        assert_eq!(form.field_count(), 13);
         assert!(form.error.is_none());
     }
 
@@ -1900,6 +1926,18 @@ mod tests {
         form.image = "alpine".into();
         form.memory = "lots".into();
         assert!(form.to_create_spec().is_err());
+    }
+
+    #[test]
+    fn invalid_root_disk_rejected() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.root_disk = "huge".into();
+        assert!(form.to_create_spec().is_err());
+        // Empty is fine (runtime default).
+        form.root_disk = String::new();
+        let spec = form.to_create_spec().unwrap();
+        assert_eq!(spec.root_disk, None);
     }
 
     // -- field behavior (semantics unchanged from the advanced form) --

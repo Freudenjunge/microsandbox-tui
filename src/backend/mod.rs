@@ -68,6 +68,14 @@ pub trait MsbBackend: Send + Sync {
     /// Stop and start the named sandbox.
     async fn restart(&self, name: &str) -> Result<()>;
 
+    /// Grow the named sandbox's root disk to `size_mib` (MiB).
+    ///
+    /// The SDK's managed/flat roots are **grow-only** (a shrink is rejected).
+    /// Applied online when the runtime supports it, else the SDK stops and
+    /// restarts the VM itself (`ModificationPolicy::Restart`) — the sandbox's
+    /// data is preserved either way.
+    async fn resize_root_disk(&self, name: &str, size_mib: u32) -> Result<()>;
+
     /// Remove the named sandbox (must be stopped).
     async fn remove(&self, name: &str) -> Result<()>;
 
@@ -131,6 +139,9 @@ pub struct CreateSpec {
     pub cpus: Option<u32>,
     /// Memory limit, e.g. `512M`, `1G`.
     pub memory: Option<String>,
+    /// Root disk size in human form (`4G`, `16G`); `None` = runtime default
+    /// (managed overlay, ~4 GiB — quickly exhausted by build toolchains).
+    pub root_disk: Option<String>,
     /// Working directory inside the sandbox.
     pub workdir: Option<String>,
     /// Published ports.

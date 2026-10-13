@@ -33,6 +33,9 @@ pub struct TemplateSpec {
     /// Memory limit (`512M`, `2G`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<String>,
+    /// Root disk size (`4G`, `16G`, …); None = managed overlay default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_disk: Option<String>,
     /// Working directory inside the sandbox.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
@@ -107,6 +110,11 @@ pub fn validate_spec(spec: &TemplateSpec) -> Result<(), String> {
         && crate::backend::sdk::parse_memory_mib(m).is_none()
     {
         return Err(format!("invalid memory '{m}' (use e.g. 512M, 2G)"));
+    }
+    if let Some(d) = spec.root_disk.as_deref()
+        && crate::backend::sdk::parse_memory_mib(d).is_none()
+    {
+        return Err(format!("invalid root disk '{d}' (use e.g. 4G, 16G)"));
     }
     for p in &spec.ports {
         if crate::models::PublishedPort::parse_cli(p).is_err() {
@@ -296,6 +304,7 @@ pub(crate) struct SpecInputs<'a> {
     pub name: Option<String>,
     pub cpus: Option<u32>,
     pub memory: Option<String>,
+    pub root_disk: Option<String>,
     pub workdir: Option<String>,
     pub mount_cwd: bool,
     pub cwd: &'a str,
@@ -348,6 +357,7 @@ pub(crate) fn assemble_spec(i: SpecInputs<'_>) -> anyhow::Result<crate::backend:
         name: i.name,
         cpus: i.cpus,
         memory: i.memory,
+        root_disk: i.root_disk,
         workdir,
         ports: i.ports,
         volumes,
@@ -376,6 +386,7 @@ pub fn to_create_spec(t: &Template, cwd: &str) -> anyhow::Result<crate::backend:
         name,
         cpus: t.spec.cpus,
         memory: t.spec.memory.clone(),
+        root_disk: t.spec.root_disk.clone(),
         workdir: t.spec.workdir.clone(),
         mount_cwd: t.spec.mount_cwd.unwrap_or(true),
         cwd,
@@ -443,6 +454,11 @@ pub fn preview_values(t: &Template, cwd: &str) -> Vec<PreviewRow> {
         label: "Mem",
         value: s.memory.clone().unwrap_or_else(|| "(default)".into()),
         is_default: s.memory.is_none(),
+    });
+    rows.push(PreviewRow {
+        label: "Disk",
+        value: s.root_disk.clone().unwrap_or_else(|| "(default)".into()),
+        is_default: s.root_disk.is_none(),
     });
     rows.push(PreviewRow {
         label: "Mount",
@@ -517,6 +533,7 @@ mod tests {
         assert_eq!(t.spec.name.as_deref(), Some("opencode"));
         assert_eq!(t.spec.cpus, Some(4));
         assert_eq!(t.spec.memory.as_deref(), Some("2G"));
+        assert_eq!(t.spec.root_disk.as_deref(), Some("16G"));
         assert_eq!(t.spec.mount_cwd, Some(true));
         assert_eq!(t.spec.ports, vec!["127.0.0.1:3000:3000"]);
         assert_eq!(t.spec.env, vec!["TERM=xterm-256color"]);
@@ -533,6 +550,11 @@ mod tests {
     #[test]
     fn parse_rejects_invalid_memory() {
         assert!(parse("x", include_str!("fixtures/templates/bad-memory.toml")).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_root_disk() {
+        assert!(parse("x", include_str!("fixtures/templates/bad-disk.toml")).is_err());
     }
 
     #[test]
@@ -738,6 +760,7 @@ mod tests {
         assert_eq!(spec.name.as_deref(), Some("opencode"));
         assert_eq!(spec.cpus, Some(4));
         assert_eq!(spec.memory.as_deref(), Some("2G"));
+        assert_eq!(spec.root_disk.as_deref(), Some("16G"));
         assert_eq!(spec.ports.len(), 1);
         assert_eq!(spec.ports[0].guest_port, 3000);
         // mount_cwd=true → CWD-Bind an gleicher Stelle, workdir-Default = Mount
