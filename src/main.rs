@@ -54,7 +54,7 @@ const METRICS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A Docker sbx-style TUI for microsandbox.
 #[derive(Parser, Debug)]
-#[command(name = "msb-tui", version, about)]
+#[command(name = "msb-tui", version = crate::selfupdate::CURRENT_VERSION, about)]
 struct Cli {
     /// Open the create-sandbox form directly.
     #[arg(short, long)]

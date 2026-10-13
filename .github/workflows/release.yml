@@ -7,6 +7,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The release version comes from the pushed tag (`github.ref_name` =
+  # "v0.4.0"); the crate reads `MSB_TUI_VERSION` at compile time and falls
+  # back to the manifest version (0.0.0-dev) outside release builds.
+  MSB_TUI_VERSION: ${{ github.ref_name }}
 
 jobs:
   gates:

@@ -62,5 +62,6 @@ build time without it.
 
 Pushing a `v*` tag triggers `release.yml`: gates re-run, then a 3-target
 build matrix (Linux x86_64/arm64, macOS aarch64) publishes the GitHub Release
-with `.tar.gz` + `.sha256` assets. Bump `version` in `Cargo.toml` before
-tagging.
+with `.tar.gz` + `.sha256` assets. Just tag the release commit: the workflow
+injects the tag as `MSB_TUI_VERSION`, so `Cargo.toml` stays pinned at
+`0.0.0-dev` — never bump `version` by hand.

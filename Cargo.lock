@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-tui"
-version = "0.3.1"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",

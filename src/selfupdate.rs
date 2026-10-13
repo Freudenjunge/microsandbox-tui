@@ -5,7 +5,7 @@
 //! full (non-draft, non-prerelease) releases — beta tags like `0.2.0-beta.1`
 //! are marked prerelease by the release workflow and never trigger a prompt.
 //! When the reported version is newer than the running one
-//! ([`current_version`], i.e. `CARGO_PKG_VERSION`), a [`UpdateInfo`] is
+//! ([`current_version`], i.e. [`CURRENT_VERSION`]), a [`UpdateInfo`] is
 //! handed to the UI which offers one-key update; accepting it downloads the
 //! per-platform tarball, verifies it against the sibling `.sha256` asset,
 //! and swaps the binary on disk (backup kept next to it). The running
@@ -42,9 +42,20 @@ const TARGET_TRIPLE: &str = if cfg!(all(target_arch = "x86_64", target_os = "lin
     "unknown-target"
 };
 
-/// The running binary's version, from the crate manifest at compile time.
+/// The running binary's version.
+///
+/// The release workflow injects the release tag into `MSB_TUI_VERSION`
+/// (`v0.4.0` for the tag `v0.4.0`); anything built outside a release —
+/// local trees, `cargo install --git` — falls back to the manifest version,
+/// which is pinned to `0.0.0-dev` and never bumped by hand.
+pub const CURRENT_VERSION: &str = match option_env!("MSB_TUI_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
+/// The running binary's version, parsed from [`CURRENT_VERSION`].
 pub fn current_version() -> Semver {
-    Semver::parse(env!("CARGO_PKG_VERSION")).expect("CARGO_PKG_VERSION is valid semver")
+    Semver::parse(CURRENT_VERSION.trim_start_matches('v')).expect("CURRENT_VERSION is valid semver")
 }
 
 /// Parse a release tag (`v0.2.1` / `0.2.1`) into a version; `None` when the
@@ -327,6 +338,13 @@ mod tests {
     fn version_from_tag_rejects_garbage() {
         assert_eq!(version_from_tag("chore-release"), None);
         assert_eq!(version_from_tag(""), None);
+    }
+
+    #[test]
+    fn current_version_is_valid_semver() {
+        // `current_version` unwraps at runtime: a malformed manifest version
+        // or a bad CI `MSB_TUI_VERSION` injection would panic every startup.
+        let _ = current_version();
     }
 
     #[test]
