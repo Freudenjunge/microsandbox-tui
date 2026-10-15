@@ -39,6 +39,10 @@ pub struct TemplateSpec {
     /// Working directory inside the sandbox.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
+    /// CLI shell inside the sandbox (e.g. `/bin/bash`); None = image default
+    /// (`/bin/sh`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
     /// Mount the TUI's CWD into the sandbox (default: true).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mount_cwd: Option<bool>,
@@ -100,6 +104,11 @@ impl TemplateSpec {
 pub fn validate_spec(spec: &TemplateSpec) -> Result<(), String> {
     if spec.image.trim().is_empty() {
         return Err("'image' is required".to_string());
+    }
+    if let Some(s) = &spec.shell
+        && s.trim().is_empty()
+    {
+        return Err("'shell' must not be empty (remove the key for the image default)".to_string());
     }
     if let Some(c) = spec.cpus
         && c == 0
@@ -306,6 +315,7 @@ pub(crate) struct SpecInputs<'a> {
     pub memory: Option<String>,
     pub root_disk: Option<String>,
     pub workdir: Option<String>,
+    pub shell: Option<String>,
     pub mount_cwd: bool,
     pub cwd: &'a str,
     pub ports: Vec<crate::models::PublishedPort>,
@@ -359,6 +369,10 @@ pub(crate) fn assemble_spec(i: SpecInputs<'_>) -> anyhow::Result<crate::backend:
         memory: i.memory,
         root_disk: i.root_disk,
         workdir,
+        shell: i
+            .shell
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         ports: i.ports,
         volumes,
         env: trim_filter(&i.env),
@@ -388,6 +402,7 @@ pub fn to_create_spec(t: &Template, cwd: &str) -> anyhow::Result<crate::backend:
         memory: t.spec.memory.clone(),
         root_disk: t.spec.root_disk.clone(),
         workdir: t.spec.workdir.clone(),
+        shell: t.spec.shell.clone(),
         mount_cwd: t.spec.mount_cwd.unwrap_or(true),
         cwd,
         ports,
@@ -459,6 +474,11 @@ pub fn preview_values(t: &Template, cwd: &str) -> Vec<PreviewRow> {
         label: "Disk",
         value: s.root_disk.clone().unwrap_or_else(|| "(default)".into()),
         is_default: s.root_disk.is_none(),
+    });
+    rows.push(PreviewRow {
+        label: "Shell",
+        value: s.shell.clone().unwrap_or_else(|| "(image default)".into()),
+        is_default: s.shell.is_none(),
     });
     rows.push(PreviewRow {
         label: "Mount",

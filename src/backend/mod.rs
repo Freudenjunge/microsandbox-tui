@@ -144,6 +144,11 @@ pub struct CreateSpec {
     pub root_disk: Option<String>,
     /// Working directory inside the sandbox.
     pub workdir: Option<String>,
+    /// CLI shell inside the sandbox (e.g. `/bin/bash`); `None` = SDK default
+    /// (`/bin/sh`). This is what `msb ssh` and every shell-style exec session
+    /// inside the sandbox will run (issue #4: native-feeling CLI). Not
+    /// modifiable after create in the pinned SDK 0.7.8.
+    pub shell: Option<String>,
     /// Published ports.
     pub ports: Vec<PublishedPort>,
     /// Volume mounts, in `SOURCE:DEST[:OPTIONS]` form.

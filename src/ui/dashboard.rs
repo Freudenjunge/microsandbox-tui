@@ -462,7 +462,7 @@ fn card_action_line(state: &SandboxState) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, action) in crate::actions::available_actions(state).iter().enumerate() {
         if i > 0 {
-            spans.push(Span::raw("  "));
+            spans.push(Span::raw(" "));
         }
         // Docker-sbx style: the action word with the key substring highlighted
         // inside it, e.g. E**x**ec, **S**top.

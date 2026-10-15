@@ -15,6 +15,24 @@ use crate::backend::fake::spec_from_config;
 use crate::backend::{CreateSpec, ExecOutput, LogStream, MsbBackend};
 use crate::models::{PublishedPort, SandboxState};
 
+/// Probe a running sandbox for bash; any error degrades to `false` (sh).
+/// Used by the shell-window flow to pick the window's shell command.
+pub async fn detect_bash(backend: &dyn MsbBackend, name: &str) -> bool {
+    matches!(
+        backend.exec(name, &bash_probe_cmd()).await,
+        Ok(out) if out.exit_code == 0
+    )
+}
+
+/// The exec command probing the guest for an interactive bash (issue #4).
+pub(crate) fn bash_probe_cmd() -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        "command -v bash >/dev/null 2>&1".into(),
+    ]
+}
+
 /// Outcome of [`publish_port`] / [`unpublish_port`]: whether the sandbox was
 /// recreated or the operation was a no-op.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1003,6 +1021,26 @@ mod tests {
         );
     }
 
+    // ---- detect_bash (issue #4: the shell window's probe) ----
+
+    #[tokio::test]
+    async fn detect_bash_true_via_probe_false_on_error() {
+        let b = FakeBackend::with_fixture_sandbox();
+        // The canned probe reports bash present.
+        assert!(detect_bash(&b, "tui-fixture").await);
+        // Exec errors (sandbox unknown) degrade to `false`, never panic.
+        assert!(!detect_bash(&b, "no-such-sandbox").await);
+        // Both probes went through the backend exec.
+        assert_eq!(
+            b.calls()
+                .await
+                .iter()
+                .filter(|c| matches!(c, Call::Exec { .. }))
+                .count(),
+            2
+        );
+    }
+
     // ---- live smoke test (real SDK; run explicitly) ----
 
     /// End-to-end publish flow against the REAL local SDK + runtime.
@@ -1316,5 +1354,55 @@ mod tests {
             1,
             "a failure must fail the pass"
         );
+    }
+
+    // ---- live smoke test (real SDK; run explicitly) ----
+
+    /// Probe + window command against the REAL local SDK + runtime: create a
+    /// plain alpine sandbox, `detect_bash` must say false (no bash in the
+    /// image), and the window command must carry the PATH fix (issue #4/5 —
+    /// the exec window itself needs a human; not CI-testable).
+    /// `cargo test --bin msb-tui shell_live_smoke -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "mutates a real sandbox; manual smoke only"]
+    async fn shell_live_smoke() {
+        use crate::backend::sdk::SdkBackend;
+        let backend = SdkBackend::new().expect("local SDK init");
+        let b = &backend as &dyn crate::backend::MsbBackend;
+
+        let _ = crate::actions::remove_sandbox(b, "tui-shell-smoke").await;
+        let name = crate::actions::create_sandbox(
+            b,
+            &crate::backend::CreateSpec {
+                image: "alpine".into(),
+                name: Some("tui-shell-smoke".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create");
+        assert_eq!(name, "tui-shell-smoke");
+
+        // Plain alpine: no bash → the window runs sh.
+        assert!(!detect_bash(b, &name).await, "alpine has no bash");
+
+        // …and a bash-image (the live opencode sandbox) probes true, the
+        // exact call path the TUI's `x` key uses.
+        if matches!(
+            b.status("opencode").await,
+            Ok(row) if row.status == SandboxState::Running
+        ) {
+            assert!(detect_bash(b, "opencode").await, "opencode image has bash");
+        }
+
+        // The window command form (not spawned here — see shell_window tests).
+        assert_eq!(
+            crate::shell_window::inner_command(&name, false),
+            format!("msb exec -t {name} -- sh -c 'PATH=$HOME/.local/bin:$PATH; exec sh'")
+        );
+
+        crate::actions::remove_sandbox(b, &name)
+            .await
+            .expect("cleanup");
     }
 }

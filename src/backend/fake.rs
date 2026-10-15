@@ -375,6 +375,7 @@ pub fn spec_from_config(cfg: &SandboxConfig, ports: Vec<PublishedPort>) -> Creat
         // it from the captured content; a size here would be dead weight.
         root_disk: None,
         workdir: cfg.runtime.workdir.clone().filter(|w| !w.is_empty()),
+        shell: Some(cfg.runtime.shell.clone()),
         ports,
         volumes: cfg
             .mounts
@@ -689,6 +690,11 @@ impl MsbBackend for FakeBackend {
             sbx.config.runtime.workdir = Some(wd.clone());
         }
 
+        // Apply the CLI shell (None = SDK default /bin/sh).
+        if let Some(sh) = &spec.shell {
+            sbx.config.runtime.shell = sh.clone();
+        }
+
         sbx.metrics.name = name.clone();
         g.sandboxes.insert(name.clone(), sbx);
         Ok(name)
@@ -734,11 +740,19 @@ impl MsbBackend for FakeBackend {
             name: name.to_string(),
             cmd: cmd.to_vec(),
         });
-        let sbx = g
-            .sandboxes
+        // (Sandbox existence is still enforced — no name, no exec.)
+        g.sandboxes
             .get(name)
             .ok_or_else(|| anyhow!("FakeBackend: no sandbox named {name}"))?;
-        let _ = sbx;
+        // Canned bash probe (issue #4): the fake always reports bash present
+        // (the no-bash degradation is covered via the error path in tests).
+        if *cmd == crate::actions::bash_probe_cmd() {
+            return Ok(ExecOutput {
+                stdout: "yes\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            });
+        }
         Ok(ExecOutput {
             stdout: format!("[fake exec] {cmd:?} in {name}\n"),
             stderr: String::new(),

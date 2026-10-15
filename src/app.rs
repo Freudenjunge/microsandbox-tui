@@ -272,6 +272,9 @@ pub struct App {
     pub resize_prompt: Option<ResizePrompt>,
     /// Confirmed op queued for the main loop; consumed via [`App::take_op`].
     pub queued_op: Option<Op>,
+    /// Resolved shell-window request from the guest-bash probe; consumed
+    /// via [`App::take_shell_ready`].
+    pub shell_ready: Option<(String, bool)>,
     /// Validated create spec queued by the form, consumed via
     /// [`App::take_create_spec`].
     pub queued_create: Option<crate::backend::CreateSpec>,
@@ -341,6 +344,7 @@ impl App {
             confirm: None,
             resize_prompt: None,
             queued_op: None,
+            shell_ready: None,
             queued_create: None,
             create_state: None,
             take_save_template: None,
@@ -483,6 +487,12 @@ impl App {
                 self.update = Some(update);
                 Action::Render
             }
+            AppEvent::ShellReady { name, bash } => {
+                // The guest-bash probe finished; the main loop spawns the
+                // window from `take_shell_ready()` (carries name + shell).
+                self.shell_ready = Some((name, bash));
+                Action::Render
+            }
             AppEvent::UpdateInstalled(version) => {
                 // Binary swapped on disk; the banner must not offer the
                 // same update again. Relaunch applies it.
@@ -500,6 +510,11 @@ impl App {
     /// The next confirmed operation, if any (consumes it).
     pub fn take_op(&mut self) -> Option<Op> {
         self.queued_op.take()
+    }
+
+    /// The resolved shell-window request, if any (consumes it).
+    pub fn take_shell_ready(&mut self) -> Option<(String, bool)> {
+        self.shell_ready.take()
     }
 
     /// The queued create spec from the form, if any (consumes it).

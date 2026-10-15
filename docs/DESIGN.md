@@ -129,6 +129,7 @@ none of it; panels show only real backend data.
 │                                                                       │
 │  Image:   [python___________]  (autocomplete from image list)         │
 │  Name:    [my-sandbox_______]  (auto-generated if empty)              │
+│  Shell:   [/bin/bash________]  (empty = image default /bin/sh)        │
 │  [x] Mount current dir  → /home/user/proj (space toggles)             │
 │  CPUs:    [1___]   Memory:    [512M____]                              │
 │  Workdir: [/home/user/proj___]                                        │
@@ -306,11 +307,22 @@ sidebar on the right.
 
 ### 7. Exec / SSH
 
-- **Exec**: pops a command input at the bottom, runs the command via the SDK's
-  captured exec API, shows output inline. For interactive commands, suspends
-  the TUI and runs the command in foreground (like `docker exec -it`).
-- **SSH**: suspends the TUI and runs `msb ssh <name>` in foreground for a full
-  interactive shell.
+- **Shell window** (`x`): spawns a NEW terminal window running the CLI's
+  `msb exec -t <name> -- sh -c 'PATH=$HOME/.local/bin:$PATH; exec <shell>'`
+  (the dashboard keeps running). The shell is **bash when the guest has it**
+  (probed via a fast `command -v bash` exec; errors degrade to `sh`) and the
+  PATH is fixed session-locally, so pip/pipx-installed tools
+  (`$HOME/.local/bin`, guest-resolved — issue #5) are runnable. The exec
+  bridge is used instead of `msb ssh` because its remote-command output does
+  not survive a pty, and `exec` without a command attaches the image's
+  workload (e.g. the opencode TUI), not a shell.
+- **Shell choice at create** (issue #4): the create form and templates carry
+  a `shell` field (e.g. `/bin/bash`) → the sandbox's persisted
+  `runtime.shell` — what every `msb ssh`/shell-style exec session runs.
+  With the pinned SDK 0.7.8 the field is only settable at **create time**
+  (the modify API has no shell field; the restore builder has no shell
+  setter) — bash for already-created sandboxes waits on an upstream shell
+  modify capability; the snapshot-recreate machinery is ready for it.
 
 ### 8. Snapshots view
 
@@ -448,7 +460,7 @@ struct Image {
 | `n` | template picker | open the grouped form empty (the scratch row) |
 | `d` | template picker | delete user template file (confirm; built-ins shadow-only; scratch is not a template) |
 | `Ctrl+S` | create form | save current form as template (confirm on overwrite) |
-| `x` | dashboard | exec: interactive shell (running sandboxes only) |
+| `x` | dashboard | shell window: bash-or-sh via `msb exec -t`, PATH incl. `~/.local/bin` (running only) |
 | `s` | dashboard | start/stop toggle for the selected sandbox (state-dependent) |
 | `r` | dashboard | restart sandbox (running/stalled) |
 | `Del` | dashboard | remove sandbox (confirm) |

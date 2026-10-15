@@ -307,15 +307,28 @@ async fn run(cli: Cli, backend: Arc<SdkBackend>) -> Result<()> {
         }
         // (The captured-exec path from the removed EXEC tab is gone; `e`
         // now opens the interactive shell window below.)
-        // Interactive shell (`e`): spawn a NEW terminal window with the
-        // sandbox shell — the dashboard keeps running in parallel
-        // (maintainer: parallel use, no TUI suspension).
+        // Interactive shell (`x`): probe the guest for bash (one fast exec,
+        // off-thread), then spawn the NEW window with the right shell — the
+        // dashboard keeps running in parallel.
         if app.view == View::Dashboard && app.take_shell_request() {
             let Some(sbx) = app.selected_sandbox().map(|s| s.name.clone()) else {
                 continue;
             };
-            app.set_status(match crate::shell_window::spawn_shell_window(&sbx) {
-                Ok(()) => format!("shell window opened for {sbx}"),
+            app.set_status(format!("checking shell environment for {sbx}…"));
+            let backend = backend.clone();
+            let tx = event_tx.clone();
+            tokio::spawn(async move {
+                let bash = actions::detect_bash(backend.as_ref(), &sbx).await;
+                let _ = tx.send(AppEvent::ShellReady { name: sbx, bash }).await;
+            });
+            render(&mut guard.terminal, &app)?;
+        }
+        if let Some((sbx, bash)) = app.take_shell_ready() {
+            let sh = if bash { "bash" } else { "sh" };
+            app.set_status(match crate::shell_window::spawn_shell_window(&sbx, bash) {
+                Ok(()) => {
+                    format!("shell window opened for {sbx} ({sh}, PATH includes ~/.local/bin)")
+                }
                 Err(e) => format!("shell window failed: {e}"),
             });
             render(&mut guard.terminal, &app)?;

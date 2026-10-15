@@ -502,6 +502,9 @@ pub(crate) fn apply_spec_to_builder(builder: SandboxBuilder, spec: &CreateSpec) 
     if let Some(wd) = &spec.workdir {
         builder = builder.workdir(wd);
     }
+    if let Some(sh) = &spec.shell {
+        builder = builder.shell(sh);
+    }
     for e in &spec.env {
         if let Some((k, v)) = e.split_once('=') {
             builder = builder.env(k, v);

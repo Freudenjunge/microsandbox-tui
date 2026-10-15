@@ -54,7 +54,7 @@ static DASHBOARD_KEYS: &[KeyRow] = &[
     },
     KeyRow {
         keys: "x",
-        action: "exec: interactive shell into the sandbox (new window)",
+        action: "exec: bash (or sh) shell window with ~/.local/bin on PATH",
     },
     KeyRow {
         keys: "s",

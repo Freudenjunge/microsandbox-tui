@@ -8,6 +8,7 @@ name = "opencode"
 cpus = 4
 memory = "2G"
 root_disk = "16G"
+shell = "/bin/bash"
 workdir = "/workspace"
 mount_cwd = true
 ports = ["127.0.0.1:3000:3000"]

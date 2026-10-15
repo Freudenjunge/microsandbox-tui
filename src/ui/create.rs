@@ -140,6 +140,7 @@ impl NetProfile {
 pub enum FormField {
     Image,
     Name,
+    Shell,
     Cpus,
     Memory,
     RootDisk,
@@ -155,9 +156,10 @@ pub enum FormField {
 
 impl FormField {
     /// All fields in grouped Tab order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Image,
         Self::Name,
+        Self::Shell,
         Self::Cpus,
         Self::Memory,
         Self::RootDisk,
@@ -183,7 +185,13 @@ impl FormField {
     fn is_text(&self) -> bool {
         matches!(
             self,
-            Self::Image | Self::Name | Self::Cpus | Self::Memory | Self::RootDisk | Self::Workdir
+            Self::Image
+                | Self::Name
+                | Self::Shell
+                | Self::Cpus
+                | Self::Memory
+                | Self::RootDisk
+                | Self::Workdir
         )
     }
 
@@ -192,6 +200,7 @@ impl FormField {
         match self {
             Self::Image => "Image",
             Self::Name => "Name",
+            Self::Shell => "Shell",
             Self::MountCwd => "Mount current dir",
             Self::Cpus => "CPUs",
             Self::Memory => "Memory",
@@ -243,6 +252,9 @@ pub struct CreateForm {
     pub image: String,
     /// Optional sandbox name (empty = auto-generated).
     pub name: String,
+    /// CLI shell inside the sandbox (e.g. `/bin/bash`); empty = image
+    /// default (`/bin/sh`).
+    pub shell: String,
     /// vCPU count as a text string; empty = runtime default.
     pub cpus: String,
     /// Memory limit string (e.g. `512M`); empty = runtime default.
@@ -319,6 +331,7 @@ impl CreateForm {
         Self {
             image: String::new(),
             name: String::new(),
+            shell: String::new(),
             cpus: String::new(),
             memory: String::new(),
             root_disk: String::new(),
@@ -630,6 +643,7 @@ impl CreateForm {
         match self.active_field {
             FormField::Image => &mut self.image,
             FormField::Name => &mut self.name,
+            FormField::Shell => &mut self.shell,
             FormField::Cpus => &mut self.cpus,
             FormField::Memory => &mut self.memory,
             FormField::RootDisk => &mut self.root_disk,
@@ -860,6 +874,7 @@ impl CreateForm {
         crate::template::assemble_spec(crate::template::SpecInputs {
             image,
             name,
+            shell: (!self.shell.trim().is_empty()).then(|| self.shell.trim().to_string()),
             cpus,
             memory,
             root_disk,
@@ -884,6 +899,7 @@ impl CreateForm {
         Self {
             image: s.image.clone(),
             name: s.name.clone().unwrap_or_default(),
+            shell: s.shell.clone().unwrap_or_default(),
             cpus: s.cpus.map(|c| c.to_string()).unwrap_or_default(),
             memory: s.memory.clone().unwrap_or_default(),
             root_disk: s.root_disk.clone().unwrap_or_default(),
@@ -928,6 +944,7 @@ impl CreateForm {
                 let n = self.name.trim();
                 (!n.is_empty()).then(|| n.to_string())
             },
+            shell: (!self.shell.trim().is_empty()).then(|| self.shell.trim().to_string()),
             cpus: self.cpus.trim().parse::<u32>().ok(),
             memory: (!self.memory.trim().is_empty()).then(|| self.memory.trim().to_string()),
             root_disk: (!self.root_disk.trim().is_empty())
@@ -1166,6 +1183,17 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
     if form.active_field == FormField::Name {
         lines.push(Line::from(Span::styled(
             "  (auto-generated if empty)",
+            Style::default().fg(t.muted),
+        )));
+    }
+    lines.push(text_field_line(
+        "Shell",
+        &form.shell,
+        form.active_field == FormField::Shell,
+    ));
+    if form.active_field == FormField::Shell {
+        lines.push(Line::from(Span::styled(
+            "  (empty = image default /bin/sh; e.g. /bin/bash for a native CLI)",
             Style::default().fg(t.muted),
         )));
     }
@@ -1538,12 +1566,13 @@ mod tests {
     #[test]
     fn field_order_is_grouped() {
         let form = CreateForm::new(Vec::new());
-        assert_eq!(form.field_count(), 13);
+        assert_eq!(form.field_count(), 14);
         assert_eq!(FormField::ALL[0], FormField::Image);
         assert_eq!(FormField::ALL[1], FormField::Name);
-        assert_eq!(FormField::ALL[2], FormField::Cpus);
-        assert_eq!(FormField::ALL[5], FormField::MountCwd);
-        assert_eq!(FormField::ALL[12], FormField::Labels);
+        assert_eq!(FormField::ALL[2], FormField::Shell);
+        assert_eq!(FormField::ALL[3], FormField::Cpus);
+        assert_eq!(FormField::ALL[6], FormField::MountCwd);
+        assert_eq!(FormField::ALL[13], FormField::Labels);
     }
 
     #[test]
@@ -1568,6 +1597,7 @@ mod tests {
         assert_eq!(form.cpus, "4");
         assert_eq!(form.memory, "2G");
         assert_eq!(form.root_disk, "16G");
+        assert_eq!(form.shell, "/bin/bash");
         assert!(form.mount_cwd);
         assert_eq!(form.workdir, "/workspace");
         assert_eq!(form.ports, vec!["127.0.0.1:3000:3000"]);
@@ -1587,6 +1617,7 @@ mod tests {
         let t1 = form.to_template("Opencode".into(), "d".into());
         assert_eq!(t1.spec.image, "node:22-alpine");
         assert_eq!(t1.spec.cpus, Some(4));
+        assert_eq!(t1.spec.shell.as_deref(), Some("/bin/bash"));
         assert_eq!(t1.spec.root_disk.as_deref(), Some("16G"));
         assert_eq!(t1.spec.labels_vec(), vec!["team=infra"]);
     }
@@ -1714,7 +1745,7 @@ mod tests {
     fn new_starts_grouped_on_image() {
         let form = CreateForm::new(Vec::new());
         assert_eq!(form.active_field, FormField::Image);
-        assert_eq!(form.field_count(), 13);
+        assert_eq!(form.field_count(), 14);
         assert!(form.error.is_none());
     }
 
@@ -1866,6 +1897,8 @@ mod tests {
         let mut form = CreateForm::new(Vec::new());
         form.handle_key(key(KeyCode::Tab));
         assert_eq!(form.active_field, FormField::Name);
+        form.handle_key(key(KeyCode::Tab));
+        assert_eq!(form.active_field, FormField::Shell);
         form.handle_key(key(KeyCode::Tab));
         assert_eq!(form.active_field, FormField::Cpus);
         form.handle_key(key(KeyCode::Tab));

@@ -64,6 +64,9 @@ pub enum AppEvent {
         args: Vec<String>,
         res: std::result::Result<ExecOutput, String>,
     },
+    /// A shell-window request resolved: the guest-bash probe finished and
+    /// the window can be spawned with the chosen shell.
+    ShellReady { name: String, bash: bool },
     /// A newer **stable** msb-tui release was found by the one-shot
     /// startup check (never fires for prerelease tags).
     UpdateAvailable(crate::selfupdate::UpdateInfo),
