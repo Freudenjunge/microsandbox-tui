@@ -15,8 +15,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Install libcap-ng (system link dependency of the microsandbox SDK)
-        run: sudo apt-get update && sudo apt-get install -y libcap-ng-dev
+      - name: Install libcap-ng + libdbus (system link dependencies: SDK, keyring)
+        run: sudo apt-get update && sudo apt-get install -y libcap-ng-dev libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Format
