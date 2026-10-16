@@ -663,6 +663,12 @@ impl CreateForm {
         };
     }
 
+    /// Whether the active field is the last in Tab order (its Enter
+    /// submits — the keyboard-only create path).
+    fn is_last_field(&self) -> bool {
+        self.active_field_index() + 1 >= self.field_count()
+    }
+
     // -- text field handling --
 
     /// Handle a key on a text input field. Cursor editing (insert at
@@ -680,7 +686,17 @@ impl CreateForm {
                 FormAction::Continue
             }
             KeyCode::Enter if self.active_field == FormField::Image => self.enter_on_image(),
-            KeyCode::Enter => FormAction::Submit,
+            // Enter = next field everywhere in the form's text fields — a
+            // bare Enter on a mid-form field must NOT fire a create (the
+            // create key is Ctrl+Enter, or Enter on the last field).
+            KeyCode::Enter => {
+                if self.is_last_field() {
+                    FormAction::Submit
+                } else {
+                    self.next_field();
+                    FormAction::NextField
+                }
+            }
             _ => FormAction::Continue,
         }
     }
@@ -759,7 +775,14 @@ impl CreateForm {
                 self.toggle_mount_cwd();
                 FormAction::Continue
             }
-            KeyCode::Enter => FormAction::Submit,
+            KeyCode::Enter => {
+                if self.is_last_field() {
+                    FormAction::Submit
+                } else {
+                    self.next_field();
+                    FormAction::NextField
+                }
+            }
             _ => FormAction::Continue,
         }
     }
@@ -777,7 +800,14 @@ impl CreateForm {
                 self.net_profile = self.net_profile.next();
                 FormAction::Continue
             }
-            KeyCode::Enter => FormAction::Submit,
+            KeyCode::Enter => {
+                if self.is_last_field() {
+                    FormAction::Submit
+                } else {
+                    self.next_field();
+                    FormAction::NextField
+                }
+            }
             _ => FormAction::Continue,
         }
     }
@@ -1321,7 +1351,7 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
     // -- footer --
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "[Tab] next field  [Enter] create  [Esc] cancel",
+        "[Tab] next field  [Enter] next field (last field / [Ctrl+Enter]: create)  [Esc] cancel",
         Style::default().fg(t.muted),
     )));
 
@@ -1354,12 +1384,12 @@ pub fn render_create_form(frame: &mut Frame, form: &CreateForm, area: Rect) {
         },
         crate::ui::chrome::FooterHint {
             key: "[Enter]",
-            label: "create",
-            role: crate::ui::chrome::FooterRole::Accent,
+            label: "next field",
+            role: crate::ui::chrome::FooterRole::Plain,
         },
         crate::ui::chrome::FooterHint {
             key: "[Ctrl+↵]",
-            label: "create in lists",
+            label: "create",
             role: crate::ui::chrome::FooterRole::Accent,
         },
         crate::ui::chrome::FooterHint {
@@ -1475,22 +1505,30 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
     // CPUs + Memory on one line.
     let cpus_active = form.active_field == FormField::Cpus;
     let mem_active = form.active_field == FormField::Memory;
-    lines.push(Line::from(vec![
-        field_label_span("CPUs", cpus_active),
-        Span::raw(" "),
-        text_value_caret_span(&form.cpus, form.text_cursor, cpus_active),
-        Span::raw("   "),
-        field_label_span("Memory", mem_active),
-        Span::raw(" "),
-        text_value_caret_span(&form.memory, form.text_cursor, mem_active),
-    ]));
+    let mut resource_row = vec![field_label_span("CPUs", cpus_active), Span::raw(" ")];
+    resource_row.extend(text_value_caret_span(
+        &form.cpus,
+        form.text_cursor,
+        cpus_active,
+    ));
+    resource_row.push(Span::raw("   "));
+    resource_row.push(field_label_span("Memory", mem_active));
+    resource_row.push(Span::raw(" "));
+    resource_row.extend(text_value_caret_span(
+        &form.memory,
+        form.text_cursor,
+        mem_active,
+    ));
+    lines.push(Line::from(resource_row));
     // Disk on its own line (root disk size; empty = ~4G managed default).
     let disk_active = form.active_field == FormField::RootDisk;
-    lines.push(Line::from(vec![
-        field_label_span("Disk", disk_active),
-        Span::raw(" "),
-        text_value_caret_span(&form.root_disk, form.text_cursor, disk_active),
-    ]));
+    let mut disk_row = vec![field_label_span("Disk", disk_active), Span::raw(" ")];
+    disk_row.extend(text_value_caret_span(
+        &form.root_disk,
+        form.text_cursor,
+        disk_active,
+    ));
+    lines.push(Line::from(disk_row));
 
     // -- MOUNTS --
     lines.push(Line::raw(""));
@@ -1698,11 +1736,9 @@ fn text_field_line(label: &str, value: &str, active: bool) -> Line<'static> {
 /// Build a labeled text-field line with an IN-STRING caret (used wherever
 /// the buffer is edited with cursor mechanics): `  Label:  [ab│cd]`.
 fn text_field_caret_line(label: &str, value: &str, cursor: usize, active: bool) -> Line<'static> {
-    Line::from(vec![
-        field_label_span(label, active),
-        Span::raw(" "),
-        text_value_caret_span(value, cursor, active),
-    ])
+    let mut spans = vec![field_label_span(label, active), Span::raw(" ")];
+    spans.extend(text_value_caret_span(value, cursor, active));
+    Line::from(spans)
 }
 
 /// Styled label span for a field.
@@ -1726,23 +1762,33 @@ fn text_value_span(value: &str, active: bool) -> Span<'static> {
     }
 }
 
-/// Styled value span with the edit point visible mid-string: the char at
-/// the caret renders reverse-styled; at the end an end-block sits where
-/// the append-only caret was.
-fn text_value_caret_span(value: &str, cursor: usize, active: bool) -> Span<'static> {
+/// Styled value span with the edit point visible mid-string: ONLY the
+/// caret char renders reversed; the surrounding text stays normal.
+fn text_value_caret_span(value: &str, cursor: usize, active: bool) -> Vec<Span<'static>> {
     let t = &THEME;
     if !active {
-        return Span::styled(format!("[{value}]"), Style::default().fg(t.muted));
+        return vec![Span::styled(
+            format!("[{value}]"),
+            Style::default().fg(t.muted),
+        )];
     }
     let (before, caret, after) = crate::ui::text_input::split_caret(value, cursor);
-    if let Some(c) = caret {
-        Span::styled(
-            format!("[{before}{c}{after}]"),
+    let mut spans = vec![
+        Span::styled("[", Style::default().fg(t.fg)),
+        Span::styled(before, Style::default().fg(t.fg)),
+    ];
+    match caret {
+        Some(c) => spans.push(Span::styled(
+            c.to_string(),
             Style::default().fg(t.fg).add_modifier(Modifier::REVERSED),
-        )
-    } else {
-        Span::styled(format!("[{before}█]"), Style::default().fg(t.fg))
+        )),
+        None => spans.push(Span::styled("█", Style::default().fg(t.fg))),
     }
+    if !after.is_empty() {
+        spans.push(Span::styled(after, Style::default().fg(t.fg)));
+    }
+    spans.push(Span::styled("]", Style::default().fg(t.fg)));
+    spans
 }
 
 /// Suggestion rows under a suggest field (image-picker `└` row style).
@@ -1814,14 +1860,27 @@ fn list_field_lines(
     // the caret like every text field).
     if active {
         let (before, caret, after) = crate::ui::text_input::split_caret(input, input_cursor);
-        let value = match caret {
-            Some(c) => Span::styled(
-                format!("  [{before}{c}{after}]"),
+        let mut value = vec![
+            Span::styled("  [", Style::default().fg(t.warn)),
+            Span::styled(before, Style::default().fg(t.warn)),
+        ];
+        match caret {
+            Some(c) => value.push(Span::styled(
+                c.to_string(),
                 Style::default().fg(t.warn).add_modifier(Modifier::REVERSED),
-            ),
-            None => Span::styled(format!("  [{before}█]"), Style::default().fg(t.warn)),
-        };
-        lines.push(Line::from(vec![Span::raw("    "), value]));
+            )),
+            None => value.push(Span::styled("█", Style::default().fg(t.warn))),
+        }
+        if !after.is_empty() {
+            value.push(Span::styled(after, Style::default().fg(t.warn)));
+        }
+        value.push(Span::styled("]", Style::default().fg(t.warn)));
+        lines.push(Line::from(
+            vec![Span::raw("    ")]
+                .into_iter()
+                .chain(value)
+                .collect::<Vec<_>>(),
+        ));
     }
 
     // Empty state hint.
@@ -2043,29 +2102,45 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_name_submits_the_form() {
-        // A: Enter submits (footer "[Enter] create") — it does NOT cycle
-        // through the fields like Tab (user feedback after the smoke test).
+    fn enter_on_name_advances_not_submits() {
+        // Grammar (user feedback: bare Enter mid-form fired a create and
+        // "ejected" them from the form): Enter walks the fields everywhere;
+        // the create is Ctrl+Enter — or Enter on the last field.
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::Name;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::Shell);
+    }
+
+    #[test]
+    fn enter_last_field_submits_from_every_field_kind() {
+        // The keyboard-only path stays: empty Enter on the last field of
+        // the grouped form (Labels) submits from list fields too.
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.active_field = FormField::EnvVars;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::Labels);
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
     }
 
     #[test]
-    fn enter_on_mount_toggle_submits() {
+    fn enter_on_mount_toggle_advances() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::MountCwd;
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::Workdir);
     }
 
     #[test]
-    fn enter_on_net_profile_submits() {
+    fn enter_on_net_profile_advances() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
         form.active_field = FormField::NetProfile;
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Submit);
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.active_field, FormField::Ports);
     }
 
     #[test]

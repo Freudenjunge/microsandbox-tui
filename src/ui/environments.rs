@@ -1235,30 +1235,39 @@ fn field_label_span(label: &str, active: bool) -> Span<'static> {
 }
 
 /// Styled value span for a text field with the edit point visible
-/// mid-string (caret char reverse-styled; end-block when at the end).
-fn text_value_span(value: &str, cursor: usize, active: bool) -> Span<'static> {
+/// mid-string: ONLY the caret char renders reversed.
+fn text_value_span(value: &str, cursor: usize, active: bool) -> Vec<Span<'static>> {
     let t = &THEME;
     if !active {
-        return Span::styled(format!("[{value}]"), Style::default().fg(t.muted));
+        return vec![Span::styled(
+            format!("[{value}]"),
+            Style::default().fg(t.muted),
+        )];
     }
     let (before, caret, after) = crate::ui::text_input::split_caret(value, cursor);
-    if let Some(c) = caret {
-        Span::styled(
-            format!("[{before}{c}{after}]"),
+    let mut spans = vec![
+        Span::styled("[", Style::default().fg(t.fg)),
+        Span::styled(before, Style::default().fg(t.fg)),
+    ];
+    match caret {
+        Some(c) => spans.push(Span::styled(
+            c.to_string(),
             Style::default().fg(t.fg).add_modifier(Modifier::REVERSED),
-        )
-    } else {
-        Span::styled(format!("[{before}█]"), Style::default().fg(t.fg))
+        )),
+        None => spans.push(Span::styled("█", Style::default().fg(t.fg))),
     }
+    if !after.is_empty() {
+        spans.push(Span::styled(after, Style::default().fg(t.fg)));
+    }
+    spans.push(Span::styled("]", Style::default().fg(t.fg)));
+    spans
 }
 
 /// One labeled text-field line: `  Label:  [value█]`.
 fn text_field_line(label: &str, value: &str, cursor: usize, active: bool) -> Line<'static> {
-    Line::from(vec![
-        field_label_span(label, active),
-        Span::raw(" "),
-        text_value_span(value, cursor, active),
-    ])
+    let mut spans = vec![field_label_span(label, active), Span::raw(" ")];
+    spans.extend(text_value_span(value, cursor, active));
+    Line::from(spans)
 }
 
 /// The Secret editor line: masked chars, with the empty-means-keep hint in
@@ -1268,11 +1277,8 @@ fn text_field_line(label: &str, value: &str, cursor: usize, active: bool) -> Lin
 /// buffer stay in sync because `masked` is 1:1 per char.
 fn secret_field_line(secret: &str, cursor: usize, active: bool, editing: bool) -> Line<'static> {
     let t = &THEME;
-    let mut spans = vec![
-        field_label_span("Secret", active),
-        Span::raw(" "),
-        text_value_span(&masked(secret), cursor, active),
-    ];
+    let mut spans = vec![field_label_span("Secret", active), Span::raw(" ")];
+    spans.extend(text_value_span(&masked(secret), cursor, active));
     if active {
         let hint = if editing {
             "  (empty = keep the stored secret)"
@@ -1329,14 +1335,27 @@ fn list_field_lines(
     }
     if active {
         let (before, caret, after) = crate::ui::text_input::split_caret(input, input_cursor);
-        let value = match caret {
-            Some(c) => Span::styled(
-                format!("  [{before}{c}{after}]"),
+        let mut value = vec![
+            Span::styled("  [", Style::default().fg(t.warn)),
+            Span::styled(before, Style::default().fg(t.warn)),
+        ];
+        match caret {
+            Some(c) => value.push(Span::styled(
+                c.to_string(),
                 Style::default().fg(t.warn).add_modifier(Modifier::REVERSED),
-            ),
-            None => Span::styled(format!("  [{before}█]"), Style::default().fg(t.warn)),
-        };
-        lines.push(Line::from(vec![Span::raw("    "), value]));
+            )),
+            None => value.push(Span::styled("█", Style::default().fg(t.warn))),
+        }
+        if !after.is_empty() {
+            value.push(Span::styled(after, Style::default().fg(t.warn)));
+        }
+        value.push(Span::styled("]", Style::default().fg(t.warn)));
+        lines.push(Line::from(
+            vec![Span::raw("    ")]
+                .into_iter()
+                .chain(value)
+                .collect::<Vec<_>>(),
+        ));
     }
     if items.is_empty() && !active {
         lines.push(Line::from(Span::styled(
