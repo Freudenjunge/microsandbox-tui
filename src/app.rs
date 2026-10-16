@@ -39,6 +39,8 @@ pub enum View {
     Help,
     /// Sandbox detail view.
     Inspect,
+    /// Environments & credentials manager (issues #7/#6, dashboard `E`).
+    Environments,
 }
 
 /// Detail pane tabs for the sandbox selected in the left rail (2.9 IA:
@@ -207,6 +209,28 @@ pub struct PendingOp {
     pub op: Op,
 }
 
+/// An OS-keyring operation queued by the environments & credentials
+/// manager; the main loop spawns it (keyring I/O is blocking) and reports
+/// back as [`AppEvent::KeyringResult`], which clears the view's pending
+/// marker. Consumed via [`App::take_keyring_op`].
+pub enum KeyringOp {
+    /// Store/update the secret stored under credential `name`.
+    Set { name: String, secret: String },
+    /// Delete the secret stored under credential `name`.
+    Delete { name: String },
+}
+
+impl std::fmt::Debug for KeyringOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The secret never reaches Debug (and so never logs): same rule
+        // as the keyring storage itself.
+        match self {
+            Self::Set { name, .. } => write!(f, "KeyringOp::Set({name})"),
+            Self::Delete { name } => write!(f, "KeyringOp::Delete({name})"),
+        }
+    }
+}
+
 /// One-field input prompt for growing a sandbox's root disk (`g` on the
 /// dashboard). Enter validates and queues [`Op::ResizeDisk`] for the usual
 /// confirm dialog; Esc cancels.
@@ -275,9 +299,18 @@ pub struct App {
     /// Resolved shell-window request from the guest-bash probe; consumed
     /// via [`App::take_shell_ready`].
     pub shell_ready: Option<(String, bool)>,
-    /// Validated create spec queued by the form, consumed via
-    /// [`App::take_create_spec`].
+    /// Resolved create context for the queued spec, consumed via
+    /// [`App::take_create`].
     pub queued_create: Option<crate::backend::CreateSpec>,
+    /// Form-selected credential for the queued create; the create task
+    /// resolves the keyring secret from it (issue #6, fail closed).
+    pub queued_credential: Option<String>,
+    /// Effective profile for the queued create (form select or the
+    /// template's `env_profile`) — profile-scoped credentials key on it.
+    pub queued_profile: Option<String>,
+    /// Keyring op queued by the environments manager; the main loop runs
+    /// it off-thread ([`App::take_keyring_op`]).
+    pub queued_keyring: Option<KeyringOp>,
     /// Create-flow state: template select ↔ full-screen form.
     pub create_state: Option<CreateState>,
     /// Template to write to disk (Ctrl+S), consumed by the main loop.
@@ -295,6 +328,10 @@ pub struct App {
     pub ports_state: Option<PortsState>,
     /// Active detail tab for the rail-selected sandbox.
     pub detail: DetailTab,
+    /// Environments & credentials manager (issues #7/#6); `Some` while the
+    /// view is open. Created lazily on the first `E` — the view reads both
+    /// config files, which must not run at startup.
+    pub environments: Option<crate::ui::environments::EnvironmentsView>,
     /// True while the interactive shell hand-off is running (TUI paused).
     pub shell_suspended: bool,
     /// Cached images for the create form picker (with sizes).
@@ -346,6 +383,9 @@ impl App {
             queued_op: None,
             shell_ready: None,
             queued_create: None,
+            queued_credential: None,
+            queued_profile: None,
+            queued_keyring: None,
             create_state: None,
             take_save_template: None,
             templates: Vec::new(),
@@ -354,6 +394,7 @@ impl App {
             preview_for: None,
             ports_state: None,
             detail: DetailTab::default(),
+            environments: None,
             shell_suspended: false,
             images: Vec::new(),
             ports: std::collections::HashMap::new(),
@@ -504,6 +545,20 @@ impl App {
                 self.status_age_ticks = 0;
                 Action::Render
             }
+            AppEvent::KeyringResult { ok, msg } => {
+                // Clears the environments view's pending marker; the view
+                // not existing (closed before completion) loses nothing —
+                // the result also lands on the app status line.
+                if let Some(view) = &mut self.environments {
+                    view.note_async_result(ok, &msg);
+                }
+                if ok {
+                    self.set_status(msg);
+                } else {
+                    self.set_error(msg);
+                }
+                Action::Render
+            }
         }
     }
 
@@ -517,9 +572,26 @@ impl App {
         self.shell_ready.take()
     }
 
-    /// The queued create spec from the form, if any (consumes it).
-    pub fn take_create_spec(&mut self) -> Option<crate::backend::CreateSpec> {
-        self.queued_create.take()
+    /// The queued create spec from the form or template picker, consumed
+    /// TOGETHER with the credential/profile context captured at queueing
+    /// time (issues #6/#7 — the create task's keyring injection keys on
+    /// them). One take so the three fields can never drift apart.
+    pub fn take_create(
+        &mut self,
+    ) -> Option<(crate::backend::CreateSpec, Option<String>, Option<String>)> {
+        self.queued_create.take().map(|spec| {
+            (
+                spec,
+                self.queued_credential.take(),
+                self.queued_profile.take(),
+            )
+        })
+    }
+
+    /// The queued keyring operation from the environments manager, if any
+    /// (consumes it).
+    pub fn take_keyring_op(&mut self) -> Option<KeyringOp> {
+        self.queued_keyring.take()
     }
 
     /// The template queued by the Ctrl+S dialog (no collision), consumed
@@ -553,6 +625,10 @@ impl App {
                 self.handle_dashboard_key(key)
             }
             View::Create => self.handle_create_key(key),
+            // The manager consumes its inner-tab keys (1/2/Left/Right/Tab)
+            // itself; nothing global may fire first (only the confirm /
+            // resize overlays above take precedence).
+            View::Environments => self.handle_environments_key(key),
             View::Logs | View::Help => self.handle_help_key(key),
             View::Ports | View::Inspect => self.handle_dashboard_key(key),
         }
@@ -721,6 +797,10 @@ impl App {
                 self.view = View::Help;
                 Action::Render
             }
+            // `E`: the environments & credentials manager (issues #7/#6).
+            // Uppercase — distinct from lowercase `e`, which belongs to the
+            // create flow's pre-filled form, not the dashboard.
+            KeyCode::Char('E') => self.open_environments(),
             // Uppercase U: install/update the host runtime (confirm dialog).
             KeyCode::Char('U') => {
                 self.confirm = Some(Op::InstallRuntime);
@@ -754,6 +834,11 @@ impl App {
                 }
                 crate::ui::create::FormAction::Submit => match form.to_create_spec() {
                     Ok(spec) => {
+                        // Capture the form's picks before the form is
+                        // dropped: the create task resolves credential
+                        // injection from them (issue #6).
+                        self.queued_profile = form.selected_profile().map(str::to_string);
+                        self.queued_credential = form.selected_credential().map(str::to_string);
                         let label = spec.name.clone().unwrap_or_else(|| "<auto-name>".into());
                         self.view = View::Dashboard;
                         self.busy = true;
@@ -868,6 +953,12 @@ impl App {
                             }
                         }
                         let label = spec.name.clone().unwrap_or_else(|| "<auto-name>".into());
+                        // Direct template create: the template's env
+                        // profile drives profile-scoped credential
+                        // injection; there is no form, hence no explicit
+                        // credential selection.
+                        self.queued_profile = template.spec.env_profile.clone();
+                        self.queued_credential = None;
                         self.view = View::Dashboard;
                         self.busy = true;
                         self.set_status(format!("Creating {label}…"));
@@ -1073,6 +1164,53 @@ impl App {
     fn open_create_templates(&mut self) {
         self.create_state = Some(CreateState::Select { selected: 0 });
         self.view = View::Create;
+    }
+
+    /// Open the environments & credentials manager. The view state is
+    /// created on the first entry only (it reads both config files — no
+    /// disk I/O before `E` is ever used).
+    fn open_environments(&mut self) -> Action {
+        if self.environments.is_none() {
+            self.environments = Some(crate::ui::environments::EnvironmentsView::new());
+        }
+        self.view = View::Environments;
+        Action::Render
+    }
+
+    /// Keys on the environments & credentials manager. The view consumes
+    /// its keys first and is already "live": profile saves/deletes and
+    /// credential metadata changes are fully settled by the view itself.
+    /// This only translates its actions into the event loop's queues —
+    /// the two keyring-carrying credential actions spawn work the loop
+    /// runs off-thread ([`AppEvent::KeyringResult`] reports back).
+    fn handle_environments_key(&mut self, key: KeyEvent) -> Action {
+        let Some(view) = self.environments.as_mut() else {
+            self.view = View::Dashboard;
+            return Action::Render;
+        };
+        match view.handle_key(key) {
+            crate::ui::environments::EnvAction::Done => {
+                self.environments = None;
+                self.view = View::Dashboard;
+            }
+            crate::ui::environments::EnvAction::SaveCredential(cred, Some(secret)) => {
+                // New/changed secret: store it in the OS keyring off-thread.
+                self.queued_keyring = Some(KeyringOp::Set {
+                    name: cred.name,
+                    secret,
+                });
+            }
+            crate::ui::environments::EnvAction::DeleteCredential(name) => {
+                // Metadata already persisted by the view; the keyring
+                // secret goes too (idempotent when missing).
+                self.queued_keyring = Some(KeyringOp::Delete { name });
+            }
+            // SaveProfile/DeleteProfile: fully persisted by the view.
+            // SaveCredential(_, None): metadata saved, secret unchanged —
+            // nothing further to do.
+            _ => {}
+        }
+        Action::Render
     }
 
     /// Open the logs view for the selected sandbox.
@@ -1348,6 +1486,163 @@ pub(crate) fn shell_split(line: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_string).collect()
 }
 
+/// Whether `cred` injects for a pending create (issue #6 semantics —
+/// explicit attachment ONLY): the create form selected it by name, or it
+/// is scoped to the effective profile. An empty `profiles` list is
+/// UNASSIGNED — never "all". The `sandboxes` scope does not gate
+/// injection (the sandbox has no name yet); created names are appended
+/// to the injected credentials afterwards.
+fn credential_matches(
+    cred: &crate::credentials::Credential,
+    selected: Option<&str>,
+    profile: Option<&str>,
+) -> bool {
+    selected.is_some_and(|sel| cred.name == sel)
+        || profile.is_some_and(|p| cred.profiles.iter().any(|x| x == p))
+}
+
+/// The credentials injecting for this create, in application order (the
+/// SDK applies last-wins on duplicate keys): the explicitly selected
+/// credential first — when present in the file — then credentials.toml
+/// order, deduped by name.
+fn injection_set(
+    file: &crate::credentials::CredentialsFile,
+    selected: Option<&str>,
+    profile: Option<&str>,
+) -> Vec<crate::credentials::Credential> {
+    let mut creds = file.credentials.clone();
+    if let Some(sel) = selected
+        && let Some(pos) = creds.iter().position(|c| c.name == sel)
+    {
+        let sel_cred = creds.remove(pos);
+        creds.insert(0, sel_cred);
+    }
+    let mut out: Vec<crate::credentials::Credential> = Vec::new();
+    for cred in creds {
+        if !out.iter().any(|c| c.name == cred.name) && credential_matches(&cred, selected, profile)
+        {
+            out.push(cred);
+        }
+    }
+    out
+}
+
+/// Outcome of [`create_with_credentials`].
+#[derive(Debug)]
+pub struct CreateOutcome {
+    /// The created sandbox's name.
+    pub name: String,
+    /// Names of the credentials injected into the spec's `env`.
+    pub injected: Vec<String>,
+    /// Non-fatal post-create bookkeeping error: the sandbox exists, but
+    /// recording it in a credential's `sandboxes` scope failed.
+    pub record_error: Option<String>,
+    /// The form-selected credential vanished from the file while the form
+    /// was open: nothing was injected for it, reported loudly (the missing
+    /// profile case errors out; this one still proceeds).
+    pub stale_selection: Option<String>,
+}
+
+/// The create task's pipeline (issues #6/#7): resolve credential
+/// injection strictly BEFORE the create and fail closed — a metadata
+/// (`credentials.toml`) or keyring error aborts with no sandbox, never a
+/// secretless create. Each resolved secret is appended to `spec.env`
+/// AFTER the spec's own entries (the SDK applies last-wins on duplicate
+/// keys, so credentials override profile/form values). After the create,
+/// the sandbox name is appended to every injected credential's
+/// `sandboxes` scope (persist error is non-fatal and comes back as
+/// [`CreateOutcome::record_error`]).
+pub async fn create_with_credentials(
+    backend: &dyn crate::backend::MsbBackend,
+    spec: crate::backend::CreateSpec,
+    selected: Option<&str>,
+    profile: Option<&str>,
+    file: &crate::credentials::CredentialsFile,
+) -> anyhow::Result<CreateOutcome> {
+    let set = injection_set(file, selected, profile);
+    // Loud stale-selection policy: a name the form armed but the file no
+    // longer contains must not fail the create, but must not pass silently
+    // either (the matching profile case errors out outright).
+    let stale_selection =
+        selected.and_then(|sel| (!set.iter().any(|c| c.name == sel)).then(|| sel.to_string()));
+    let mut spec = spec;
+    let mut resolved = Vec::with_capacity(set.len());
+    for cred in &set {
+        // Fail closed: an explicitly assigned credential with no keyring
+        // secret (or an unreadable metadata file) is an error, never a
+        // secretless create.
+        let secret = crate::credentials::keyring_get(&cred.name).await?;
+        resolved.push((cred.name.clone(), cred.env_key.clone(), secret));
+    }
+    let injected = apply_credentials(&mut spec, &resolved);
+    let name = crate::actions::create_sandbox(backend, &spec).await?;
+    if !injected.is_empty() {
+        // Fresh read: the file may have been edited while the create ran.
+        let record_error = record_credential_sandboxes(&injected, &name)
+            .err()
+            .map(|e| format!("{e:#}"));
+        return Ok(CreateOutcome {
+            name,
+            injected,
+            record_error,
+            stale_selection,
+        });
+    }
+    Ok(CreateOutcome {
+        name,
+        injected,
+        record_error: None,
+        stale_selection,
+    })
+}
+
+/// Append resolved credential entries to the spec's env, after the spec's
+/// own entries, in `resolved` order — the SDK applies last-wins on
+/// duplicate keys, so credentials override profile/form values. Returns
+/// the injected credential names.
+fn apply_credentials(
+    spec: &mut crate::backend::CreateSpec,
+    resolved: &[(String, String, String)],
+) -> Vec<String> {
+    let mut injected = Vec::with_capacity(resolved.len());
+    for (name, env_key, secret) in resolved {
+        spec.env
+            .push(crate::credentials::secret_env_entry(env_key, secret));
+        injected.push(name.clone());
+    }
+    injected
+}
+
+/// Append the created sandbox's name to every injected credential's
+/// `sandboxes` scope and persist the credential metadata.
+fn record_credential_sandboxes(injected: &[String], sandbox: &str) -> anyhow::Result<()> {
+    let mut file = crate::credentials::load_credentials()?;
+    if mark_sandboxes_in_file(&mut file, injected, sandbox) {
+        crate::credentials::save_credentials(&file)?;
+    }
+    Ok(())
+}
+
+/// Append `sandbox` to every credential in `injected`'s `sandboxes`
+/// scope, deduped by name. Returns whether anything changed (no change →
+/// the caller skips the persist).
+fn mark_sandboxes_in_file(
+    file: &mut crate::credentials::CredentialsFile,
+    injected: &[String],
+    sandbox: &str,
+) -> bool {
+    let mut changed = false;
+    for cred in &mut file.credentials {
+        if injected.iter().any(|name| name == &cred.name)
+            && !cred.sandboxes.iter().any(|s| s == sandbox)
+        {
+            cred.sandboxes.push(sandbox.to_string());
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1380,6 +1675,17 @@ mod tests {
                 .unwrap();
         m.name = name.into();
         m
+    }
+
+    /// A credential metadata row for the injection tests.
+    fn credential(name: &str, env_key: &str, profiles: &[&str]) -> crate::credentials::Credential {
+        crate::credentials::Credential {
+            name: name.to_string(),
+            description: "test".to_string(),
+            env_key: env_key.to_string(),
+            profiles: profiles.iter().map(|p| (*p).to_string()).collect(),
+            sandboxes: Vec::new(),
+        }
     }
 
     fn key(code: KeyCode) -> AppEvent {
@@ -1841,7 +2147,7 @@ mod tests {
 
     #[test]
     fn esc_returns_to_dashboard_from_subviews() {
-        for view in [View::Create, View::Help] {
+        for view in [View::Create, View::Help, View::Environments] {
             let mut app = App::new();
             app.update_sandboxes(vec![summary("a")]);
             app.view = view;
@@ -2574,5 +2880,395 @@ mod tests {
             .take_autostart_change()
             .expect("the wipe must be persisted");
         assert_eq!(change.names, Vec::<String>::new());
+    }
+
+    // ---- environments & credentials manager (issues #7/#6 integration) ----
+
+    #[test]
+    fn credential_matching_is_explicit_attachment_only() {
+        // Matching is (a) equal to the form-selected name OR (b) scoped to
+        // the effective profile. An empty `profiles` list is UNASSIGNED —
+        // never "all".
+        let gh = crate::credentials::Credential {
+            name: "gh".into(),
+            description: "t".into(),
+            env_key: "GITHUB_TOKEN".into(),
+            profiles: vec!["dev".into()],
+            sandboxes: Vec::new(),
+        };
+        let unscoped = crate::credentials::Credential {
+            name: "plain".into(),
+            description: "t".into(),
+            env_key: "KEY".into(),
+            profiles: Vec::new(),
+            sandboxes: Vec::new(),
+        };
+        // (a) direct selection wins regardless of (empty) profile scoping.
+        assert!(credential_matches(&unscoped, Some("plain"), Some("dev")));
+        assert!(credential_matches(&gh, Some("gh"), None));
+        // (b) profile membership.
+        assert!(credential_matches(&gh, None, Some("dev")));
+        // OR semantics: both routes are independent.
+        assert!(credential_matches(&gh, Some("other"), Some("dev")));
+        assert!(credential_matches(&gh, Some("gh"), Some("dev")));
+        // Never match: no context, empty profile list, non-member profile.
+        assert!(!credential_matches(&gh, None, None));
+        assert!(!credential_matches(&unscoped, None, Some("dev")));
+        assert!(!credential_matches(&gh, None, Some("prod")));
+    }
+
+    #[test]
+    fn injection_set_selected_first_then_file_order_deduped() {
+        // credentials.toml order, dedup by name, and the form-selected
+        // credential moved to the front (first in `env`, where the SDK's
+        // last-wins gives it no priority advantage — order documents
+        // intent and keeps repeated keys of the same credential coherent).
+        let file = crate::credentials::CredentialsFile {
+            credentials: vec![
+                crate::credentials::Credential {
+                    name: "one".into(),
+                    description: String::new(),
+                    env_key: "A".into(),
+                    profiles: vec!["dev".into()],
+                    sandboxes: Vec::new(),
+                },
+                crate::credentials::Credential {
+                    name: "two".into(),
+                    description: String::new(),
+                    env_key: "B".into(),
+                    profiles: vec!["dev".into()],
+                    sandboxes: Vec::new(),
+                },
+                crate::credentials::Credential {
+                    name: "sel".into(),
+                    description: String::new(),
+                    env_key: "C".into(),
+                    profiles: vec!["dev".into()],
+                    sandboxes: Vec::new(),
+                },
+            ],
+        };
+        // "sel" matches via BOTH routes (selected + profile) → deduped,
+        // once, at the front.
+        let set = injection_set(&file, Some("sel"), Some("dev"));
+        let names: Vec<&str> = set.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["sel", "one", "two"]);
+        // Profile only: file order.
+        let profile_names: Vec<String> = injection_set(&file, None, Some("dev"))
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(
+            profile_names,
+            vec!["one", "two", "sel"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
+        // A selected name missing from the file injects nothing by itself.
+        assert!(injection_set(&file, Some("missing"), None).is_empty());
+        assert!(injection_set(&file, None, None).is_empty());
+    }
+
+    #[test]
+    fn apply_credentials_pins_credentials_last_merge_order() {
+        // The core #6 deliverable: resolved credential entries land AFTER
+        // the spec's own (profile+form) entries in resolved order, with
+        // `injected` carrying the names.
+        let mut spec = crate::backend::CreateSpec {
+            env: vec!["PROFILE_VAR=x".into(), "FORM_VAR=y".into()],
+            ..Default::default()
+        };
+        let resolved = vec![
+            ("sel".to_string(), "SELECTED".to_string(), "s1".to_string()),
+            (
+                "prof".to_string(),
+                "PROFILE_KEY".to_string(),
+                "s2".to_string(),
+            ),
+        ];
+        let injected = apply_credentials(&mut spec, &resolved);
+        assert_eq!(
+            spec.env,
+            vec![
+                "PROFILE_VAR=x",
+                "FORM_VAR=y",
+                "SELECTED=s1",
+                "PROFILE_KEY=s2"
+            ]
+        );
+        assert_eq!(injected, vec!["sel", "prof"]);
+        // Empty resolution: no entries, no names.
+        let mut empty = crate::backend::CreateSpec {
+            env: vec!["K=v".into()],
+            ..Default::default()
+        };
+        assert!(apply_credentials(&mut empty, &[]).is_empty());
+        assert_eq!(empty.env, vec!["K=v"]);
+    }
+
+    #[tokio::test]
+    async fn create_without_a_keyring_secret_fails_closed() {
+        // CI has no Secret Service — the keyring error is the reachable
+        // fail-closed path. Resolution must abort BEFORE the backend runs:
+        // FakeBackend's call log shows no Create.
+        // "gh" would collide: if this dev machine has a REAL "gh" credential
+        // under service "msb-tui", keyring_get succeeds, the create proceeds,
+        // and the record step appends to the user's real credentials.toml.
+        // A unique name guarantees the missing-secret path on every machine.
+        use crate::backend::fake::{Call, FakeBackend};
+        let name = "msb-tui-keyring-absent-fixture";
+        let backend = FakeBackend::new();
+        let file = crate::credentials::CredentialsFile {
+            credentials: vec![credential(name, "GITHUB_TOKEN", &[])],
+        };
+        let res = create_with_credentials(
+            &backend,
+            crate::backend::CreateSpec {
+                image: "alpine".into(),
+                ..Default::default()
+            },
+            Some(name),
+            None,
+            &file,
+        )
+        .await;
+        let err = res.expect_err("missing keyring secret must abort the create");
+        assert!(
+            err.to_string().contains("keyring"),
+            "the UI-verbatim keyring error is shown: {err:#}"
+        );
+        let calls = backend.calls().await;
+        assert!(
+            !calls.iter().any(|c| matches!(c, Call::Create(_))),
+            "fail closed: no sandbox created — {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_without_injection_context_is_byte_identical() {
+        // No selected credential, no profile → no keyring reads, no env
+        // injection: the spec the backend sees is the form's spec as-is.
+        use crate::backend::fake::{Call, FakeBackend};
+        let backend = FakeBackend::new();
+        let file = crate::credentials::CredentialsFile {
+            credentials: vec![credential("gh", "GITHUB_TOKEN", &["dev"])],
+        };
+        let spec = crate::backend::CreateSpec {
+            image: "alpine".into(),
+            env: vec!["FORM=1".to_string()],
+            ..Default::default()
+        };
+        let outcome = create_with_credentials(&backend, spec.clone(), None, None, &file)
+            .await
+            .unwrap();
+        assert!(outcome.injected.is_empty() && outcome.record_error.is_none());
+        let Call::Create(sent) = &backend.calls().await[0] else {
+            panic!("expected a Create call");
+        };
+        assert_eq!(sent.env, spec.env, "byte-identical env");
+    }
+
+    #[tokio::test]
+    async fn stale_selected_credential_reports_but_does_not_block_the_create() {
+        // The form armed "gone"; the file no longer has it. Nothing is
+        // injected (and no keyring read happens), the create proceeds,
+        // and the outcome says so loudly — same policy family as the
+        // missing-profile error, without blocking an unrelated create.
+        use crate::backend::fake::FakeBackend;
+        let backend = FakeBackend::new();
+        let file = crate::credentials::CredentialsFile {
+            credentials: vec![credential("gh", "GITHUB_TOKEN", &["dev"])],
+        };
+        let outcome = create_with_credentials(
+            &backend,
+            crate::backend::CreateSpec {
+                image: "alpine".into(),
+                ..Default::default()
+            },
+            Some("gone"),
+            None,
+            &file,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.stale_selection.as_deref(), Some("gone"));
+        assert!(outcome.injected.is_empty());
+        assert!(outcome.record_error.is_none());
+        // An existing selection is never stale — `credential_matches` pins
+        // that (only the vanished name is reported).
+    }
+
+    #[test]
+    fn recording_a_sandbox_appends_deduped_and_flags_changes() {
+        let mut file = crate::credentials::CredentialsFile {
+            credentials: vec![credential("gh", "GITHUB_TOKEN", &[])],
+        };
+        assert!(mark_sandboxes_in_file(
+            &mut file,
+            &["gh".to_string()],
+            "web"
+        ));
+        assert_eq!(file.credentials[0].sandboxes, vec!["web".to_string()]);
+        // Same name again → no change (the caller skips the persist).
+        assert!(!mark_sandboxes_in_file(
+            &mut file,
+            &["gh".to_string()],
+            "web"
+        ));
+        // A credential outside the set stays untouched; an injected one
+        // is appended.
+        file.credentials.push(credential("openai", "KEY", &[]));
+        assert!(mark_sandboxes_in_file(
+            &mut file,
+            &["openai".to_string()],
+            "api"
+        ));
+        assert_eq!(
+            file.credentials[0].sandboxes,
+            vec!["web".to_string()],
+            "'gh' is not in this injection set"
+        );
+        assert_eq!(file.credentials[1].sandboxes, vec!["api".to_string()]);
+        // Multiple injections append in one pass, deduped per credential.
+        assert!(mark_sandboxes_in_file(
+            &mut file,
+            &["gh".to_string(), "openai".to_string()],
+            "api"
+        ));
+        assert_eq!(
+            file.credentials[0].sandboxes,
+            vec!["web".to_string(), "api".to_string()]
+        );
+        assert_eq!(
+            file.credentials[1].sandboxes,
+            vec!["api".to_string()],
+            "'api' was already recorded for openai — no duplicate"
+        );
+    }
+
+    #[test]
+    fn form_submit_captures_no_credential_without_a_selection() {
+        // The form's cycle lists come from the config dir; without a
+        // selection nothing is captured and the queued spec is identical
+        // to a pre-injection create (env untouched at App level — the
+        // injection happens on the create task alone).
+        let mut app = App::new();
+        app.view = View::Create;
+        app.create_state = Some(CreateState::Form(Box::new(CreateForm::new(Vec::new()))));
+        let Some(CreateState::Form(form)) = &mut app.create_state else {
+            panic!("expected form");
+        };
+        form.image = "alpine".into();
+        form.cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        assert_eq!(form.selected_credential(), None);
+
+        // Ctrl+Enter: create from anywhere (the form's escape hatch).
+        let ctrl_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(app.handle_event(AppEvent::Key(ctrl_enter)), Action::Render);
+        assert_eq!(app.view, View::Dashboard);
+        assert!(app.busy);
+        let (spec, credential, profile) = app.take_create().unwrap();
+        assert_eq!(credential, None);
+        assert_eq!(profile, None);
+        assert!(spec.env.is_empty(), "no credential selected → no injection");
+        assert!(app.take_create().is_none(), "context consumed together");
+    }
+
+    #[test]
+    fn take_create_consumes_the_credential_context_together() {
+        let mut app = App::new();
+        app.queued_create = Some(crate::backend::CreateSpec {
+            image: "alpine".into(),
+            name: Some("web".into()),
+            ..Default::default()
+        });
+        app.queued_credential = Some("gh".into());
+        app.queued_profile = Some("dev".into());
+        let (spec, credential, profile) = app.take_create().unwrap();
+        assert_eq!(spec.name.as_deref(), Some("web"));
+        assert_eq!(credential.as_deref(), Some("gh"));
+        assert_eq!(profile.as_deref(), Some("dev"));
+        assert!(app.queued_credential.is_none() && app.queued_profile.is_none());
+        assert!(app.take_create().is_none());
+    }
+
+    #[test]
+    fn template_enter_captures_the_profile_and_no_credential() {
+        // Direct template create: the credential context is the template's
+        // `env_profile`; there is never an explicit selection.
+        let mut app = app_with_templates();
+        app.view = View::Create;
+        let shell = app.templates.iter().position(|t| t.id == "shell").unwrap() + 1;
+        app.create_state = Some(CreateState::Select { selected: shell });
+        app.handle_event(key(KeyCode::Enter));
+        assert!(app.queued_create.is_some());
+        assert!(app.queued_credential.is_none());
+        assert!(
+            app.queued_profile.is_none(),
+            "the shell built-in has no env_profile"
+        );
+    }
+
+    #[test]
+    fn e_key_opens_environments_manager_and_esc_closes_it() {
+        let mut app = App::new();
+        assert_eq!(app.handle_event(key(KeyCode::Char('E'))), Action::Render);
+        assert_eq!(app.view, View::Environments);
+        assert!(
+            app.environments.is_some(),
+            "view state created on first open"
+        );
+
+        // Esc on the master list: Done → dashboard, state dropped.
+        assert_eq!(app.handle_event(key(KeyCode::Esc)), Action::Render);
+        assert_eq!(app.view, View::Dashboard);
+        assert!(app.environments.is_none());
+    }
+
+    #[test]
+    fn environments_manager_renders_offscreen_in_all_layouts() {
+        // The render dispatcher arm must hold for master-detail, stacked
+        // and list-only layouts (same offscreen smoke as the picker).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new();
+        app.environments = Some(crate::ui::environments::EnvironmentsView::new());
+        app.view = View::Environments;
+        for (w, h) in [(120u16, 34u16), (60, 24), (80, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| crate::render_view(f, &app, f.area(), None))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn keyring_result_reports_to_status_and_the_open_view() {
+        let mut app = App::new();
+        app.environments = Some(crate::ui::environments::EnvironmentsView::new());
+        app.view = View::Environments;
+        assert_eq!(
+            app.handle_event(AppEvent::KeyringResult {
+                ok: true,
+                msg: "saved".into()
+            }),
+            Action::Render
+        );
+        assert_eq!(app.status.as_deref(), Some("saved"));
+        app.handle_event(AppEvent::KeyringResult {
+            ok: false,
+            msg: "boom".into(),
+        });
+        assert_eq!(app.error.as_deref(), Some("boom"));
+        // The outcome survives the view closing before the task lands.
+        app.handle_event(key(KeyCode::Esc));
+        let mut app2 = App::new();
+        app2.handle_event(AppEvent::KeyringResult {
+            ok: true,
+            msg: "late".into(),
+        });
+        assert_eq!(app2.status.as_deref(), Some("late"));
     }
 }

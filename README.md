@@ -29,6 +29,9 @@ what the API knows.
   popular AI agent harnesses, ready to launch with `Enter`.
 - **User-defined TOML templates** — save any form as a template with `Ctrl+S`; files in
   `~/.config/microsandbox-tui/templates/` shadow built-ins by id.
+- **Environments & credentials** — named env-var profiles (`env_profile`) and
+  OS-keyring secrets, injected as env vars when a sandbox is created; managed in
+  one place with `E`.
 - **Snapshot-preserving port publishing** — publish/unpublish recreates the sandbox
   through a snapshot/restore cycle, so your data survives the change.
 - **Boot autostart** — mark any sandbox (`a` in the dashboard) and it starts at every
@@ -148,6 +151,7 @@ A typical round trip:
 | `1`/`2`/`3` | Detail tabs: overview / logs / ports |
 | `Tab` | Cycle detail tabs |
 | `c` | Create sandbox |
+| `E` | Environments & credentials manager |
 | `x` | Exec — interactive shell in a new terminal window |
 | `s` | Start/stop toggle (state-dependent) |
 | `r` | Restart |
@@ -233,7 +237,7 @@ mount_cwd = true
 ports = ["127.0.0.1:4096:4096"]
 ```
 
-All `[spec]` keys are optional except `image`. Two conventions worth knowing:
+All `[spec]` keys are optional except `image`. Three conventions worth knowing:
 
 - `mount_cwd = true` (the default) follows the sbx workspace convention: the TUI's current
   directory is bind-mounted into the sandbox at the same absolute path and becomes the
@@ -241,6 +245,50 @@ All `[spec]` keys are optional except `image`. Two conventions worth knowing:
 - `net_profile` selects the network preset: `public` (the default — internet allowed,
   private networks blocked), `private` (LAN/internal only), or `host` (host machine
   access).
+- `env_profile` names an environment profile whose env vars are injected at create
+  (see [Environments & credentials](#environments--credentials)).
+
+## Environments & credentials
+
+Press `E` in the dashboard to open the manager — two tabs, PROFILES and CREDENTIALS.
+
+**Environments** are named env-var profiles you reuse across sandboxes, stored in
+`~/.config/microsandbox-tui/environments.toml`:
+
+```toml
+[[profile]]
+name = "agent"
+description = "Shared agent env"
+env = ["RUST_LOG=debug", "CI=1"]
+```
+
+There are no built-in profiles. Templates set one with `env_profile = "agent"` in their
+`[spec]`; the create form offers the Env-Profile cycle-select (`<none>` first).
+
+**Credentials** bind a secret (API key, token) to an env-var name and inject it at create
+time. `~/.config/microsandbox-tui/credentials.toml` keeps only names and assignments:
+
+```toml
+[[credential]]
+name = "anthropic"
+description = "Claude API key"
+env_key = "ANTHROPIC_API_KEY"
+profiles = ["agent"]
+sandboxes = []
+```
+
+Secret values never touch disk — they live in your OS keyring (service `msb-tui`, one
+account per credential name). Credentials attach to a profile (every sandbox created
+with it gets the vars) or to a single sandbox via the create form's "Credentials"
+cycle-select; used sandboxes are tracked on the credential.
+
+Merge precedence at create (highest wins): profile vars → form/template vars →
+credential vars — the form overrides the profile, an assigned credential overrides
+both.
+
+**Rotation limit:** secrets are injected when a sandbox is created. Rotating a value in
+the keyring never changes already-created sandboxes — recreate the sandbox (e.g. via
+the snapshot recreate flow) to pick up the new value.
 
 ## How it works
 

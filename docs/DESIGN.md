@@ -196,6 +196,11 @@ none of it; panels show only real backend data.
   "runtime default". `Ctrl+S` saves the current form as a template
   (name + description dialog; overwriting an existing template file asks
   for confirmation).
+- **Cycle-selects at create** (issues #7/#6): the form gains an
+  "Env-Profile" select (`<none>`, then named profiles; templates can set
+  `env_profile = "name"` in their TOML) and a "Credentials" select that
+  attaches a credential directly to the created sandbox. Storage and merge
+  order live in "Environments & Credentials manager" below.
 - Named by default (persistent) — ephemeral is an advanced toggle
 - Image field: an always-visible picker lists pulled images first, then
   curated suggestions — the 19 `sbx/<name>-image` harness bases (download
@@ -341,6 +346,36 @@ sidebar on the right.
 - Restore: restore a snapshot group/member as a new sandbox
 - Remove: snapshot removal via the SDK
 
+### 9. Environments & Credentials manager
+
+`E` from the dashboard opens the manager (issues #7 + #6): a view with two
+inner tabs, PROFILES and CREDENTIALS.
+
+- **Profiles** (`src/environments.rs`;
+  `~/.config/microsandbox-tui/environments.toml`) — named env-var sets, no
+  built-ins: `[[profile]]` entries `{ name, description,
+  env = ["KEY=VALUE"] }`. The tab lists, edits, and deletes profiles and
+  adds new ones. Templates select one with `env_profile = "name"` in their
+  TOML.
+- **Credentials** (`src/credentials.rs`, dep `keyring = "3"`;
+  `~/.config/microsandbox-tui/credentials.toml`) — `[[credential]]` entries
+  `{ name, description, env_key, profiles = [...], sandboxes = [...] }`:
+  names and assignments only on disk. Secret values live only in the OS
+  keyring (service `msb-tui`, one account per credential name). The tab
+  adds and edits credentials (name, env_key, masked secret, assignments)
+  and deletes them — deletion asks for confirmation and removes the
+  keyring entry too. Credentials attach to a profile (every sandbox
+  created with that profile gets them) or directly to a sandbox via the
+  create form's "Credentials" cycle-select; after a successful create the
+  sandbox name is appended to the credential's `sandboxes` list.
+- **Merge order at create** (the SDK applies duplicate keys last-wins):
+  profile vars → form/template vars → credential vars **last** — the form
+  overrides the profile, an assigned credential overrides both.
+- **Rotation limit** (same root cause as ports/shell: the pinned 0.7.8 SDK
+  cannot mutate the env of a live VM): changing/rotating a secret never
+  updates already-created sandboxes — rotation requires recreating the
+  sandbox (e.g. the snapshot recreate flow above).
+
 ## App State & Event Loop
 
 ```
@@ -465,6 +500,7 @@ struct Image {
 | `r` | dashboard | restart sandbox (running/stalled) |
 | `Del` | dashboard | remove sandbox (confirm) |
 | `a` | dashboard | toggle boot-autostart for the sandbox (persists to `~/.config/microsandbox-tui/autostart.toml`) |
+| `E` | dashboard | environments & credentials manager (two inner tabs: PROFILES / CREDENTIALS) |
 | `U` | dashboard | install/update runtime (confirm) |
 | `v` | dashboard | update msb-tui itself when a newer stable release exists (confirm) |
 | `f` | logs | toggle follow |
@@ -549,6 +585,8 @@ microsandbox-tui/
     ├── runtime.rs           # msb version detect + install/update (banner)
     ├── selfupdate.rs        # GitHub stable-release check + in-place binary swap ([V])
     ├── autostart.rs         # boot-autostart marks (TOML) + systemd unit installer
+    ├── credentials.rs       # OS-keyring-backed credentials (names/assignments in TOML)
+    ├── environments.rs      # named env-var profiles (TOML)
     ├── models.rs            # SandboxSummary, SandboxConfig, Metrics, etc.
     ├── actions.rs           # high-level ops: create, stop, publish_port, etc.
     ├── fixtures/            # captured JSON for model-layer unit tests

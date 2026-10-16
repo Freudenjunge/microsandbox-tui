@@ -11,6 +11,7 @@
 pub mod chrome;
 pub mod create;
 pub mod dashboard;
+pub mod environments;
 pub mod help;
 pub mod logs;
 pub mod ports;

@@ -60,6 +60,11 @@ pub struct TemplateSpec {
     pub net_profile: Option<String>,
     /// Raw net rules (`allow@host`).
     pub net_rules: Vec<String>,
+    /// Environment profile (a `[[profile]]` entry in environments.toml)
+    /// applied under this template's own `env` vars; see environments.rs
+    /// for the merge order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_profile: Option<String>,
     /// Reserved for golden-image sources; no effect in v1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rootfs: Option<String>,
@@ -385,6 +390,23 @@ pub(crate) fn assemble_spec(i: SpecInputs<'_>) -> anyhow::Result<crate::backend:
 /// Build the `CreateSpec` a template stands for (rootfs is reserved and
 /// has no effect in v1). `cwd` is the workspace mount source.
 pub fn to_create_spec(t: &Template, cwd: &str) -> anyhow::Result<crate::backend::CreateSpec> {
+    // Only read environments.toml when the template references a profile,
+    // so an unreadable/broken file can never break profile-less creates.
+    let profiles = if t.spec.env_profile.is_some() {
+        crate::environments::load_profiles()?
+    } else {
+        Vec::new()
+    };
+    to_create_spec_with_profiles(t, cwd, &profiles)
+}
+
+/// [`to_create_spec`] against an explicit profile set (test seam; the
+/// public one reads the config dir).
+fn to_create_spec_with_profiles(
+    t: &Template,
+    cwd: &str,
+    profiles: &[crate::environments::Profile],
+) -> anyhow::Result<crate::backend::CreateSpec> {
     let ports = t
         .spec
         .ports
@@ -394,6 +416,17 @@ pub fn to_create_spec(t: &Template, cwd: &str) -> anyhow::Result<crate::backend:
     let name = match t.spec.name.as_deref() {
         Some(n) if !n.trim().is_empty() => Some(n.trim().to_string()),
         _ => None, // resolve_name decides on suffixes before this
+    };
+    // Env merge order (the SDK applies last-wins on duplicate keys):
+    // profile vars first, then this template's/form's vars, then
+    // credential vars appended last by the create flow — the form
+    // overrides the profile, credentials override both.
+    let env = match t.spec.env_profile.as_deref() {
+        Some(profile) => crate::environments::merge_env(
+            &crate::environments::profile_env(profiles, profile)?,
+            &t.spec.env,
+        ),
+        None => t.spec.env.clone(),
     };
     assemble_spec(SpecInputs {
         image: t.spec.image.trim(),
@@ -407,7 +440,7 @@ pub fn to_create_spec(t: &Template, cwd: &str) -> anyhow::Result<crate::backend:
         cwd,
         ports,
         volumes: t.spec.volumes.clone(),
-        env: t.spec.env.clone(),
+        env,
         labels: t.spec.labels_vec(),
         net_rules: t.spec.net_rules.clone(),
         net_profile: t.spec.net_profile.clone(),
@@ -825,5 +858,61 @@ mod tests {
         assert!(matches!(template_layout(72, 24), LayoutKind::MasterDetail));
         assert!(matches!(template_layout(72, 19), LayoutKind::ListOnly));
         assert!(matches!(template_layout(60, 10), LayoutKind::ListOnly));
+    }
+
+    fn spec_toml(extra: &str) -> String {
+        format!("[meta]\nname = \"T\"\ndescription = \"d\"\n\n[spec]\nimage = \"alpine\"\n{extra}")
+    }
+
+    #[test]
+    fn env_profile_merges_under_template_env() {
+        let t = parse("x", &spec_toml("env_profile = \"dev\"\nenv = [\"B=2\"]\n")).unwrap();
+        assert_eq!(t.spec.env_profile.as_deref(), Some("dev"));
+        let profiles = vec![crate::environments::Profile {
+            name: "dev".into(),
+            description: String::new(),
+            env: vec!["A=1".into(), "B=1".into()],
+        }];
+        let spec = to_create_spec_with_profiles(&t, "/home/me/proj", &profiles).unwrap();
+        // Profile vars first, template env appended after — SDK last-wins:
+        // the template's B=2 overrides the profile's B=1.
+        assert_eq!(spec.env, vec!["A=1", "B=1", "B=2"]);
+    }
+
+    #[test]
+    fn template_env_profile_must_exist() {
+        let t = parse("x", &spec_toml("env_profile = \"missing\"\n")).unwrap();
+        let e = to_create_spec_with_profiles(&t, "/w", &[])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown environment profile 'missing'"), "{e}");
+    }
+
+    #[test]
+    fn without_env_profile_creates_stay_independent_of_the_file() {
+        let t = parse("x", include_str!("fixtures/templates/valid-full.toml")).unwrap();
+        assert!(t.spec.env_profile.is_none());
+        // No profile referenced → environments.toml is never read, env
+        // unchanged even with an empty profile set (missing file).
+        let spec = to_create_spec(&t, "/home/me/proj").unwrap();
+        assert_eq!(spec.env, vec!["TERM=xterm-256color"]);
+    }
+
+    #[test]
+    fn env_profile_serialises_when_set_and_is_skipped_when_absent() {
+        let t = parse("x", &spec_toml("env_profile = \"dev\"\n")).unwrap();
+        let out = toml::to_string_pretty(&TemplateFile {
+            meta: t.meta.clone(),
+            spec: t.spec.clone(),
+        })
+        .unwrap();
+        assert!(out.contains("env_profile = \"dev\""), "{out}");
+        let plain = parse("x", &spec_toml("")).unwrap();
+        let out = toml::to_string_pretty(&TemplateFile {
+            meta: plain.meta.clone(),
+            spec: plain.spec.clone(),
+        })
+        .unwrap();
+        assert!(!out.contains("env_profile"), "{out}");
     }
 }

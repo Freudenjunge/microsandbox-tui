@@ -74,6 +74,9 @@ pub enum AppEvent {
     /// (the running process keeps the old inode until relaunch). Carries
     /// the installed version.
     UpdateInstalled(String),
+    /// An OS-keyring operation from the environments manager finished;
+    /// `ok = false` failed (message shown in the error position).
+    KeyringResult { ok: bool, msg: String },
 }
 
 /// What the main loop should do after handling an event.

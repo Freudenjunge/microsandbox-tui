@@ -35,6 +35,17 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "2"
+# OS keyring for credential secrets (#6): the features pin real OS stores —
+# Windows Credential Manager (`windows-native`), macOS Keychain
+# (`apple-native`), DBus Secret Service on Linux (`sync-secret-service`,
+# `crypto-rust` encrypts secrets crossing the bus); without a store feature
+# keyring would silently fall back to its mock store.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 unicode-width = "0.2"
 # Self-update: check GitHub Releases for a newer stable msb-tui, download

@@ -134,8 +134,8 @@ impl NetProfile {
 
 /// Which form field is currently active, in grouped Tab order
 /// (BASIS: Image/Name · RESSOURCEN: Cpus/Memory/Disk · MOUNTS: MountCwd/Workdir/
-/// Volumes · NETZWERK: NetProfile/Ports/NetRules · SONSTIGES: EnvVars/
-/// Labels).
+/// Volumes · NETZWERK: NetProfile/Ports/NetRules · SONSTIGES: Env-Profile/
+/// Credentials/EnvVars/Labels).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Image,
@@ -150,13 +150,15 @@ pub enum FormField {
     NetProfile,
     Ports,
     NetRules,
+    EnvProfile,
+    Credentials,
     EnvVars,
     Labels,
 }
 
 impl FormField {
     /// All fields in grouped Tab order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Image,
         Self::Name,
         Self::Shell,
@@ -169,6 +171,8 @@ impl FormField {
         Self::NetProfile,
         Self::Ports,
         Self::NetRules,
+        Self::EnvProfile,
+        Self::Credentials,
         Self::EnvVars,
         Self::Labels,
     ];
@@ -211,6 +215,8 @@ impl FormField {
             Self::Volumes => "Volumes",
             Self::EnvVars => "Env",
             Self::NetRules => "Rules",
+            Self::EnvProfile => "Env-Profile",
+            Self::Credentials => "Credentials",
             Self::Labels => "Labels",
         }
     }
@@ -282,6 +288,18 @@ pub struct CreateForm {
     pub labels: Vec<String>,
     /// Network rule strings (e.g. `allow@api.example.com`).
     pub net_rules: Vec<String>,
+    /// Environment profiles loaded once at form-open time
+    /// (`environments.toml`): names drive the cycle field, `env` feeds the
+    /// merge at submit. Empty on load failure — the form still opens.
+    env_profiles: Vec<crate::environments::Profile>,
+    /// Credential names loaded once at form-open time (`credentials.toml`);
+    /// only the selection is recorded here, secret resolution happens in
+    /// the create app wiring. Empty on load failure — the form still opens.
+    credential_names: Vec<String>,
+    /// Selected environment profile (None = `<none>`); merged at submit.
+    selected_env_profile: Option<String>,
+    /// Selected credential (None = `<none>`); recorded for the app wiring.
+    selected_credential: Option<String>,
     /// Currently active field.
     pub active_field: FormField,
     /// Validation error to display (red line).
@@ -328,6 +346,7 @@ impl CreateForm {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let (env_profiles, credential_names) = Self::load_cycle_lists();
         Self {
             image: String::new(),
             name: String::new(),
@@ -344,6 +363,10 @@ impl CreateForm {
             env_vars: Vec::new(),
             labels: Vec::new(),
             net_rules: Vec::new(),
+            env_profiles,
+            credential_names,
+            selected_env_profile: None,
+            selected_credential: None,
             active_field: FormField::Image,
             error: None,
             images,
@@ -352,6 +375,19 @@ impl CreateForm {
             list_selected: 0,
             save_dialog: None,
         }
+    }
+
+    /// The cycle-select option lists, loaded once at form-open time (not
+    /// per keystroke). A broken `environments.toml`/`credentials.toml`
+    /// leaves the matching list empty instead of blocking the form — that
+    /// cycle field just stays `<none>` (missing files load as empty too).
+    fn load_cycle_lists() -> (Vec<crate::environments::Profile>, Vec<String>) {
+        (
+            crate::environments::load_profiles().unwrap_or_default(),
+            crate::credentials::load_credentials()
+                .map(|f| f.credentials.into_iter().map(|c| c.name).collect())
+                .unwrap_or_default(),
+        )
     }
 
     /// Toggle the current-dir workspace mount and keep the workdir field
@@ -385,6 +421,19 @@ impl CreateForm {
     /// Number of fields in grouped Tab order.
     pub fn field_count(&self) -> usize {
         FormField::ALL.len()
+    }
+
+    /// The selected environment profile name (None = no profile). Read by
+    /// the app's create wiring at Submit; the form itself never resolves
+    /// credentials or secrets, only the profile env merge.
+    pub fn selected_profile(&self) -> Option<&str> {
+        self.selected_env_profile.as_deref()
+    }
+
+    /// The selected credential name (None = no credential). Read by the
+    /// app's create wiring at Submit — secrets resolve there, not here.
+    pub fn selected_credential(&self) -> Option<&str> {
+        self.selected_credential.as_deref()
     }
 
     /// Image suggestions for the picker: locally pulled images first (they
@@ -553,6 +602,10 @@ impl CreateForm {
             self.handle_list_key(key)
         } else if self.active_field == FormField::NetProfile {
             self.handle_net_profile_key(key)
+        } else if self.active_field == FormField::EnvProfile
+            || self.active_field == FormField::Credentials
+        {
+            self.handle_cycle_select_key(key)
         } else {
             self.handle_text_key(key)
         }
@@ -682,6 +735,37 @@ impl CreateForm {
             KeyCode::Enter => FormAction::Submit,
             _ => FormAction::Continue,
         }
+    }
+
+    // -- cycle selects (env profile, credentials) --
+
+    /// Handle a key on an env-profile / credential cycle select: the same
+    /// arrow-cycle + Enter-submits pattern as the net profile.
+    fn handle_cycle_select_key(&mut self, key: KeyEvent) -> FormAction {
+        match key.code {
+            KeyCode::Down | KeyCode::Right => self.cycle_field(true),
+            KeyCode::Up | KeyCode::Left => self.cycle_field(false),
+            KeyCode::Enter => FormAction::Submit,
+            _ => FormAction::Continue,
+        }
+    }
+
+    /// Cycle the active cycle-select by one slot (`<none>` first).
+    fn cycle_field(&mut self, forward: bool) -> FormAction {
+        match self.active_field {
+            FormField::EnvProfile => {
+                let names = self.env_profiles.iter().map(|p| p.name.as_str());
+                self.selected_env_profile =
+                    cycle_none_selection(names, self.selected_env_profile.as_deref(), forward);
+            }
+            FormField::Credentials => {
+                let names = self.credential_names.iter().map(String::as_str);
+                self.selected_credential =
+                    cycle_none_selection(names, self.selected_credential.as_deref(), forward);
+            }
+            _ => unreachable!("cycle_field on a non-cycle field"),
+        }
+        FormAction::Continue
     }
 
     // -- list field handling --
@@ -871,6 +955,18 @@ impl CreateForm {
         // Grouped form: the profile is always visible and always applied.
         let net_profile = Some(self.net_profile.as_str().to_string());
 
+        // A selected env profile merges under the form's env vars
+        // (profile vars first, form second — the SDK applies last-wins;
+        // same order as the template path). Without a selection the env
+        // list is passed through unchanged.
+        let env = match self.selected_env_profile.as_deref() {
+            Some(name) => crate::environments::merge_env(
+                &crate::environments::profile_env(&self.env_profiles, name)?,
+                &self.env_vars,
+            ),
+            None => self.env_vars.clone(),
+        };
+
         crate::template::assemble_spec(crate::template::SpecInputs {
             image,
             name,
@@ -883,7 +979,7 @@ impl CreateForm {
             cwd: self.cwd.trim(),
             ports,
             volumes: self.volumes.clone(),
-            env: self.env_vars.clone(),
+            env,
             labels: crate::template::trim_filter(&self.labels),
             net_rules: self.net_rules.clone(),
             net_profile,
@@ -892,10 +988,12 @@ impl CreateForm {
 
     /// Build a form pre-filled from a template (the `e`-path in the
     /// template picker). Unset template fields fall back to the same
-    /// defaults as [`Self::new`].
+    /// defaults as [`Self::new`]; the template's `env_profile` is
+    /// pre-selected in the environment cycle field.
     pub fn from_template(t: &crate::template::Template, cwd: String) -> Self {
         let s = &t.spec;
         let mount_cwd = s.mount_cwd.unwrap_or(true);
+        let (env_profiles, credential_names) = Self::load_cycle_lists();
         Self {
             image: s.image.clone(),
             name: s.name.clone().unwrap_or_default(),
@@ -925,6 +1023,10 @@ impl CreateForm {
             env_vars: s.env.clone(),
             labels: s.labels_vec(),
             net_rules: s.net_rules.clone(),
+            env_profiles,
+            credential_names,
+            selected_env_profile: s.env_profile.clone(),
+            selected_credential: None,
             active_field: FormField::Image,
             error: None,
             images: Vec::new(),
@@ -947,6 +1049,7 @@ impl CreateForm {
             shell: (!self.shell.trim().is_empty()).then(|| self.shell.trim().to_string()),
             cpus: self.cpus.trim().parse::<u32>().ok(),
             memory: (!self.memory.trim().is_empty()).then(|| self.memory.trim().to_string()),
+            env_profile: self.selected_env_profile.clone(),
             root_disk: (!self.root_disk.trim().is_empty())
                 .then(|| self.root_disk.trim().to_string()),
             workdir: (!self.workdir.trim().is_empty()).then(|| self.workdir.trim().to_string()),
@@ -993,6 +1096,30 @@ fn is_valid_memory(s: &str) -> bool {
         num.parse::<u64>().is_ok() && matches!(last.to_ascii_uppercase(), b'K' | b'M' | b'G' | b'T')
     } else {
         s.parse::<u64>().is_ok()
+    }
+}
+
+/// Cycle a `<none>`-first select through `names` (wrap-around): from
+/// `<none>` forward to [0] / backward to [len-1], from [i] to [i±1], and
+/// past either end back to `<none>`. With no names the selection stays
+/// `<none>` (the cycle field is inert).
+fn cycle_none_selection<'a>(
+    names: impl Iterator<Item = &'a str>,
+    selected: Option<&str>,
+    forward: bool,
+) -> Option<String> {
+    let names: Vec<&str> = names.collect();
+    if names.is_empty() {
+        return None;
+    }
+    let pos = selected.and_then(|s| names.iter().position(|&n| n == s));
+    match (pos, forward) {
+        (None, true) => Some(names[0].to_string()),
+        (None, false) => Some(names[names.len() - 1].to_string()),
+        (Some(i), true) if i + 1 < names.len() => Some(names[i + 1].to_string()),
+        (Some(i), false) if i > 0 => Some(names[i - 1].to_string()),
+        // Fell off either end of the name list: back to `<none>`.
+        (Some(_), _) => None,
     }
 }
 
@@ -1295,6 +1422,32 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
     // -- SONSTIGES --
     lines.push(Line::raw(""));
     lines.push(section_header("SONSTIGES"));
+    // Dynamic cycle selects (file-backed): unlike the fixed net-profile
+    // row only the current value renders — long option lists would
+    // overflow the line; ↑↓ cycles, the option list lives in the form
+    // state (loaded once at open).
+    lines.push(text_field_line(
+        "Env-Profile",
+        form.selected_env_profile.as_deref().unwrap_or("<none>"),
+        form.active_field == FormField::EnvProfile,
+    ));
+    if form.active_field == FormField::EnvProfile {
+        lines.push(Line::from(Span::styled(
+            "  (↑↓ cycles; <none> = no profile)",
+            Style::default().fg(t.muted),
+        )));
+    }
+    lines.push(text_field_line(
+        "Credentials",
+        form.selected_credential.as_deref().unwrap_or("<none>"),
+        form.active_field == FormField::Credentials,
+    ));
+    if form.active_field == FormField::Credentials {
+        lines.push(Line::from(Span::styled(
+            "  (↑↓ cycles; secrets resolve at create)",
+            Style::default().fg(t.muted),
+        )));
+    }
     lines.extend(list_field_lines(
         "Env",
         &form.env_vars,
@@ -1566,13 +1719,15 @@ mod tests {
     #[test]
     fn field_order_is_grouped() {
         let form = CreateForm::new(Vec::new());
-        assert_eq!(form.field_count(), 14);
+        assert_eq!(form.field_count(), 16);
         assert_eq!(FormField::ALL[0], FormField::Image);
         assert_eq!(FormField::ALL[1], FormField::Name);
         assert_eq!(FormField::ALL[2], FormField::Shell);
         assert_eq!(FormField::ALL[3], FormField::Cpus);
         assert_eq!(FormField::ALL[6], FormField::MountCwd);
-        assert_eq!(FormField::ALL[13], FormField::Labels);
+        assert_eq!(FormField::ALL[12], FormField::EnvProfile);
+        assert_eq!(FormField::ALL[13], FormField::Credentials);
+        assert_eq!(FormField::ALL[15], FormField::Labels);
     }
 
     #[test]
@@ -1745,7 +1900,7 @@ mod tests {
     fn new_starts_grouped_on_image() {
         let form = CreateForm::new(Vec::new());
         assert_eq!(form.active_field, FormField::Image);
-        assert_eq!(form.field_count(), 14);
+        assert_eq!(form.field_count(), 16);
         assert!(form.error.is_none());
     }
 
@@ -2146,5 +2301,153 @@ mod tests {
         form.picker_selected = 100;
         form.move_picker(0);
         assert!(form.picker_selected < form.suggestions().len());
+    }
+
+    // -- env profile / credential cycle selects (issues #7 / #6) --
+
+    fn prof(name: &str, env: &[&str]) -> crate::environments::Profile {
+        crate::environments::Profile {
+            name: name.into(),
+            description: String::new(),
+            env: env.iter().map(|e| e.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn env_profile_cycle_starts_at_none_and_wraps() {
+        let mut form = CreateForm::new(Vec::new());
+        form.env_profiles = vec![prof("dev", &["A=1"]), prof("prod", &["B=2"])];
+        assert!(form.selected_env_profile.is_none(), "starts at <none>");
+        form.active_field = FormField::EnvProfile;
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.selected_env_profile.as_deref(), Some("dev"));
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.selected_env_profile.as_deref(), Some("prod"));
+        // Past the last profile the cycle wraps back to <none>.
+        form.handle_key(key(KeyCode::Down));
+        assert!(form.selected_env_profile.is_none());
+        // Backwards from <none> lands on the last profile.
+        form.handle_key(key(KeyCode::Up));
+        assert_eq!(form.selected_env_profile.as_deref(), Some("prod"));
+        form.handle_key(key(KeyCode::Left));
+        assert_eq!(form.selected_env_profile.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn credential_cycle_starts_at_none() {
+        let mut form = CreateForm::new(Vec::new());
+        form.credential_names = vec!["gh".into(), "openai".into()];
+        form.active_field = FormField::Credentials;
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.selected_credential(), Some("gh"));
+        form.handle_key(key(KeyCode::Up));
+        assert!(form.selected_credential.is_none(), "back to <none>");
+        // <none> → last on backward.
+        form.handle_key(key(KeyCode::Up));
+        assert_eq!(form.selected_credential(), Some("openai"));
+    }
+
+    #[test]
+    fn cycle_fields_with_no_options_stay_none() {
+        // A broken/unreadable name file → empty lists; cycling must not
+        // wedge anything: the field just stays <none>.
+        let mut form = CreateForm::new(Vec::new());
+        form.env_profiles = Vec::new();
+        form.credential_names = Vec::new();
+        form.active_field = FormField::EnvProfile;
+        form.handle_key(key(KeyCode::Down));
+        assert!(form.selected_env_profile.is_none());
+        form.active_field = FormField::Credentials;
+        form.handle_key(key(KeyCode::Down));
+        assert!(form.selected_credential.is_none());
+    }
+
+    #[test]
+    fn to_create_spec_merges_profile_vars_before_form_vars() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.env_profiles = vec![prof("dev", &["A=1", "B=1"])];
+        form.env_vars = vec!["A=2".into(), "C=3".into()];
+        form.selected_env_profile = Some("dev".into());
+        let spec = form.to_create_spec().unwrap();
+        // Profile vars first, form vars appended — SDK last-wins, so the
+        // form's A=2 overrides the profile's A=1.
+        assert_eq!(
+            spec.env,
+            vec!["A=1", "B=1", "A=2", "C=3"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn without_selected_profile_env_is_unchanged() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.env_vars = vec!["A=1".into()];
+        form.env_profiles = Vec::new();
+        let spec = form.to_create_spec().unwrap();
+        assert_eq!(spec.env, vec!["A=1".to_string()]);
+    }
+
+    #[test]
+    fn unknown_selected_profile_errors_like_the_validator() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.selected_env_profile = Some("no-such-profile".into());
+        let err = form.to_create_spec().unwrap_err().to_string();
+        assert!(
+            err.contains("unknown environment profile 'no-such-profile'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn from_template_preselects_the_spec_env_profile() {
+        let t = crate::template::parse(
+            "x",
+            "[meta]\nname = \"T\"\ndescription = \"d\"\n\n[spec]\nimage = \"alpine\"\nenv_profile = \"dev\"\n",
+        )
+        .unwrap();
+        let form = CreateForm::from_template(&t, "/home/me/proj".into());
+        assert_eq!(form.selected_profile(), Some("dev"));
+        // Templates carry no credential association: starts at <none>.
+        assert!(form.selected_credential.is_none());
+    }
+
+    #[test]
+    fn save_template_roundtrips_env_profile() {
+        let mut form = CreateForm::new(Vec::new());
+        form.image = "alpine".into();
+        form.selected_env_profile = Some("dev".into());
+        let t = form.to_template("T".into(), "d".into());
+        assert_eq!(t.spec.env_profile.as_deref(), Some("dev"));
+        // …and it pre-selects again on the from-template path.
+        let form = CreateForm::from_template(&t, "/home/me/proj".into());
+        assert_eq!(form.selected_profile(), Some("dev"));
+    }
+
+    #[test]
+    fn cycle_fields_render_their_selection() {
+        let mut form = CreateForm::new(Vec::new());
+        let text = flatten(&grouped_field_lines(&form));
+        assert!(text.contains("Env-Profile"), "{text}");
+        assert!(text.contains("Credentials"), "{text}");
+        assert!(text.contains("[<none>]"), "{text}");
+        form.selected_env_profile = Some("dev".into());
+        let text = flatten(&grouped_field_lines(&form));
+        assert!(text.contains("[dev]"), "{text}");
+    }
+
+    #[test]
+    fn getters_report_the_selections() {
+        let mut form = CreateForm::new(Vec::new());
+        assert_eq!(form.selected_profile(), None);
+        assert_eq!(form.selected_credential(), None);
+        form.selected_env_profile = Some("dev".into());
+        form.selected_credential = Some("gh".into());
+        assert_eq!(form.selected_profile(), Some("dev"));
+        assert_eq!(form.selected_credential(), Some("gh"));
     }
 }

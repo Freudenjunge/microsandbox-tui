@@ -33,6 +33,8 @@ mod actions;
 mod app;
 mod autostart;
 mod backend;
+mod credentials;
+mod environments;
 mod event;
 mod models;
 mod runtime;
@@ -293,8 +295,14 @@ async fn run(cli: Cli, backend: Arc<SdkBackend>) -> Result<()> {
         if let Some(op) = app.take_op() {
             run_op(op, &backend, event_tx.clone());
         }
-        if let Some(spec) = app.take_create_spec() {
-            run_create(spec, &backend, event_tx.clone());
+        if let Some((spec, credential, profile)) = app.take_create() {
+            run_create(spec, credential, profile, &backend, event_tx.clone());
+        }
+        // Keyring ops from the environments manager (issues #7/#6): the
+        // blocking keyring work runs off-thread; the result event clears
+        // the view's pending marker.
+        if let Some(op) = app.take_keyring_op() {
+            run_keyring_op(op, event_tx.clone());
         }
         // Ctrl+S with a fresh name: write the template file off-thread.
         if let Some(t) = app.take_save_template() {
@@ -628,17 +636,68 @@ fn run_op(op: Op, backend: &Arc<SdkBackend>, tx: mpsc::Sender<AppEvent>) {
     });
 }
 
-/// Create a sandbox from a validated form spec, reporting the outcome.
+/// Create a sandbox from a validated form/template spec, reporting the
+/// outcome. The credential/profile context drives credential injection
+/// (issue #6) inside the task: metadata + keyring resolve strictly before
+/// the create (fail closed — no secret, no create) and the created
+/// sandbox is recorded in every injected credential's scope afterwards.
 fn run_create(
     spec: crate::backend::CreateSpec,
+    credential: Option<String>,
+    profile: Option<String>,
     backend: &Arc<SdkBackend>,
     tx: mpsc::Sender<AppEvent>,
 ) {
     let backend = backend.clone();
     tokio::spawn(async move {
-        match actions::create_sandbox(backend.as_ref(), &spec).await {
-            Ok(name) => {
-                let _ = tx.send(AppEvent::OpDone(format!("created {name}"))).await;
+        // credentials.toml is read only when injection could apply at all
+        // (a broken file must not block context-less creates).
+        let loaded = if credential.is_some() || profile.is_some() {
+            crate::credentials::load_credentials()
+        } else {
+            Ok(Default::default())
+        };
+        let result = match loaded {
+            Ok(file) => {
+                crate::app::create_with_credentials(
+                    backend.as_ref(),
+                    spec,
+                    credential.as_deref(),
+                    profile.as_deref(),
+                    &file,
+                )
+                .await
+            }
+            Err(e) => Err(anyhow::anyhow!("credentials: {e:#}")),
+        };
+        match result {
+            Ok(outcome) => {
+                if let Some(rec) = outcome.record_error {
+                    // Non-fatal: the sandbox exists; the metadata write
+                    // failure surfaces without undoing the create.
+                    let _ = tx
+                        .send(AppEvent::Error(format!("credentials: {rec}")))
+                        .await;
+                }
+                // A stale form selection must not pass silently; the
+                // injected names also make the create's outcome auditable.
+                if let Some(sel) = outcome.stale_selection {
+                    let _ = tx
+                        .send(AppEvent::Error(format!(
+                            "selected credential '{sel}' no longer exists — none injected"
+                        )))
+                        .await;
+                }
+                let injected = match outcome.injected.as_slice() {
+                    [] => String::new(),
+                    names => format!(" (credentials: {})", names.join(", ")),
+                };
+                let _ = tx
+                    .send(AppEvent::OpDone(format!(
+                        "created {}{injected}",
+                        outcome.name
+                    )))
+                    .await;
             }
             Err(e) => {
                 let _ = tx
@@ -646,6 +705,30 @@ fn run_create(
                     .await;
             }
         }
+    });
+}
+
+/// Run a keyring operation from the environments manager on a spawned
+/// blocking task (the UI never waits on the keyring); the result event
+/// clears the view's pending marker and shows the outcome.
+fn run_keyring_op(op: app::KeyringOp, tx: mpsc::Sender<AppEvent>) {
+    tokio::spawn(async move {
+        let res = match &op {
+            app::KeyringOp::Set { name, secret } => crate::credentials::keyring_set(name, secret)
+                .await
+                .map(|_| format!("keyring secret for '{name}' saved")),
+            app::KeyringOp::Delete { name } => crate::credentials::keyring_delete(name)
+                .await
+                .map(|_| format!("keyring secret for '{name}' deleted")),
+        };
+        let event = match res {
+            Ok(msg) => AppEvent::KeyringResult { ok: true, msg },
+            Err(e) => AppEvent::KeyringResult {
+                ok: false,
+                msg: format!("{e:#}"),
+            },
+        };
+        let _ = tx.send(event).await;
     });
 }
 
@@ -784,6 +867,11 @@ fn render_view(
                 ui::template_picker::render(frame, area, &app.templates, *selected)
             }
             None => ui::render_placeholder(frame, "Create", area),
+        },
+        View::Environments => match &app.environments {
+            Some(view) => crate::ui::environments::render(frame, area, view),
+            // Transitions only — the state is set before the view is shown.
+            None => ui::render_placeholder(frame, "Environments", area),
         },
         View::Logs | View::Ports | View::Inspect => {
             // 2.9 IA: logs/ports/inspect are detail tabs of the selected

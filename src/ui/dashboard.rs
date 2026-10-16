@@ -193,6 +193,11 @@ pub fn render(
             role: FooterRole::Accent,
         },
         FooterHint {
+            key: "[E]",
+            label: "Environments",
+            role: FooterRole::Plain,
+        },
+        FooterHint {
             key: "[Tab]",
             label: "Next tab",
             role: FooterRole::Plain,
