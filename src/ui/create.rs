@@ -2,13 +2,17 @@
 //! template picker (`e` = pre-filled, `n` = empty).
 //!
 //! UX (per the templates spec):
-//! - All fields are visible in grouped Tab order (BASIS/RESSOURCEN/MOUNTS/
-//!   NETZWERK/SONSTIGES); empty resource/list fields mean "use the runtime
+//! - All fields are visible in grouped Tab order (GENERAL/RESOURCES/MOUNTS/
+//!   NETWORK/MISC); empty resource/list fields mean "use the runtime
 //!   default".
 //! - `Ctrl+S` saves the current form as a template (name + description
 //!   dialog) — the authoring path writes the same TOML the picker reads.
 //! - The image picker is not a modal: typing filters it, `↑↓` moves the
 //!   highlight, `Enter` adopts the highlighted suggestion.
+//! - The env-profile/credential fields use the same autocomplete: type to
+//!   filter, `↑↓` pick, `Enter` adopts + moves on (never submits).
+//! - All edited buffers support insert-at-caret editing (see
+//!   `ui::text_input`) — mid-string edits and pastes work.
 
 use anyhow::{Result, anyhow, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -133,8 +137,8 @@ impl NetProfile {
 // ---------------------------------------------------------------------------
 
 /// Which form field is currently active, in grouped Tab order
-/// (BASIS: Image/Name · RESSOURCEN: Cpus/Memory/Disk · MOUNTS: MountCwd/Workdir/
-/// Volumes · NETZWERK: NetProfile/Ports/NetRules · SONSTIGES: Env-Profile/
+/// (GENERAL: Image/Name · RESOURCES: Cpus/Memory/Disk · MOUNTS: MountCwd/Workdir/
+/// Volumes · NETWORK: NetProfile/Ports/NetRules · MISC: Env-Profile/
 /// Credentials/EnvVars/Labels).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
@@ -289,17 +293,25 @@ pub struct CreateForm {
     /// Network rule strings (e.g. `allow@api.example.com`).
     pub net_rules: Vec<String>,
     /// Environment profiles loaded once at form-open time
-    /// (`environments.toml`): names drive the cycle field, `env` feeds the
-    /// merge at submit. Empty on load failure — the form still opens.
+    /// (`environments.toml`): the names drive the suggest field's
+    /// candidates, `env` feeds the merge at submit. Empty on load failure
+    /// — the form still opens.
     env_profiles: Vec<crate::environments::Profile>,
     /// Credential names loaded once at form-open time (`credentials.toml`);
-    /// only the selection is recorded here, secret resolution happens in
+    /// only the typed value is recorded here, secret resolution happens in
     /// the create app wiring. Empty on load failure — the form still opens.
     credential_names: Vec<String>,
-    /// Selected environment profile (None = `<none>`); merged at submit.
-    selected_env_profile: Option<String>,
-    /// Selected credential (None = `<none>`); recorded for the app wiring.
-    selected_credential: Option<String>,
+    /// Typed environment profile filter/value (empty = none). Typing
+    /// filters the candidate list, ↑↓ picks, Enter adopts; merged at
+    /// submit.
+    env_profile: String,
+    /// Typed credential value (empty = none); recorded for the app wiring.
+    credential: String,
+    /// Caret position (char index) inside the ACTIVE field's buffer —
+    /// text, list-input and suggest fields share one slot because only
+    /// one field is active at a time; reset to the buffer end on every
+    /// field switch.
+    text_cursor: usize,
     /// Currently active field.
     pub active_field: FormField,
     /// Validation error to display (red line).
@@ -365,8 +377,9 @@ impl CreateForm {
             net_rules: Vec::new(),
             env_profiles,
             credential_names,
-            selected_env_profile: None,
-            selected_credential: None,
+            env_profile: String::new(),
+            credential: String::new(),
+            text_cursor: 0,
             active_field: FormField::Image,
             error: None,
             images,
@@ -427,13 +440,15 @@ impl CreateForm {
     /// the app's create wiring at Submit; the form itself never resolves
     /// credentials or secrets, only the profile env merge.
     pub fn selected_profile(&self) -> Option<&str> {
-        self.selected_env_profile.as_deref()
+        let s = self.env_profile.trim();
+        (!s.is_empty()).then_some(s)
     }
 
     /// The selected credential name (None = no credential). Read by the
     /// app's create wiring at Submit — secrets resolve there, not here.
     pub fn selected_credential(&self) -> Option<&str> {
-        self.selected_credential.as_deref()
+        let s = self.credential.trim();
+        (!s.is_empty()).then_some(s)
     }
 
     /// Image suggestions for the picker: locally pulled images first (they
@@ -605,7 +620,7 @@ impl CreateForm {
         } else if self.active_field == FormField::EnvProfile
             || self.active_field == FormField::Credentials
         {
-            self.handle_cycle_select_key(key)
+            self.handle_suggest_key(key)
         } else {
             self.handle_text_key(key)
         }
@@ -633,26 +648,33 @@ impl CreateForm {
         self.list_input.clear();
         self.list_selected = 0;
         self.picker_selected = 0;
+        // Caret at the end of whatever buffer became active (list fields
+        // freshly cleared → 0).
+        self.text_cursor = match self.active_field {
+            FormField::EnvProfile => crate::ui::text_input::caret_end(&self.env_profile),
+            FormField::Credentials => crate::ui::text_input::caret_end(&self.credential),
+            _ => {
+                if self.active_field.is_list() {
+                    crate::ui::text_input::caret_end(&self.list_input)
+                } else {
+                    crate::ui::text_input::caret_end(self.active_text_buf())
+                }
+            }
+        };
     }
 
     // -- text field handling --
 
-    /// Handle a key on a text input field.
+    /// Handle a key on a text input field. Cursor editing (insert at
+    /// caret, ←/→/Home/End/Delete) comes first; the remaining keys follow
+    /// the form grammar (Enter submits, ↑↓ only on the image picker).
     fn handle_text_key(&mut self, key: KeyEvent) -> FormAction {
+        let (buf, cursor) = self.active_text_parts();
+        if crate::ui::text_input::text_edit(buf, cursor, &key) {
+            self.picker_selected = 0;
+            return FormAction::Continue;
+        }
         match key.code {
-            KeyCode::Char(c)
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                self.active_text_buf().push(c);
-                self.picker_selected = 0;
-                FormAction::Continue
-            }
-            KeyCode::Backspace => {
-                self.active_text_buf().pop();
-                self.picker_selected = 0;
-                FormAction::Continue
-            }
             KeyCode::Up | KeyCode::Down if self.active_field == FormField::Image => {
                 self.move_picker(if key.code == KeyCode::Up { -1 } else { 1 });
                 FormAction::Continue
@@ -681,14 +703,19 @@ impl CreateForm {
         }
     }
 
-    /// Move the picker highlight by `delta`, clamped to the list.
-    fn move_picker(&mut self, delta: isize) {
-        let len = self.suggestions().len();
+    /// Move the picker highlight by `delta`, clamped to `len`.
+    fn move_picker_in(&mut self, len: usize, delta: isize) {
         if len == 0 {
             return;
         }
         let selected = self.picker_selected as isize + delta;
         self.picker_selected = selected.clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Move the image picker highlight (candidates = current suggestions).
+    fn move_picker(&mut self, delta: isize) {
+        let len = self.suggestions().len();
+        self.move_picker_in(len, delta);
     }
 
     /// Mutable reference to the string buffer of the active text field.
@@ -703,6 +730,24 @@ impl CreateForm {
             FormField::Workdir => &mut self.workdir,
             _ => unreachable!("active_text_buf on non-text field"),
         }
+    }
+
+    /// The active text buffer plus its caret — one `&mut self` borrow,
+    /// disjoint direct field refs (the borrow checker allows field-level
+    /// disjointness, not two full-`self` borrows).
+    fn active_text_parts(&mut self) -> (&mut String, &mut usize) {
+        let cursor = &mut self.text_cursor;
+        let buf = match self.active_field {
+            FormField::Image => &mut self.image,
+            FormField::Name => &mut self.name,
+            FormField::Shell => &mut self.shell,
+            FormField::Cpus => &mut self.cpus,
+            FormField::Memory => &mut self.memory,
+            FormField::RootDisk => &mut self.root_disk,
+            FormField::Workdir => &mut self.workdir,
+            _ => unreachable!("active_text_parts on non-text field"),
+        };
+        (buf, cursor)
     }
 
     // -- workspace mount toggle handling --
@@ -737,66 +782,151 @@ impl CreateForm {
         }
     }
 
-    // -- cycle selects (env profile, credentials) --
+    // -- suggest fields (env profile, credentials): typed autocomplete --
 
-    /// Handle a key on an env-profile / credential cycle select: the same
-    /// arrow-cycle + Enter-submits pattern as the net profile.
-    fn handle_cycle_select_key(&mut self, key: KeyEvent) -> FormAction {
+    /// The candidate names of the active suggest field.
+    fn candidate_names(&self) -> Vec<String> {
+        match self.active_field {
+            FormField::EnvProfile => self.env_profiles.iter().map(|p| p.name.clone()).collect(),
+            FormField::Credentials => self.credential_names.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The typed value of the active suggest field.
+    fn typed(&self) -> &str {
+        match self.active_field {
+            FormField::EnvProfile => &self.env_profile,
+            FormField::Credentials => &self.credential,
+            _ => "",
+        }
+    }
+
+    /// Candidates of the active suggest field, filtered by the typed text
+    /// (image-picker rules: case-insensitive substring, window-capped).
+    fn suggest_candidates(&self) -> Vec<String> {
+        let names = self.candidate_names();
+        let filter = self.typed().trim().to_lowercase();
+        if filter.is_empty() {
+            let mut all = names;
+            all.truncate(PICKER_WINDOW_MAX);
+            return all;
+        }
+        names
+            .into_iter()
+            .filter(|n| n.to_lowercase().contains(&filter))
+            .take(PICKER_WINDOW_MAX)
+            .collect()
+    }
+
+    /// Keys on an env-profile / credential suggest field: type to filter,
+    /// ↑↓ pick, Enter adopts the highlighted candidate (or the exact typed
+    /// name) and moves on — the Image field's autocomplete pattern. Enter
+    /// never submits here so browsing the lists can't fire a create.
+    fn handle_suggest_key(&mut self, key: KeyEvent) -> FormAction {
+        let (buf, cursor) = match self.active_field {
+            FormField::EnvProfile => (&mut self.env_profile, &mut self.text_cursor),
+            FormField::Credentials => (&mut self.credential, &mut self.text_cursor),
+            _ => unreachable!("suggest key on a non-suggest field"),
+        };
+        if crate::ui::text_input::text_edit(buf, cursor, &key) {
+            self.picker_selected = 0;
+            return FormAction::Continue;
+        }
         match key.code {
-            KeyCode::Down | KeyCode::Right => self.cycle_field(true),
-            KeyCode::Up | KeyCode::Left => self.cycle_field(false),
-            KeyCode::Enter => FormAction::Submit,
+            KeyCode::Up | KeyCode::Down => {
+                let len = self.suggest_candidates().len();
+                self.move_picker_in(len, if key.code == KeyCode::Up { -1 } else { 1 });
+                FormAction::Continue
+            }
+            KeyCode::Enter => self.adopt_suggestion(),
             _ => FormAction::Continue,
         }
     }
 
-    /// Cycle the active cycle-select by one slot (`<none>` first).
-    fn cycle_field(&mut self, forward: bool) -> FormAction {
-        match self.active_field {
-            FormField::EnvProfile => {
-                let names = self.env_profiles.iter().map(|p| p.name.as_str());
-                self.selected_env_profile =
-                    cycle_none_selection(names, self.selected_env_profile.as_deref(), forward);
-            }
-            FormField::Credentials => {
-                let names = self.credential_names.iter().map(String::as_str);
-                self.selected_credential =
-                    cycle_none_selection(names, self.selected_credential.as_deref(), forward);
-            }
-            _ => unreachable!("cycle_field on a non-cycle field"),
+    /// Enter on a suggest field. Adoption rule (documented in the hint):
+    /// - typed text: exact candidate passes as-is; a partial match adopts
+    ///   the highlighted candidate; no match rejects inline.
+    /// - empty text: `<none>` and move on — UNLESS the highlight was moved
+    ///   without typing (browse mode): then the highlighted candidate is
+    ///   adopted. So clearing = Enter on the untouched field; picking
+    ///   without typing = one arrow press first.
+    fn adopt_suggestion(&mut self) -> FormAction {
+        let typed = self.typed().trim().to_string();
+        let browse_pick = typed.is_empty() && self.picker_selected > 0;
+        if typed.is_empty() && self.picker_selected == 0 {
+            self.next_field();
+            return FormAction::NextField;
         }
-        FormAction::Continue
+        let exact = self.candidate_names().contains(&typed);
+        let candidates = self.suggest_candidates();
+        if !exact && candidates.is_empty() {
+            self.error = Some(match self.active_field {
+                FormField::EnvProfile => {
+                    format!(
+                        "unknown environment profile '{typed}' — pick a suggestion or clear the field"
+                    )
+                }
+                _ => format!("unknown credential '{typed}' — pick a suggestion or clear the field"),
+            });
+            return FormAction::Continue;
+        }
+        // Adopt the highlighted candidate when the typed text is not
+        // already an exact match — in browse mode that is the picked row,
+        // in filter mode the narrowed match.
+        if !exact
+            && let Some(pick) = candidates.get(if browse_pick {
+                self.picker_selected.min(candidates.len().saturating_sub(1))
+            } else {
+                self.picker_selected
+            })
+        {
+            match self.active_field {
+                FormField::EnvProfile => self.env_profile = pick.clone(),
+                FormField::Credentials => self.credential = pick.clone(),
+                _ => unreachable!("adopt on a non-suggest field"),
+            }
+        }
+        self.next_field();
+        FormAction::NextField
     }
 
     // -- list field handling --
 
     /// Handle a key on a list-type field (ports, volumes, env, rules).
+    /// The input row edits AT THE CARET via the shared text editing; with
+    /// an empty input, Delete keeps the row-removal semantics (below).
     fn handle_list_key(&mut self, key: KeyEvent) -> FormAction {
+        // Row ops first: `+`/`-` on an empty input add/remove rows (the
+        // shared text editing would otherwise type them into the input).
+        if self.list_input.is_empty() {
+            match key.code {
+                KeyCode::Char('+') => {
+                    self.active_list_mut().push(String::new());
+                    self.list_selected = self.active_list_ref().len() - 1;
+                    return FormAction::Continue;
+                }
+                KeyCode::Char('-') => {
+                    self.remove_selected_item();
+                    return FormAction::Continue;
+                }
+                _ => {}
+            }
+        }
+        // Delete on an EMPTY input keeps its "remove the selected row"
+        // semantics — text_edit would consume it as a no-op.
+        let row_delete = self.list_input.is_empty() && key.code == KeyCode::Delete;
+        let consumed = !row_delete && {
+            let cursor = &mut self.text_cursor;
+            let input = &mut self.list_input;
+            crate::ui::text_input::text_edit(input, cursor, &key)
+        };
+        if consumed {
+            return FormAction::Continue;
+        }
         match key.code {
             KeyCode::Delete => {
                 self.remove_selected_item();
-                FormAction::Continue
-            }
-            // '+' adds an empty item when not actively typing.
-            KeyCode::Char('+') if self.list_input.is_empty() => {
-                self.active_list_mut().push(String::new());
-                self.list_selected = self.active_list_ref().len() - 1;
-                FormAction::Continue
-            }
-            // '-' removes the selected item when not actively typing.
-            KeyCode::Char('-') if self.list_input.is_empty() => {
-                self.remove_selected_item();
-                FormAction::Continue
-            }
-            KeyCode::Char(c)
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                self.list_input.push(c);
-                FormAction::Continue
-            }
-            KeyCode::Backspace => {
-                self.list_input.pop();
                 FormAction::Continue
             }
             KeyCode::Enter => {
@@ -955,17 +1085,26 @@ impl CreateForm {
         // Grouped form: the profile is always visible and always applied.
         let net_profile = Some(self.net_profile.as_str().to_string());
 
-        // A selected env profile merges under the form's env vars
-        // (profile vars first, form second — the SDK applies last-wins;
-        // same order as the template path). Without a selection the env
-        // list is passed through unchanged.
-        let env = match self.selected_env_profile.as_deref() {
+        // A typed env profile merges under the form's env vars (profile
+        // vars first, form second — the SDK applies last-wins; same order
+        // as the template path). Without a value the env list is passed
+        // through unchanged.
+        let env = match self.selected_profile() {
             Some(name) => crate::environments::merge_env(
                 &crate::environments::profile_env(&self.env_profiles, name)?,
                 &self.env_vars,
             ),
             None => self.env_vars.clone(),
         };
+
+        // Same validation as profiles: a typed credential the config file
+        // doesn't know must not silently become "inject nothing" — reject
+        // at submit with the picked name.
+        if let Some(cred) = self.selected_credential()
+            && !self.credential_names.iter().any(|n| n == cred)
+        {
+            bail!("unknown credential '{cred}' — pick one from the suggestions or clear the field");
+        }
 
         crate::template::assemble_spec(crate::template::SpecInputs {
             image,
@@ -989,7 +1128,7 @@ impl CreateForm {
     /// Build a form pre-filled from a template (the `e`-path in the
     /// template picker). Unset template fields fall back to the same
     /// defaults as [`Self::new`]; the template's `env_profile` is
-    /// pre-selected in the environment cycle field.
+    /// pre-typed in the environment suggest field.
     pub fn from_template(t: &crate::template::Template, cwd: String) -> Self {
         let s = &t.spec;
         let mount_cwd = s.mount_cwd.unwrap_or(true);
@@ -1025,8 +1164,9 @@ impl CreateForm {
             net_rules: s.net_rules.clone(),
             env_profiles,
             credential_names,
-            selected_env_profile: s.env_profile.clone(),
-            selected_credential: None,
+            env_profile: s.env_profile.clone().unwrap_or_default(),
+            credential: String::new(),
+            text_cursor: 0,
             active_field: FormField::Image,
             error: None,
             images: Vec::new(),
@@ -1049,7 +1189,8 @@ impl CreateForm {
             shell: (!self.shell.trim().is_empty()).then(|| self.shell.trim().to_string()),
             cpus: self.cpus.trim().parse::<u32>().ok(),
             memory: (!self.memory.trim().is_empty()).then(|| self.memory.trim().to_string()),
-            env_profile: self.selected_env_profile.clone(),
+            env_profile: (!self.env_profile.trim().is_empty())
+                .then(|| self.env_profile.trim().to_string()),
             root_disk: (!self.root_disk.trim().is_empty())
                 .then(|| self.root_disk.trim().to_string()),
             workdir: (!self.workdir.trim().is_empty()).then(|| self.workdir.trim().to_string()),
@@ -1294,17 +1435,19 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
     let t = &THEME;
     let mut lines = Vec::new();
 
-    // -- BASIS --
-    lines.push(section_header("BASIS"));
-    lines.push(text_field_line(
+    // -- GENERAL --
+    lines.push(section_header("GENERAL"));
+    lines.push(text_field_caret_line(
         "Image",
         &form.image,
+        form.text_cursor,
         form.active_field == FormField::Image,
     ));
     lines.extend(picker_lines(form));
-    lines.push(text_field_line(
+    lines.push(text_field_caret_line(
         "Name",
         &form.name,
+        form.text_cursor,
         form.active_field == FormField::Name,
     ));
     if form.active_field == FormField::Name {
@@ -1313,9 +1456,10 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
             Style::default().fg(t.muted),
         )));
     }
-    lines.push(text_field_line(
+    lines.push(text_field_caret_line(
         "Shell",
         &form.shell,
+        form.text_cursor,
         form.active_field == FormField::Shell,
     ));
     if form.active_field == FormField::Shell {
@@ -1325,24 +1469,27 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         )));
     }
 
-    // -- RESSOURCEN --
+    // -- RESOURCES --
     lines.push(Line::raw(""));
-    lines.push(section_header("RESSOURCEN"));
+    lines.push(section_header("RESOURCES"));
     // CPUs + Memory on one line.
+    let cpus_active = form.active_field == FormField::Cpus;
+    let mem_active = form.active_field == FormField::Memory;
     lines.push(Line::from(vec![
-        field_label_span("CPUs", form.active_field == FormField::Cpus),
+        field_label_span("CPUs", cpus_active),
         Span::raw(" "),
-        text_value_span(&form.cpus, form.active_field == FormField::Cpus),
+        text_value_caret_span(&form.cpus, form.text_cursor, cpus_active),
         Span::raw("   "),
-        field_label_span("Memory", form.active_field == FormField::Memory),
+        field_label_span("Memory", mem_active),
         Span::raw(" "),
-        text_value_span(&form.memory, form.active_field == FormField::Memory),
+        text_value_caret_span(&form.memory, form.text_cursor, mem_active),
     ]));
     // Disk on its own line (root disk size; empty = ~4G managed default).
+    let disk_active = form.active_field == FormField::RootDisk;
     lines.push(Line::from(vec![
-        field_label_span("Disk", form.active_field == FormField::RootDisk),
+        field_label_span("Disk", disk_active),
         Span::raw(" "),
-        text_value_span(&form.root_disk, form.active_field == FormField::RootDisk),
+        text_value_caret_span(&form.root_disk, form.text_cursor, disk_active),
     ]));
 
     // -- MOUNTS --
@@ -1373,22 +1520,24 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
             Style::default().fg(t.muted),
         ),
     ]));
-    lines.push(text_field_line(
+    lines.push(text_field_caret_line(
         "Workdir",
         &form.workdir,
+        form.text_cursor,
         form.active_field == FormField::Workdir,
     ));
     lines.extend(list_field_lines(
         "Volumes",
         &form.volumes,
         &form.list_input,
+        form.text_cursor,
         form.active_field == FormField::Volumes,
         form.list_selected,
     ));
 
-    // -- NETZWERK --
+    // -- NETWORK --
     lines.push(Line::raw(""));
-    lines.push(section_header("NETZWERK"));
+    lines.push(section_header("NETWORK"));
     let profile_active = form.active_field == FormField::NetProfile;
     let mut profile_spans = vec![Span::raw("  Profile: ")];
     for p in NetProfile::ALL {
@@ -1408,6 +1557,7 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         "Ports",
         &form.ports,
         &form.list_input,
+        form.text_cursor,
         form.active_field == FormField::Ports,
         form.list_selected,
     ));
@@ -1415,43 +1565,65 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         "Rules",
         &form.net_rules,
         &form.list_input,
+        form.text_cursor,
         form.active_field == FormField::NetRules,
         form.list_selected,
     ));
 
-    // -- SONSTIGES --
+    // -- MISC --
     lines.push(Line::raw(""));
-    lines.push(section_header("SONSTIGES"));
-    // Dynamic cycle selects (file-backed): unlike the fixed net-profile
-    // row only the current value renders — long option lists would
-    // overflow the line; ↑↓ cycles, the option list lives in the form
-    // state (loaded once at open).
-    lines.push(text_field_line(
+    lines.push(section_header("MISC"));
+    // Suggest fields (file-backed): typing filters the candidate list, ↑↓
+    // picks, Enter adopts and moves on; the suggestion rows render below
+    // the field while it is active. Candidates live in the form state
+    // (loaded once at open).
+    let profile_active = form.active_field == FormField::EnvProfile;
+    lines.push(text_field_caret_line(
         "Env-Profile",
-        form.selected_env_profile.as_deref().unwrap_or("<none>"),
-        form.active_field == FormField::EnvProfile,
+        if !profile_active && form.env_profile.is_empty() {
+            "<none>"
+        } else {
+            &form.env_profile
+        },
+        form.text_cursor,
+        profile_active,
     ));
-    if form.active_field == FormField::EnvProfile {
+    if profile_active {
         lines.push(Line::from(Span::styled(
-            "  (↑↓ cycles; <none> = no profile)",
+            "  (type to filter; ↑↓ pick; Enter adopts — empty = no profile)",
             Style::default().fg(t.muted),
         )));
+        lines.extend(suggestion_rows(
+            &form.suggest_candidates(),
+            form.picker_selected,
+        ));
     }
-    lines.push(text_field_line(
+    let cred_active = form.active_field == FormField::Credentials;
+    lines.push(text_field_caret_line(
         "Credentials",
-        form.selected_credential.as_deref().unwrap_or("<none>"),
-        form.active_field == FormField::Credentials,
+        if !cred_active && form.credential.is_empty() {
+            "<none>"
+        } else {
+            &form.credential
+        },
+        form.text_cursor,
+        cred_active,
     ));
-    if form.active_field == FormField::Credentials {
+    if cred_active {
         lines.push(Line::from(Span::styled(
-            "  (↑↓ cycles; secrets resolve at create)",
+            "  (type to filter; ↑↓ pick; Enter adopts — empty = none)",
             Style::default().fg(t.muted),
         )));
+        lines.extend(suggestion_rows(
+            &form.suggest_candidates(),
+            form.picker_selected,
+        ));
     }
     lines.extend(list_field_lines(
         "Env",
         &form.env_vars,
         &form.list_input,
+        form.text_cursor,
         form.active_field == FormField::EnvVars,
         form.list_selected,
     ));
@@ -1459,6 +1631,7 @@ fn grouped_field_lines(form: &CreateForm) -> Vec<Line<'static>> {
         "Labels",
         &form.labels,
         &form.list_input,
+        form.text_cursor,
         form.active_field == FormField::Labels,
         form.list_selected,
     ));
@@ -1489,7 +1662,7 @@ fn render_save_dialog(frame: &mut Frame, parent: Rect, form: &CreateForm) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            " Als Template speichern ",
+            " Save as template ",
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ))
         .border_style(Style::default().fg(t.accent))
@@ -1500,13 +1673,13 @@ fn render_save_dialog(frame: &mut Frame, parent: Rect, form: &CreateForm) {
     let lines = vec![
         text_field_line("Name", &dialog.name, dialog.field == SaveField::Name),
         text_field_line(
-            "Beschr.",
+            "Descr.",
             &dialog.description,
             dialog.field == SaveField::Description,
         ),
         Line::raw(""),
         Line::from(Span::styled(
-            "[Tab] Feld  [Enter] speichern  [Esc] abbrechen",
+            "[Tab] field  [Enter] save  [Esc] cancel",
             Style::default().fg(t.muted),
         )),
     ];
@@ -1519,6 +1692,16 @@ fn text_field_line(label: &str, value: &str, active: bool) -> Line<'static> {
         field_label_span(label, active),
         Span::raw(" "),
         text_value_span(value, active),
+    ])
+}
+
+/// Build a labeled text-field line with an IN-STRING caret (used wherever
+/// the buffer is edited with cursor mechanics): `  Label:  [ab│cd]`.
+fn text_field_caret_line(label: &str, value: &str, cursor: usize, active: bool) -> Line<'static> {
+    Line::from(vec![
+        field_label_span(label, active),
+        Span::raw(" "),
+        text_value_caret_span(value, cursor, active),
     ])
 }
 
@@ -1543,6 +1726,43 @@ fn text_value_span(value: &str, active: bool) -> Span<'static> {
     }
 }
 
+/// Styled value span with the edit point visible mid-string: the char at
+/// the caret renders reverse-styled; at the end an end-block sits where
+/// the append-only caret was.
+fn text_value_caret_span(value: &str, cursor: usize, active: bool) -> Span<'static> {
+    let t = &THEME;
+    if !active {
+        return Span::styled(format!("[{value}]"), Style::default().fg(t.muted));
+    }
+    let (before, caret, after) = crate::ui::text_input::split_caret(value, cursor);
+    if let Some(c) = caret {
+        Span::styled(
+            format!("[{before}{c}{after}]"),
+            Style::default().fg(t.fg).add_modifier(Modifier::REVERSED),
+        )
+    } else {
+        Span::styled(format!("[{before}█]"), Style::default().fg(t.fg))
+    }
+}
+
+/// Suggestion rows under a suggest field (image-picker `└` row style).
+fn suggestion_rows(items: &[String], selected: usize) -> Vec<Line<'static>> {
+    let t = &THEME;
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_sel = i == selected;
+            let style = if is_sel {
+                Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.muted)
+            };
+            Line::from(vec![Span::raw("  └ "), Span::styled(item.clone(), style)])
+        })
+        .collect()
+}
+
 /// Section header line (e.g. `── Network ──`).
 fn section_header(title: &str) -> Line<'static> {
     let t = &THEME;
@@ -1557,6 +1777,7 @@ fn list_field_lines(
     label: &str,
     items: &[String],
     input: &str,
+    input_cursor: usize,
     active: bool,
     selected: usize,
 ) -> Vec<Line<'static>> {
@@ -1589,12 +1810,18 @@ fn list_field_lines(
         ]));
     }
 
-    // Input line (only when active).
+    // Input line (only when active): in-string caret (list inputs edit at
+    // the caret like every text field).
     if active {
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(format!("  [{input}█]"), Style::default().fg(t.warn)),
-        ]));
+        let (before, caret, after) = crate::ui::text_input::split_caret(input, input_cursor);
+        let value = match caret {
+            Some(c) => Span::styled(
+                format!("  [{before}{c}{after}]"),
+                Style::default().fg(t.warn).add_modifier(Modifier::REVERSED),
+            ),
+            None => Span::styled(format!("  [{before}█]"), Style::default().fg(t.warn)),
+        };
+        lines.push(Line::from(vec![Span::raw("    "), value]));
     }
 
     // Empty state hint.
@@ -1887,7 +2114,7 @@ mod tests {
 
     #[test]
     fn enter_on_image_adopts_and_moves_to_name() {
-        // Ausnahme vom Submit: der Picker übernimmt die Auswahl.
+        // Submit exception: the picker adopts the selection.
         let mut form = CreateForm::new(Vec::new());
         assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
         assert_eq!(form.active_field, FormField::Name);
@@ -2314,52 +2541,131 @@ mod tests {
     }
 
     #[test]
-    fn env_profile_cycle_starts_at_none_and_wraps() {
+    fn env_profile_suggest_typing_filters_and_enter_adopts() {
         let mut form = CreateForm::new(Vec::new());
         form.env_profiles = vec![prof("dev", &["A=1"]), prof("prod", &["B=2"])];
-        assert!(form.selected_env_profile.is_none(), "starts at <none>");
         form.active_field = FormField::EnvProfile;
-        form.handle_key(key(KeyCode::Down));
-        assert_eq!(form.selected_env_profile.as_deref(), Some("dev"));
-        form.handle_key(key(KeyCode::Down));
-        assert_eq!(form.selected_env_profile.as_deref(), Some("prod"));
-        // Past the last profile the cycle wraps back to <none>.
-        form.handle_key(key(KeyCode::Down));
-        assert!(form.selected_env_profile.is_none());
-        // Backwards from <none> lands on the last profile.
-        form.handle_key(key(KeyCode::Up));
-        assert_eq!(form.selected_env_profile.as_deref(), Some("prod"));
-        form.handle_key(key(KeyCode::Left));
-        assert_eq!(form.selected_env_profile.as_deref(), Some("dev"));
+        // Typing filters the candidates…
+        for c in "pr".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        // …and Enter adopts the (sole) match, then moves on — it never
+        // submits a create from inside a list browse.
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.selected_profile(), Some("prod"));
     }
 
     #[test]
-    fn credential_cycle_starts_at_none() {
+    fn env_profile_suggest_arrow_moves_highlight_before_adopt() {
         let mut form = CreateForm::new(Vec::new());
-        form.credential_names = vec!["gh".into(), "openai".into()];
-        form.active_field = FormField::Credentials;
-        form.handle_key(key(KeyCode::Down));
-        assert_eq!(form.selected_credential(), Some("gh"));
-        form.handle_key(key(KeyCode::Up));
-        assert!(form.selected_credential.is_none(), "back to <none>");
-        // <none> → last on backward.
-        form.handle_key(key(KeyCode::Up));
-        assert_eq!(form.selected_credential(), Some("openai"));
+        form.env_profiles = vec![prof("dev", &[]), prof("prod", &[]), prof("deploy", &[])];
+        form.active_field = FormField::EnvProfile;
+        // Empty typing shows all candidates (file order); ↑↓ moves the
+        // highlight; Enter adopts the highlighted one.
+        form.handle_key(key(KeyCode::Down)); // highlight #2
+        form.handle_key(key(KeyCode::Down)); // highlight #3
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.selected_profile(), Some("deploy"));
     }
 
     #[test]
-    fn cycle_fields_with_no_options_stay_none() {
-        // A broken/unreadable name file → empty lists; cycling must not
-        // wedge anything: the field just stays <none>.
+    fn suggest_empty_text_enter_is_none_and_moves_on() {
+        let mut form = CreateForm::new(Vec::new());
+        form.env_profiles = vec![prof("dev", &[])];
+        form.credential_names = vec!["gh".into()];
+        form.active_field = FormField::EnvProfile;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.selected_profile(), None, "empty = <none>");
+        form.active_field = FormField::Credentials;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.selected_credential(), None);
+    }
+
+    #[test]
+    fn suggest_unknown_typed_value_errors_inline() {
+        let mut form = CreateForm::new(Vec::new());
+        form.env_profiles = vec![prof("dev", &[])];
+        form.credential_names = vec!["gh".into()];
+        form.active_field = FormField::EnvProfile;
+        for c in "zzz".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Continue);
+        assert!(
+            form.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("unknown environment profile")
+        );
+        form.active_field = FormField::Credentials;
+        form.error = None;
+        for c in "zzz".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Continue);
+        assert!(
+            form.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("unknown credential")
+        );
+    }
+
+    #[test]
+    fn suggest_fields_support_caret_editing() {
+        // Fixing the user-reported pain: a pasted string can be edited in
+        // the middle instead of only popping from the end.
+        let mut form = CreateForm::new(Vec::new());
+        form.env_profiles = vec![prof("deploy", &[])];
+        form.active_field = FormField::EnvProfile;
+        for c in "deply".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(form.env_profile, "deply");
+        // ← twice (caret between 'p' and 'l'), insert 'o': "deply" → "depoly".
+        form.handle_key(key(KeyCode::Left));
+        form.handle_key(key(KeyCode::Left));
+        form.handle_key(key(KeyCode::Char('o')));
+        assert_eq!(form.env_profile, "depoly");
+        // …a wrong typed value drains from the caret; at position 0
+        // Backspace is a no-op, so the caret jumps to End first:
+        for _ in 0..4 {
+            form.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(form.env_profile, "ly", "drained: {:?}", form.env_profile);
+        form.handle_key(key(KeyCode::End));
+        for _ in 0..2 {
+            form.handle_key(key(KeyCode::Backspace));
+        }
+        assert!(
+            form.env_profile.is_empty(),
+            "drained: {:?}",
+            form.env_profile
+        );
+        for c in "deploy".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.selected_profile(), Some("deploy"));
+    }
+
+    #[test]
+    fn suggest_fields_with_no_options_stay_usable() {
+        // A broken/unreadable name file → empty lists: no options, but
+        // empty Enter just moves on and unknown typing errors inline —
+        // nothing wedges.
         let mut form = CreateForm::new(Vec::new());
         form.env_profiles = Vec::new();
         form.credential_names = Vec::new();
         form.active_field = FormField::EnvProfile;
-        form.handle_key(key(KeyCode::Down));
-        assert!(form.selected_env_profile.is_none());
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+        assert_eq!(form.selected_profile(), None);
         form.active_field = FormField::Credentials;
-        form.handle_key(key(KeyCode::Down));
-        assert!(form.selected_credential.is_none());
+        for c in "zzz".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::Continue);
+        assert!(form.error.is_some());
     }
 
     #[test]
@@ -2368,7 +2674,7 @@ mod tests {
         form.image = "alpine".into();
         form.env_profiles = vec![prof("dev", &["A=1", "B=1"])];
         form.env_vars = vec!["A=2".into(), "C=3".into()];
-        form.selected_env_profile = Some("dev".into());
+        form.env_profile = "dev".into();
         let spec = form.to_create_spec().unwrap();
         // Profile vars first, form vars appended — SDK last-wins, so the
         // form's A=2 overrides the profile's A=1.
@@ -2395,7 +2701,7 @@ mod tests {
     fn unknown_selected_profile_errors_like_the_validator() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        form.selected_env_profile = Some("no-such-profile".into());
+        form.env_profile = "no-such-profile".into();
         let err = form.to_create_spec().unwrap_err().to_string();
         assert!(
             err.contains("unknown environment profile 'no-such-profile'"),
@@ -2413,14 +2719,14 @@ mod tests {
         let form = CreateForm::from_template(&t, "/home/me/proj".into());
         assert_eq!(form.selected_profile(), Some("dev"));
         // Templates carry no credential association: starts at <none>.
-        assert!(form.selected_credential.is_none());
+        assert!(form.selected_credential().is_none());
     }
 
     #[test]
     fn save_template_roundtrips_env_profile() {
         let mut form = CreateForm::new(Vec::new());
         form.image = "alpine".into();
-        form.selected_env_profile = Some("dev".into());
+        form.env_profile = "dev".into();
         let t = form.to_template("T".into(), "d".into());
         assert_eq!(t.spec.env_profile.as_deref(), Some("dev"));
         // …and it pre-selects again on the from-template path.
@@ -2429,13 +2735,13 @@ mod tests {
     }
 
     #[test]
-    fn cycle_fields_render_their_selection() {
+    fn suggest_fields_render_typed_values_and_placeholders() {
         let mut form = CreateForm::new(Vec::new());
         let text = flatten(&grouped_field_lines(&form));
         assert!(text.contains("Env-Profile"), "{text}");
         assert!(text.contains("Credentials"), "{text}");
         assert!(text.contains("[<none>]"), "{text}");
-        form.selected_env_profile = Some("dev".into());
+        form.env_profile = "dev".into();
         let text = flatten(&grouped_field_lines(&form));
         assert!(text.contains("[dev]"), "{text}");
     }
@@ -2445,9 +2751,12 @@ mod tests {
         let mut form = CreateForm::new(Vec::new());
         assert_eq!(form.selected_profile(), None);
         assert_eq!(form.selected_credential(), None);
-        form.selected_env_profile = Some("dev".into());
-        form.selected_credential = Some("gh".into());
+        form.env_profile = "dev".into();
+        form.credential = "gh".into();
         assert_eq!(form.selected_profile(), Some("dev"));
         assert_eq!(form.selected_credential(), Some("gh"));
+        // Whitespace-only counts as cleared (none).
+        form.env_profile = "  ".into();
+        assert_eq!(form.selected_profile(), None);
     }
 }

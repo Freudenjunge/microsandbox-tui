@@ -166,6 +166,9 @@ enum Editor {
         /// `Some` = editing this row (rename allowed, relocations visible at
         /// next create); `None` = adding a new profile.
         index: Option<usize>,
+        /// Caret (char index) of the ACTIVE field's buffer; reset to that
+        /// buffer's end when the field focus moves.
+        cursor: usize,
         name: String,
         description: String,
         env: Vec<String>,
@@ -181,6 +184,8 @@ enum Editor {
         /// `Some` = editing this row (renaming is rejected — the keyring
         /// secret is keyed by name and would be orphaned); `None` = adding.
         index: Option<usize>,
+        /// Caret of the active field (see [`Editor::Profile`]).
+        cursor: usize,
         name: String,
         description: String,
         env_key: String,
@@ -217,11 +222,52 @@ impl std::fmt::Debug for Editor {
 }
 
 impl Editor {
-    /// Move focus by `delta` fields (wrapping).
+    /// Move focus by `delta` fields (wrapping); the caret lands at the
+    /// end of the newly focused buffer.
     fn advance(&mut self, delta: isize) {
         match self {
-            Editor::Profile { field, .. } => *field = stepped(PField::ALL, *field, delta),
-            Editor::Credential { field, .. } => *field = stepped(CField::ALL, *field, delta),
+            Self::Profile { field, .. } => *field = stepped(PField::ALL, *field, delta),
+            Self::Credential { field, .. } => *field = stepped(CField::ALL, *field, delta),
+        }
+        let caret = crate::ui::text_input::caret_end(self.active_field_buf());
+        self.set_cursor(caret);
+    }
+
+    /// The buffer of the currently focused field (for caret resets).
+    fn active_field_buf(&self) -> &str {
+        match self {
+            Self::Profile {
+                field,
+                name,
+                description,
+                env_input,
+                ..
+            } => match field {
+                PField::Name => name,
+                PField::Description => description,
+                PField::Env => env_input,
+            },
+            Self::Credential {
+                field,
+                name,
+                description,
+                env_key,
+                secret,
+                list_input,
+                ..
+            } => match field {
+                CField::Name => name,
+                CField::Description => description,
+                CField::EnvKey => env_key,
+                CField::Secret => secret,
+                CField::Profiles | CField::Sandboxes => list_input,
+            },
+        }
+    }
+
+    fn set_cursor(&mut self, at: usize) {
+        match self {
+            Self::Profile { cursor, .. } | Self::Credential { cursor, .. } => *cursor = at,
         }
     }
 
@@ -230,6 +276,7 @@ impl Editor {
         match self {
             Editor::Profile {
                 field,
+                cursor,
                 name,
                 description,
                 env,
@@ -238,12 +285,13 @@ impl Editor {
                 env_slot,
                 ..
             } => match field {
-                PField::Name => text_key(name, key),
-                PField::Description => text_key(description, key),
+                PField::Name => text_key(name, cursor, key),
+                PField::Description => text_key(description, cursor, key),
                 PField::Env => list_key(
                     ListBuf {
                         items: env,
                         input: env_input,
+                        cursor,
                         sel: env_sel,
                         slot: env_slot,
                     },
@@ -254,6 +302,7 @@ impl Editor {
             },
             Editor::Credential {
                 field,
+                cursor,
                 name,
                 description,
                 env_key,
@@ -265,14 +314,15 @@ impl Editor {
                 list_slot,
                 ..
             } => match field {
-                CField::Name => text_key(name, key),
-                CField::Description => text_key(description, key),
-                CField::EnvKey => text_key(env_key, key),
-                CField::Secret => text_key(secret, key),
+                CField::Name => text_key(name, cursor, key),
+                CField::Description => text_key(description, cursor, key),
+                CField::EnvKey => text_key(env_key, cursor, key),
+                CField::Secret => text_key(secret, cursor, key),
                 CField::Profiles => list_key(
                     ListBuf {
                         items: profiles,
                         input: list_input,
+                        cursor,
                         sel: list_sel,
                         slot: list_slot,
                     },
@@ -283,6 +333,7 @@ impl Editor {
                     ListBuf {
                         items: sandboxes,
                         input: list_input,
+                        cursor,
                         sel: list_sel,
                         slot: list_slot,
                     },
@@ -517,6 +568,7 @@ impl EnvironmentsView {
                 };
                 self.editor = Some(Editor::Profile {
                     index,
+                    cursor: crate::ui::text_input::caret_end(&name),
                     name,
                     description,
                     env,
@@ -551,6 +603,7 @@ impl EnvironmentsView {
                     };
                 self.editor = Some(Editor::Credential {
                     index,
+                    cursor: crate::ui::text_input::caret_end(&name),
                     name,
                     description,
                     env_key,
@@ -756,22 +809,18 @@ impl EnvironmentsView {
 // ---------------------------------------------------------------------------
 
 /// How a text-field key route ended: typing stays, Enter saves.
-fn text_key(buf: &mut String, key: KeyEvent) -> EditorOutcome {
-    match key.code {
-        KeyCode::Char(c)
-            if !key.modifiers.contains(KeyModifiers::CONTROL)
-                && !key.modifiers.contains(KeyModifiers::ALT) =>
-        {
-            buf.push(c);
-            EditorOutcome::Stay
-        }
-        KeyCode::Backspace => {
-            buf.pop();
-            EditorOutcome::Stay
-        }
-        KeyCode::Enter => EditorOutcome::SaveEditor,
-        _ => EditorOutcome::Stay,
+///
+/// Cursor editing (insert at caret, ←/→/Home/End/Delete/Backspace) is the
+/// shared `text_edit` route; with no caret movement the Enter path saves.
+fn text_key(buf: &mut String, cursor: &mut usize, key: KeyEvent) -> EditorOutcome {
+    use crossterm::event::KeyCode;
+    if crate::ui::text_input::text_edit(buf, cursor, &key) {
+        return EditorOutcome::Stay;
     }
+    if key.code == KeyCode::Enter {
+        return EditorOutcome::SaveEditor;
+    }
+    EditorOutcome::Stay
 }
 
 /// The four editable parts of one list field, bundled for the shared
@@ -779,6 +828,8 @@ fn text_key(buf: &mut String, key: KeyEvent) -> EditorOutcome {
 struct ListBuf<'a> {
     items: &'a mut Vec<String>,
     input: &'a mut String,
+    /// Caret within `input`.
+    cursor: &'a mut usize,
     sel: &'a mut usize,
     /// Row loaded into the input for in-place editing (`Enter` on a row).
     slot: &'a mut Option<usize>,
@@ -786,31 +837,16 @@ struct ListBuf<'a> {
 
 /// A key on a list field: type to fill the input row, Enter commits the
 /// input (appends, or replaces the slot row while editing), Enter on an
-/// empty input pulls the selected row up for editing, Backspace pops the
-/// input, Up/Down move the row highlight, Delete removes the selected row.
+/// empty input pulls the selected row up for editing, ↑/↓ move the row
+/// highlight, Delete removes the selected row (with an empty input).
 fn list_key(f: ListBuf<'_>, key: KeyEvent, is_last_field: bool) -> EditorOutcome {
+    // Delete on an empty input keeps the row-removal semantics — the
+    // shared edit route would consume it as a no-op.
+    let row_delete = f.input.is_empty() && key.code == KeyCode::Delete;
+    if !row_delete && crate::ui::text_input::text_edit(f.input, f.cursor, &key) {
+        return EditorOutcome::Stay;
+    }
     match key.code {
-        KeyCode::Char(c)
-            if !key.modifiers.contains(KeyModifiers::CONTROL)
-                && !key.modifiers.contains(KeyModifiers::ALT) =>
-        {
-            f.input.push(c);
-            EditorOutcome::Stay
-        }
-        KeyCode::Backspace => {
-            f.input.pop();
-            EditorOutcome::Stay
-        }
-        KeyCode::Up => {
-            *f.sel = f.sel.saturating_sub(1);
-            EditorOutcome::Stay
-        }
-        KeyCode::Down => {
-            if *f.sel + 1 < f.items.len() {
-                *f.sel += 1;
-            }
-            EditorOutcome::Stay
-        }
         KeyCode::Delete => {
             if !f.items.is_empty() && *f.sel < f.items.len() {
                 f.items.remove(*f.sel);
@@ -828,6 +864,7 @@ fn list_key(f: ListBuf<'_>, key: KeyEvent, is_last_field: bool) -> EditorOutcome
         KeyCode::Enter => {
             if !f.input.is_empty() {
                 let item = std::mem::take(f.input);
+                *f.cursor = 0;
                 let target = match *f.slot {
                     Some(i) if i < f.items.len() => i,
                     _ => f.items.len(),
@@ -848,12 +885,23 @@ fn list_key(f: ListBuf<'_>, key: KeyEvent, is_last_field: bool) -> EditorOutcome
                 // Pull the selected row up into the input for editing.
                 *f.slot = Some(*f.sel);
                 *f.input = f.items[*f.sel].clone();
+                *f.cursor = crate::ui::text_input::caret_end(f.input);
                 EditorOutcome::Stay
             } else if is_last_field {
                 EditorOutcome::SaveEditor
             } else {
                 EditorOutcome::NextField
             }
+        }
+        KeyCode::Up => {
+            *f.sel = f.sel.saturating_sub(1);
+            EditorOutcome::Stay
+        }
+        KeyCode::Down => {
+            if *f.sel + 1 < f.items.len() {
+                *f.sel += 1;
+            }
+            EditorOutcome::Stay
         }
         _ => EditorOutcome::Stay,
     }
@@ -1186,33 +1234,44 @@ fn field_label_span(label: &str, active: bool) -> Span<'static> {
     Span::styled(format!("  {label:<9}:"), style)
 }
 
-/// Styled value span for a text field, cursor block when active.
-fn text_value_span(value: &str, active: bool) -> Span<'static> {
+/// Styled value span for a text field with the edit point visible
+/// mid-string (caret char reverse-styled; end-block when at the end).
+fn text_value_span(value: &str, cursor: usize, active: bool) -> Span<'static> {
     let t = &THEME;
-    if active {
-        Span::styled(format!("[{value}█]"), Style::default().fg(t.fg))
+    if !active {
+        return Span::styled(format!("[{value}]"), Style::default().fg(t.muted));
+    }
+    let (before, caret, after) = crate::ui::text_input::split_caret(value, cursor);
+    if let Some(c) = caret {
+        Span::styled(
+            format!("[{before}{c}{after}]"),
+            Style::default().fg(t.fg).add_modifier(Modifier::REVERSED),
+        )
     } else {
-        Span::styled(format!("[{value}]"), Style::default().fg(t.muted))
+        Span::styled(format!("[{before}█]"), Style::default().fg(t.fg))
     }
 }
 
 /// One labeled text-field line: `  Label:  [value█]`.
-fn text_field_line(label: &str, value: &str, active: bool) -> Line<'static> {
+fn text_field_line(label: &str, value: &str, cursor: usize, active: bool) -> Line<'static> {
     Line::from(vec![
         field_label_span(label, active),
         Span::raw(" "),
-        text_value_span(value, active),
+        text_value_span(value, cursor, active),
     ])
 }
 
 /// The Secret editor line: masked chars, with the empty-means-keep hint in
 /// edit mode and the required hint in add mode (both while focused).
-fn secret_field_line(secret: &str, active: bool, editing: bool) -> Line<'static> {
+///
+/// The caret renders over the MASKED value at the same index — caret and
+/// buffer stay in sync because `masked` is 1:1 per char.
+fn secret_field_line(secret: &str, cursor: usize, active: bool, editing: bool) -> Line<'static> {
     let t = &THEME;
     let mut spans = vec![
         field_label_span("Secret", active),
         Span::raw(" "),
-        text_value_span(&masked(secret), active),
+        text_value_span(&masked(secret), cursor, active),
     ];
     if active {
         let hint = if editing {
@@ -1232,6 +1291,7 @@ fn list_field_lines(
     label: &str,
     items: &[String],
     input: &str,
+    input_cursor: usize,
     active: bool,
     selected: usize,
     slot: Option<usize>,
@@ -1268,10 +1328,15 @@ fn list_field_lines(
         ]));
     }
     if active {
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(format!("  [{input}█]"), Style::default().fg(t.warn)),
-        ]));
+        let (before, caret, after) = crate::ui::text_input::split_caret(input, input_cursor);
+        let value = match caret {
+            Some(c) => Span::styled(
+                format!("  [{before}{c}{after}]"),
+                Style::default().fg(t.warn).add_modifier(Modifier::REVERSED),
+            ),
+            None => Span::styled(format!("  [{before}█]"), Style::default().fg(t.warn)),
+        };
+        lines.push(Line::from(vec![Span::raw("    "), value]));
     }
     if items.is_empty() && !active {
         lines.push(Line::from(Span::styled(
@@ -1289,6 +1354,7 @@ fn render_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
     let (title, mut lines) = match ed {
         Editor::Profile {
             index,
+            cursor,
             name,
             description,
             env,
@@ -1304,13 +1370,19 @@ fn render_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
                 " New environment profile "
             };
             let mut lines = vec![
-                text_field_line("Name", name, *field == PField::Name),
-                text_field_line("Descr.", description, *field == PField::Description),
+                text_field_line("Name", name, *cursor, *field == PField::Name),
+                text_field_line(
+                    "Descr.",
+                    description,
+                    *cursor,
+                    *field == PField::Description,
+                ),
             ];
             lines.extend(list_field_lines(
                 "Env",
                 env,
                 env_input,
+                *cursor,
                 *field == PField::Env,
                 *env_sel,
                 *env_slot,
@@ -1319,6 +1391,7 @@ fn render_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
         }
         Editor::Credential {
             index,
+            cursor,
             name,
             description,
             env_key,
@@ -1338,15 +1411,21 @@ fn render_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
             };
             let editing = index.is_some();
             let mut lines = vec![
-                text_field_line("Name", name, *field == CField::Name),
-                text_field_line("Descr.", description, *field == CField::Description),
-                text_field_line("Env var", env_key, *field == CField::EnvKey),
-                secret_field_line(secret, *field == CField::Secret, editing),
+                text_field_line("Name", name, *cursor, *field == CField::Name),
+                text_field_line(
+                    "Descr.",
+                    description,
+                    *cursor,
+                    *field == CField::Description,
+                ),
+                text_field_line("Env var", env_key, *cursor, *field == CField::EnvKey),
+                secret_field_line(secret, *cursor, *field == CField::Secret, editing),
             ];
             lines.extend(list_field_lines(
                 "Profiles",
                 profiles,
                 list_input,
+                *cursor,
                 *field == CField::Profiles,
                 *list_sel,
                 *list_slot,
@@ -1355,6 +1434,7 @@ fn render_editor(frame: &mut Frame, area: Rect, ed: &Editor) {
                 "Sandboxes",
                 sandboxes,
                 list_input,
+                *cursor,
                 *field == CField::Sandboxes,
                 *list_sel,
                 *list_slot,

@@ -16,6 +16,7 @@ pub mod help;
 pub mod logs;
 pub mod ports;
 pub mod template_picker;
+pub mod text_input;
 pub mod theme;
 
 use std::collections::HashMap;

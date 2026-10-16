@@ -741,16 +741,14 @@ fn run_save_template(t: crate::template::Template, tx: mpsc::Sender<AppEvent>) {
                 let _ = tx.send(AppEvent::TemplateSaved(t)).await;
                 let _ = tx
                     .send(AppEvent::OpDone(format!(
-                        "template gespeichert: {}",
+                        "template saved: {}",
                         path.display()
                     )))
                     .await;
             }
             Err(e) => {
                 let _ = tx
-                    .send(AppEvent::Error(format!(
-                        "template speichern fehlgeschlagen: {e:#}"
-                    )))
+                    .send(AppEvent::Error(format!("saving template failed: {e:#}")))
                     .await;
             }
         }
