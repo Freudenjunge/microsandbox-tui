@@ -2156,6 +2156,24 @@ mod tests {
     }
 
     #[test]
+    fn tab_spam_never_leaves_the_form() {
+        // Regression for a user report ("Tab on Disk ejects"): cycling Tab
+        // (repeatedly past the last field, wrapping many times) must NEVER
+        // produce Cancel/Submit — the form only exits via Esc/Ctrl+Enter.
+        let mut form = CreateForm::new(Vec::new());
+        for _ in 0..80 {
+            match form.handle_key(key(KeyCode::Tab)) {
+                FormAction::NextField | FormAction::Continue => {}
+                other => panic!("Tab must never leave the form: {other:?}"),
+            }
+        }
+        // And empty Enter mid-form only advances (Submit is reachable
+        // solely through the last field or Ctrl+Enter).
+        form.active_field = FormField::Name;
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), FormAction::NextField);
+    }
+
+    #[test]
     fn enter_on_last_list_field_with_empty_input_submits() {
         // Labels ist das letzte Feld — hier bleibt der Tastatur-Create-Pfad.
         let mut form = CreateForm::new(Vec::new());
