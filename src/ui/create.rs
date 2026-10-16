@@ -648,18 +648,17 @@ impl CreateForm {
         self.list_input.clear();
         self.list_selected = 0;
         self.picker_selected = 0;
-        // Caret at the end of whatever buffer became active (list fields
-        // freshly cleared → 0).
+        // Caret at the end of whatever buffer became active; fields
+        // without a buffer (mount toggle, net profile) get 0. is_text
+        // guards the unreachable-free route — Tab onto such a field must
+        // NEVER panic the loop (user report: "Tab on Disk ejects").
         self.text_cursor = match self.active_field {
             FormField::EnvProfile => crate::ui::text_input::caret_end(&self.env_profile),
             FormField::Credentials => crate::ui::text_input::caret_end(&self.credential),
-            _ => {
-                if self.active_field.is_list() {
-                    crate::ui::text_input::caret_end(&self.list_input)
-                } else {
-                    crate::ui::text_input::caret_end(self.active_text_buf())
-                }
+            _ if self.active_field.is_text() => {
+                crate::ui::text_input::caret_end(self.active_text_buf())
             }
+            _ => 0,
         };
     }
 
