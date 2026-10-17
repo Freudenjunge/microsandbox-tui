@@ -129,11 +129,15 @@ pub(crate) fn unit_contents(exe: &Path) -> String {
     // the path so binaries under directories with spaces parse cleanly.
     let quoted = format!("\"{}\"", exe.to_string_lossy().replace('%', "%%"));
     format!(
-        "[Unit]
+        r#"[Unit]
 Description=msb-tui boot autostart: start marked microsandbox sandboxes
 
 [Service]
 Type=exec
+# The first SDK open stamps the install-exclusive lease; before NTP sync the
+# boot clock can read RTC-as-local (+TZ), leaving a lease deadlined hours in
+# the future — every later msb process then refuses to start (stale lock).
+ExecStartPre=/bin/sh -c 'i=0; until [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ] || [ "$i" -ge 45 ]; do sleep 2; i=$((i+1)); done'
 ExecStart={} autostart
 RemainAfterExit=yes
 Restart=on-failure
@@ -146,7 +150,7 @@ Environment=PATH=%h/.microsandbox/bin:%h/.local/bin:%h/.cargo/bin:%h/bin:/usr/lo
 
 [Install]
 WantedBy=default.target
-",
+"#,
         quoted
     )
 }
@@ -367,6 +371,14 @@ mod tests {
         );
         // A oneshot cannot carry Restart= on older systemd.
         assert!(!text.contains("Type=oneshot"), "{text}");
+        // The pass waits (bounded) for a synced clock before the first SDK
+        // open: a pre-sync boot clock stamps the install lease hours into
+        // the future and blocks every msb process after NTP corrects back.
+        let pre_line = text
+            .lines()
+            .find(|l| l.starts_with("ExecStartPre="))
+            .expect("ExecStartPre line");
+        assert!(pre_line.contains("NTPSynchronized"), "{pre_line}");
         // Failure is bounded: a permanently failing pass must stop being
         // retried (and stay visible via systemctl status) instead of
         // retrying every 30 s forever.
